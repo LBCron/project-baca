@@ -1,23 +1,23 @@
 # Graph Report - project-baca  (2026-09-27)
 
 ## Corpus Check
-- 109 files · ~214,704 words
+- 115 files · ~215,724 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 6 file(s) not represented in the graph (top: (none) 3, .example 1, .toml 1)
+- Unclassified: 7 file(s) not represented in the graph (top: (none) 4, .example 1, .toml 1)
 
 ## Summary
-- 1018 nodes · 1976 edges · 99 communities (65 shown, 34 thin omitted)
+- 1045 nodes · 2011 edges · 103 communities (67 shown, 36 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 55 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8f1495b4`
+- Built from commit: `2f4cdcf9`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - load_stress_test.rs
-- Database Schema and Indexes
+- books
 - shared/src/lib.rs
 - server/src/lib.rs
 - 2. Work Breakdown
@@ -50,7 +50,7 @@
 - Model
 - manual-test/README.md
 - Manual Testing — Milestone 03: Catalog, Reader Engine & Gamification
-- quotes.rs
+- sea_orm
 - Knowledge Format Specification
 - Database Technology Stack
 - Model
@@ -96,15 +96,19 @@
 - ActiveModel
 - ActiveModel
 - Project Baca
-- axum
+- ai_rate_limit.rs
 - Q: nah pertanyaanmu terkait graf seriusan ga paham, apalagi across architetureal boundaries gitu. tolong deh telusuri jalur data dan dependencynya.
 - Master Task Roadmap to MVP — Project Baca
 - get_atomic_cards
 - semantic_ai_test.rs
 - catalog_test.rs
 - database_test.rs
+- Brain content
+- brain-router/SKILL.md
 - Asset Catalog
 - appconfig
+- memory-care/SKILL.md
+- memory-recall/SKILL.md
 
 ## God Nodes (most connected - your core abstractions)
 1. `AppError` - 77 edges
@@ -123,12 +127,12 @@
   crates/web/index.html → assets/README.md
 - `main()` --calls--> `build_embedding_provider()`  [INFERRED]
   crates/server/src/main.rs → crates/infra/src/ai/embedding.rs
-- `test_reliability_disconnected_database_fallback()` --calls--> `build_embedding_provider()`  [INFERRED]
-  crates/server/tests/reliability_test.rs → crates/infra/src/ai/embedding.rs
 - `signup()` --calls--> `send_otp_email()`  [INFERRED]
   crates/server/src/routes/auth.rs → crates/infra/src/email.rs
-- `main()` --calls--> `init_db_pool()`  [INFERRED]
-  crates/server/src/main.rs → crates/infra/src/pool.rs
+- `get_quote_card()` --calls--> `get_book_by_id()`  [INFERRED]
+  crates/server/src/routes/quotes.rs → crates/infra/src/repositories/book_repository.rs
+- `resolve_chapter()` --calls--> `get_chapter_by_number()`  [INFERRED]
+  crates/server/src/routes/insights.rs → crates/infra/src/repositories/book_repository.rs
 
 ## Import Cycles
 - None detected.
@@ -140,15 +144,15 @@
 - **OKF Knowledge Vault** — knowledge_index_md, knowledge_prd_md, knowledge_erd_md, knowledge_frd_md, knowledge_srs_md, knowledge_ux_flow_md, knowledge_log_md [EXTRACTED 1.00]
 - **OKF v0.2 Specification Suite** — knowledge_index_md, knowledge_prd_md, knowledge_erd_md, knowledge_frd_md, knowledge_srs_md, knowledge_ux_flow_md, knowledge_log_md [EXTRACTED 1.00]
 
-## Communities (99 total, 34 thin omitted)
+## Communities (103 total, 36 thin omitted)
 
 ### Community 0 - "load_stress_test.rs"
 Cohesion: 0.09
-Nodes (7): assert_eq, body, http, instant, testharness, utc, uuid
+Nodes (6): assert_eq, body, http, instant, testharness, uuid
 
-### Community 1 - "Database Schema and Indexes"
-Cohesion: 0.11
-Nodes (29): idx_users_admin_role, idx_users_email, users, book_tags, books, idx_book_tags_reverse, idx_books_catalog_filter, idx_books_published_author_trgm (+21 more)
+### Community 1 - "books"
+Cohesion: 0.07
+Nodes (43): idx_users_admin_role, idx_users_email, users, book_tags, books, idx_book_tags_reverse, idx_books_catalog_filter, idx_books_published_author_trgm (+35 more)
 
 ### Community 2 - "shared/src/lib.rs"
 Cohesion: 0.10
@@ -156,7 +160,7 @@ Nodes (53): get_book_by_id(), get_chapter_by_number(), get_offline_bundle(), get
 
 ### Community 3 - "server/src/lib.rs"
 Cohesion: 0.10
-Nodes (25): cors, api_health_check(), ApiDoc, create_app(), health_check(), not_found_handler(), REQUEST_ID_HEADER, request_id_middleware() (+17 more)
+Nodes (24): cors, api_health_check(), ApiDoc, create_app(), health_check(), not_found_handler(), REQUEST_ID_HEADER, request_id_middleware() (+16 more)
 
 ### Community 4 - "2. Work Breakdown"
 Cohesion: 0.20
@@ -196,7 +200,7 @@ Nodes (26): argon2, generate_and_store_otp(), generate_numeric_otp(), hash_otp()
 
 ### Community 14 - "embedding.rs"
 Cohesion: 0.09
-Nodes (29): async_trait, build_embedding_provider(), EmbeddingProvider, FastEmbedProvider, GeminiBatchEmbedRequest, GeminiBatchEmbedResponse, GeminiContent, GeminiEmbedding (+21 more)
+Nodes (30): async_trait, build_embedding_provider(), EmbeddingProvider, FastEmbedProvider, GeminiBatchEmbedRequest, GeminiBatchEmbedResponse, GeminiContent, GeminiEmbedding (+22 more)
 
 ### Community 15 - "Database Migration Scripts"
 Cohesion: 0.76
@@ -207,8 +211,8 @@ Cohesion: 0.70
 Nodes (5): domain, infra, server, shared, web
 
 ### Community 17 - "AppConfig"
-Cohesion: 0.06
-Nodes (42): ai, AppConfig, AuthConfig, DatabaseConfig, EmailConfig, RedisConfig, Result, Self (+34 more)
+Cohesion: 0.09
+Nodes (24): AppConfig, AuthConfig, DatabaseConfig, EmailConfig, RedisConfig, Result, Self, String (+16 more)
 
 ### Community 18 - "2. Work Breakdown"
 Cohesion: 0.22
@@ -231,8 +235,8 @@ Cohesion: 0.14
 Nodes (13): entity_as_badges, entity_as_bookchunks, entity_as_books, entity_as_booktags, entity_as_chapters, entity_as_readingactivitylogs, entity_as_savedquotes, entity_as_tags (+5 more)
 
 ### Community 27 - "AppState"
-Cohesion: 0.06
-Nodes (84): apperror, crate, HttpError, IntoResponse, Response, Self, AppState, Client (+76 more)
+Cohesion: 0.05
+Nodes (103): apperror, axum, crate, HttpError, IntoResponse, Response, Self, AppState (+95 more)
 
 ### Community 29 - "security_owasp_test.rs"
 Cohesion: 0.26
@@ -254,17 +258,17 @@ Nodes (6): 1. Overview, Manual Testing — Milestone 02: Authentication, Securit
 Cohesion: 0.20
 Nodes (10): 1. Overview, 2. Quick Data Seeder for Manual Testing, 5. Reading Progress, CFI Anchors & Active Position, 6. Gamification: Heartbeats, Streaks & Badges, Manual Testing — Milestone 03: Catalog, Reader Engine & Gamification, Step 3.10: Send Reading Heartbeat (`POST /api/v1/activity/heartbeat`), Step 3.11: View Master Badges (`GET /api/v1/badges`), Step 3.12: View User Unlocked Badges (`GET /api/v1/me/badges`) (+2 more)
 
-### Community 43 - "quotes.rs"
-Cohesion: 0.23
-Nodes (18): get_quote_card(), handle_list_saved_quotes(), handle_save_quote(), quotes_routes(), render_vintage_quote_svg(), Arc, HeaderMap, IntoResponse (+10 more)
+### Community 43 - "sea_orm"
+Cohesion: 0.12
+Nodes (17): ai, Box, init_db_pool(), init_redis_client(), Client, DatabaseConnection, Result, main() (+9 more)
 
 ### Community 46 - "Model"
 Cohesion: 0.25
 Nodes (7): Model, Relation, DateTimeWithTimeZone, Json, Option, String, Uuid
 
 ### Community 47 - "reliability_test.rs"
-Cohesion: 0.11
-Nodes (19): arc, automock, Box, main(), Result, shutdown_signal(), BookCatalogPort, Option (+11 more)
+Cohesion: 0.15
+Nodes (13): arc, automock, BookCatalogPort, Option, Result, Send, Sync, Uuid (+5 more)
 
 ### Community 48 - "3. Server Health & OpenAPI Documentation"
 Cohesion: 0.40
@@ -378,9 +382,9 @@ Nodes (4): 4. Book Overview, Reader Content & Offline Bundle, Step 3.5: Book Ove
 Cohesion: 0.25
 Nodes (8): 1. What is Project Baca?, 2. Why Project Baca? (The Problem We Solve), 3. Reader Experience & Key Features, 4. Architectural Highlights & Technology, 5. Quickstart for Developers & Self-Hosters, 6. Project Documentation & Specifications, 7. Open Access & Heritage Notice, Project Baca
 
-### Community 90 - "axum"
+### Community 90 - "ai_rate_limit.rs"
 Cohesion: 0.11
-Nodes (25): apiresponse, asynccommands, axum, AI_MAX_REQUESTS, ai_rate_limit_middleware(), AI_WINDOW_SECONDS, get_client_ip(), Arc (+17 more)
+Nodes (24): apiresponse, asynccommands, AI_MAX_REQUESTS, ai_rate_limit_middleware(), AI_WINDOW_SECONDS, get_client_ip(), Arc, Body (+16 more)
 
 ### Community 91 - "Q: nah pertanyaanmu terkait graf seriusan ga paham, apalagi across architetureal boundaries gitu. tolong deh telusuri jalur data dan dependencynya."
 Cohesion: 0.40
@@ -402,25 +406,33 @@ Nodes (12): Result, String, Uuid, seed_test_context(), SeededAiContext, test_ai_
 Cohesion: 0.33
 Nodes (10): Result, String, Uuid, seed_test_catalog(), SeededCatalog, test_book_overview_chapter_and_offline_bundle(), test_catalog_listing_and_filtering(), test_catalog_typo_tolerant_fts_search() (+2 more)
 
+### Community 96 - "database_test.rs"
+Cohesion: 0.14
+Nodes (9): list_badges(), list_user_badges(), DatabaseConnection, Result, Uuid, Vec, seed_default_badges_if_empty(), entities (+1 more)
+
+### Community 97 - "Brain content"
+Cohesion: 0.40
+Nodes (4): Brain content, Provenance, Safety, Skills
+
 ## Knowledge Gaps
-- **149 isolated node(s):** `Relation`, `ActiveModel`, `Relation`, `ActiveModel`, `Relation` (+144 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 398 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **34 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **155 isolated node(s):** `Relation`, `ActiveModel`, `Relation`, `ActiveModel`, `Relation` (+150 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 408 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **36 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `AppError` connect `AppError` to `shared/src/lib.rs`, `otp.rs`, `embedding.rs`, `reliability_test.rs`, `AppConfig`, `quote_repository.rs`, `progress_repository.rs`, `AppState`, `get_atomic_cards`?**
-  _High betweenness centrality (0.163) - this node is a cross-community bridge._
-- **Why does `AppState` connect `AppState` to `server/src/lib.rs`, `TestHarness`, `quotes.rs`, `embedding.rs`, `AppConfig`, `axum`, `get_atomic_cards`?**
-  _High betweenness centrality (0.076) - this node is a cross-community bridge._
-- **Why does `users` connect `Database Schema and Indexes` to `load_stress_test.rs`, `AppError`?**
-  _High betweenness centrality (0.049) - this node is a cross-community bridge._
+- **Why does `AppError` connect `AppError` to `database_test.rs`, `shared/src/lib.rs`, `sea_orm`, `otp.rs`, `embedding.rs`, `reliability_test.rs`, `AppConfig`, `quote_repository.rs`, `progress_repository.rs`, `AppState`, `get_atomic_cards`?**
+  _High betweenness centrality (0.144) - this node is a cross-community bridge._
+- **Why does `AppState` connect `AppState` to `server/src/lib.rs`, `TestHarness`, `embedding.rs`, `AppConfig`, `ai_rate_limit.rs`, `get_atomic_cards`?**
+  _High betweenness centrality (0.079) - this node is a cross-community bridge._
+- **Why does `HttpError` connect `AppState` to `get_atomic_cards`, `AppError`?**
+  _High betweenness centrality (0.026) - this node is a cross-community bridge._
 - **What connects `Relation`, `ActiveModel`, `Relation` to the rest of the system?**
-  _149 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _155 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `load_stress_test.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.0907258064516129 - nodes in this community are weakly interconnected._
-- **Should `Database Schema and Indexes` be split into smaller, more focused modules?**
-  _Cohesion score 0.11229946524064172 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09462365591397849 - nodes in this community are weakly interconnected._
+- **Should `books` be split into smaller, more focused modules?**
+  _Cohesion score 0.07428571428571429 - nodes in this community are weakly interconnected._
 - **Should `shared/src/lib.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.10025062656641603 - nodes in this community are weakly interconnected._
