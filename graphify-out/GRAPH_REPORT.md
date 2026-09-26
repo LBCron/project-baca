@@ -1,9 +1,7 @@
 # Graph Report - project-baca  (2026-09-27)
 
 ## Corpus Check
-- 115 files · ~215,724 words
-- Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 7 file(s) not represented in the graph (top: (none) 4, .example 1, .toml 1)
+- cluster-only mode — file stats not available
 
 ## Summary
 - 1045 nodes · 2011 edges · 103 communities (67 shown, 36 thin omitted)
@@ -26,21 +24,21 @@
 - 2. Work Breakdown
 - TestHarness
 - 2. Work Breakdown
-- EPUB Ingestion Pipeline Tasks
-- Quality Assurance and Benchmarking
+- 2. Work Breakdown
+- 2. Work Breakdown
 - tasks/README.md
 - otp.rs
 - embedding.rs
-- Database Migration Scripts
-- Project Workspace Modules
+- migrate.sh
+- shared
 - AppConfig
 - 2. Work Breakdown
 - quote_repository.rs
 - progress_repository.rs
 - web/src/main.rs
-- Reader UI Illustrations
-- Catalog UI Illustrations
-- Monitoring UI Illustrations
+- Reader View Illustration
+- Library Catalog Illustration
+- Ingestion Monitor Illustration
 - 2. Work Breakdown
 - entities/mod.rs
 - AppState
@@ -51,8 +49,8 @@
 - manual-test/README.md
 - Manual Testing — Milestone 03: Catalog, Reader Engine & Gamification
 - sea_orm
-- Knowledge Format Specification
-- Database Technology Stack
+- Open Knowledge Format v0.2
+- PostgreSQL 17 + pgvector
 - Model
 - reliability_test.rs
 - 3. Server Health & OpenAPI Documentation
@@ -60,7 +58,7 @@
 - prelude
 - Model
 - Model
-- Model
+- users.rs
 - chapters.rs
 - reading_activity_logs.rs
 - tags.rs
@@ -116,23 +114,23 @@
 3. `HttpError` - 36 edges
 4. `AuthUser` - 20 edges
 5. `AppConfig` - 17 edges
-6. `signup()` - 15 edges
-7. `verify_otp()` - 15 edges
-8. `login()` - 15 edges
-9. `change_password()` - 15 edges
+6. `change_password()` - 15 edges
+7. `login()` - 15 edges
+8. `signup()` - 15 edges
+9. `verify_otp()` - 15 edges
 10. `search_book_quotes()` - 14 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Web Entry Point` --semantically_similar_to--> `Asset Catalog`  [INFERRED] [semantically similar]
   crates/web/index.html → assets/README.md
-- `main()` --calls--> `build_embedding_provider()`  [INFERRED]
-  crates/server/src/main.rs → crates/infra/src/ai/embedding.rs
-- `signup()` --calls--> `send_otp_email()`  [INFERRED]
-  crates/server/src/routes/auth.rs → crates/infra/src/email.rs
-- `get_quote_card()` --calls--> `get_book_by_id()`  [INFERRED]
-  crates/server/src/routes/quotes.rs → crates/infra/src/repositories/book_repository.rs
-- `resolve_chapter()` --calls--> `get_chapter_by_number()`  [INFERRED]
-  crates/server/src/routes/insights.rs → crates/infra/src/repositories/book_repository.rs
+- `signup()` --calls--> `generate_and_store_otp()`  [INFERRED]
+  crates/server/src/routes/auth.rs → crates/infra/src/security/otp.rs
+- `verify_otp()` --calls--> `verify_and_consume_otp()`  [INFERRED]
+  crates/server/src/routes/auth.rs → crates/infra/src/security/otp.rs
+- `change_password()` --calls--> `hash_password_async()`  [INFERRED]
+  crates/server/src/routes/auth.rs → crates/infra/src/security/password.rs
+- `signup()` --calls--> `hash_password_async()`  [INFERRED]
+  crates/server/src/routes/auth.rs → crates/infra/src/security/password.rs
 
 ## Import Cycles
 - None detected.
@@ -186,11 +184,11 @@ Nodes (8): Arc, Body, Request, Response, Router, Value, TestHarness, serviceext
 Cohesion: 0.18
 Nodes (11): 1. Summary, 2. Work Breakdown, 3. Success Criteria, Cross-Domain Matrix, Sub-Task 1.1: `dotenvy` Integration, Sub-Task 1.2: Modular `AppConfig` Sub-Configurations, Sub-Task 1.3: Dynamic Connection Pools, Sub-Task 1.4: SeaORM Entities for 13 Tables (+3 more)
 
-### Community 10 - "EPUB Ingestion Pipeline Tasks"
+### Community 10 - "2. Work Breakdown"
 Cohesion: 0.18
 Nodes (11): 1. Summary, 2. Work Breakdown, 3. Success Criteria, Cross-Domain Matrix, Sub-Task 5.1: S3/MinIO Storage Service (`crates/infra`), Sub-Task 5.2: Admin EPUB Upload Endpoint (SRS 21), Sub-Task 5.3: Ingestion Worker & EPUB Parsing, Sub-Task 5.4: HTML Sanitization & Scene Chunking (+3 more)
 
-### Community 11 - "Quality Assurance and Benchmarking"
+### Community 11 - "2. Work Breakdown"
 Cohesion: 0.18
 Nodes (11): 1. Summary, 2. Work Breakdown, 3. Success Criteria, Cross-Domain Matrix, Sub-Task 7.1: Smoke Testing Suite, Sub-Task 7.2: Unit Test Suite, Sub-Task 7.3: Integration Test Suite, Sub-Task 7.4: Performance SLA Benchmarks (+3 more)
 
@@ -202,11 +200,11 @@ Nodes (26): argon2, generate_and_store_otp(), generate_numeric_otp(), hash_otp()
 Cohesion: 0.09
 Nodes (30): async_trait, build_embedding_provider(), EmbeddingProvider, FastEmbedProvider, GeminiBatchEmbedRequest, GeminiBatchEmbedResponse, GeminiContent, GeminiEmbedding (+22 more)
 
-### Community 15 - "Database Migration Scripts"
+### Community 15 - "migrate.sh"
 Cohesion: 0.76
 Nodes (6): init_table(), migrate_down(), migrate_status(), migrate_up(), psql_cmd(), migrate.sh script
 
-### Community 16 - "Project Workspace Modules"
+### Community 16 - "shared"
 Cohesion: 0.70
 Nodes (5): domain, infra, server, shared, web
 
@@ -290,7 +288,7 @@ Nodes (6): Model, Relation, DateTimeWithTimeZone, Option, String, Uuid
 Cohesion: 0.29
 Nodes (6): Model, Relation, Date, DateTimeWithTimeZone, Option, Uuid
 
-### Community 53 - "Model"
+### Community 53 - "users.rs"
 Cohesion: 0.29
 Nodes (6): Model, Relation, DateTimeWithTimeZone, Option, String, Uuid
 
@@ -415,7 +413,7 @@ Cohesion: 0.40
 Nodes (4): Brain content, Provenance, Safety, Skills
 
 ## Knowledge Gaps
-- **155 isolated node(s):** `Relation`, `ActiveModel`, `Relation`, `ActiveModel`, `Relation` (+150 more)
+- **155 isolated node(s):** `ApiDoc`, `Relation`, `Relation`, `Relation`, `Relation` (+150 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 408 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **36 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -423,12 +421,12 @@ Nodes (4): Brain content, Provenance, Safety, Skills
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `AppError` connect `AppError` to `database_test.rs`, `shared/src/lib.rs`, `sea_orm`, `otp.rs`, `embedding.rs`, `reliability_test.rs`, `AppConfig`, `quote_repository.rs`, `progress_repository.rs`, `AppState`, `get_atomic_cards`?**
-  _High betweenness centrality (0.144) - this node is a cross-community bridge._
+  _High betweenness centrality (0.152) - this node is a cross-community bridge._
 - **Why does `AppState` connect `AppState` to `server/src/lib.rs`, `TestHarness`, `embedding.rs`, `AppConfig`, `ai_rate_limit.rs`, `get_atomic_cards`?**
   _High betweenness centrality (0.079) - this node is a cross-community bridge._
 - **Why does `HttpError` connect `AppState` to `get_atomic_cards`, `AppError`?**
-  _High betweenness centrality (0.026) - this node is a cross-community bridge._
-- **What connects `Relation`, `ActiveModel`, `Relation` to the rest of the system?**
+  _High betweenness centrality (0.040) - this node is a cross-community bridge._
+- **What connects `ApiDoc`, `Relation`, `Relation` to the rest of the system?**
   _155 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `load_stress_test.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.09462365591397849 - nodes in this community are weakly interconnected._
