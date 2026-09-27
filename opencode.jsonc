@@ -1,0 +1,59 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Project Baca — skill allowlist (2026-09-27).
+  //
+  // Background: OpenCode v2 advertises every discovered skill (id + name +
+  // description) to the model at session start (`core/skill-guidance`,
+  // ~47 KB / ~12k tokens for 147 skills, mostly Godot/GDScript from the
+  // shared `~/.config/opencode/skills` curated set). This project is a Rust
+  // Axum + Leptos WASM monorepo; game-engine skills never apply here.
+  //
+  // Mechanism (per docs: permissions + skills guides): `deny` on the skill
+  // action hides matching skills from the model AND rejects loading them.
+  // Rules combine in order, last match wins, so the broad deny comes first
+  // and explicit allows follow. Global config has no skill rules, so this
+  // project file is the only skill policy in effect here.
+  //
+  // Skills stay on disk untouched (shared with the Godot project); they are
+  // only hidden in sessions rooted at this directory. To re-enable one,
+  // append `{ "action": "skill", "resource": "<id>", "effect": "allow" }`.
+  // Verify in a fresh session via:
+  //   sqlite3 ~/.local/share/opencode/opencode.db \
+  //     "select length(value) from instruction_blob where hash = \
+  //      (select json_extract(initial_values,'$.\"core/skill-guidance\"') \
+  //       from instruction_state where session_id like '<prefix>%')"
+  // (expect ~10 KB instead of ~47 KB).
+  "permissions": [
+    { "action": "skill", "resource": "*", "effect": "deny" },
+    { "action": "skill", "resource": "graphify", "effect": "allow" },
+    { "action": "skill", "resource": "opencode", "effect": "allow" },
+    { "action": "skill", "resource": "api-testing", "effect": "allow" },
+    { "action": "skill", "resource": "web-testing", "effect": "allow" },
+    { "action": "skill", "resource": "webapp-testing", "effect": "allow" },
+    { "action": "skill", "resource": "deploy-check", "effect": "allow" },
+    { "action": "skill", "resource": "integration-testing", "effect": "allow" },
+    { "action": "skill", "resource": "regression-testing", "effect": "allow" },
+    { "action": "skill", "resource": "performance-testing", "effect": "allow" },
+    { "action": "skill", "resource": "security-testing", "effect": "allow" },
+    { "action": "skill", "resource": "diagnosing-bugs", "effect": "allow" },
+    { "action": "skill", "resource": "tdd", "effect": "allow" },
+    { "action": "skill", "resource": "code-review", "effect": "allow" },
+    { "action": "skill", "resource": "commit-archaeologist", "effect": "allow" },
+    { "action": "skill", "resource": "research", "effect": "allow" },
+    { "action": "skill", "resource": "karpathy-guidelines", "effect": "allow" },
+    { "action": "skill", "resource": "triage", "effect": "allow" },
+    { "action": "skill", "resource": "to-spec", "effect": "allow" },
+    { "action": "skill", "resource": "to-tickets", "effect": "allow" },
+    { "action": "skill", "resource": "domain-modeling", "effect": "allow" },
+    { "action": "skill", "resource": "codebase-design", "effect": "allow" },
+    { "action": "skill", "resource": "dependency-doctor", "effect": "allow" },
+    { "action": "skill", "resource": "scope-creep-detector", "effect": "allow" },
+    { "action": "skill", "resource": "resolving-merge-conflicts", "effect": "allow" },
+    { "action": "skill", "resource": "report", "effect": "allow" },
+    { "action": "skill", "resource": "handoff", "effect": "allow" },
+    { "action": "skill", "resource": "implement", "effect": "allow" },
+    { "action": "skill", "resource": "implement-spec", "effect": "allow" },
+    { "action": "skill", "resource": "frontend-design", "effect": "allow" },
+    { "action": "skill", "resource": "product-project-partner", "effect": "allow" }
+  ]
+}
