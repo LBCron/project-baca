@@ -243,7 +243,16 @@ impl AppConfig {
         let redis_url = env::var("REDIS_URL").unwrap_or(default_redis.url);
         let redis = RedisConfig { url: redis_url };
 
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or(default_auth.jwt_secret);
+        let jwt_secret = env::var("JWT_SECRET").unwrap_or(default_auth.jwt_secret.clone());
+        // Fail closed: a default or short secret in production would let anyone
+        // forge tokens, including admin ones.
+        if server.env.eq_ignore_ascii_case("production")
+            && (jwt_secret == AuthConfig::default().jwt_secret || jwt_secret.len() < 32)
+        {
+            panic!(
+                "JWT_SECRET must be set to a unique value of at least 32 characters in production"
+            );
+        }
         let access_expiry = env::var("JWT_ACCESS_EXPIRY_MINUTES")
             .ok()
             .and_then(|v| v.parse().ok())

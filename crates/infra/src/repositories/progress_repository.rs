@@ -142,6 +142,18 @@ pub async fn record_heartbeat(
     user_id: Uuid,
     req: &ReadingHeartbeatRequest,
 ) -> Result<ReadingHeartbeatResponse, AppError> {
+    let book_exists = books::Entity::find_by_id(req.book_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to verify book: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("Book not found: {}", req.book_id)))?;
+    if book_exists.status != "published" {
+        return Err(AppError::NotFound(format!(
+            "Book not found: {}",
+            req.book_id
+        )));
+    }
+
     let now = Utc::now();
     let today = now.date_naive();
 

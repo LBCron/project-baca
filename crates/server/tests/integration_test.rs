@@ -9,14 +9,13 @@ use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
 #[tokio::test]
-async fn test_integration_request_id_custom_propagation() {
+async fn test_integration_request_id_server_generated() {
     let harness = TestHarness::new().await;
-    let custom_id = "req_custom_trace_987654";
 
     let req = Request::builder()
         .method("GET")
         .uri("/health")
-        .header("x-request-id", custom_id)
+        .header("x-request-id", "req_custom_trace_987654")
         .body(Body::empty())
         .expect("Failed to build request");
 
@@ -29,7 +28,10 @@ async fn test_integration_request_id_custom_propagation() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert_eq!(returned_id, custom_id);
+    assert!(
+        Uuid::parse_str(returned_id).is_ok(),
+        "server must mint its own request id, got {returned_id}"
+    );
 }
 
 #[tokio::test]

@@ -522,8 +522,9 @@ pub async fn change_password(
         .await
         .map_err(HttpError::from)?;
 
-    // If requested, revoke other user sessions
-    if req.revoke_other_sessions.unwrap_or(false) {
+    // Revoking other sessions on password change is the safe default: a
+    // compromised password must not leave attacker sessions alive.
+    if req.revoke_other_sessions.unwrap_or(true) {
         let _ = revoke_all_user_sessions(
             &mut redis_conn,
             auth.id,

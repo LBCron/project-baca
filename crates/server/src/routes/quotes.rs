@@ -3,7 +3,7 @@
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -11,7 +11,7 @@ use axum::{
 use infra::{
     get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
     list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
-    search_quotes_by_embedding, verify_access_token,
+    search_quotes_by_embedding,
 };
 use shared::{
     ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteRequest,
@@ -51,7 +51,6 @@ pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
 )]
 pub async fn search_book_quotes(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Json(payload): Json<QuoteSearchRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
@@ -64,17 +63,6 @@ pub async fn search_book_quotes(
     get_book_by_id(&state.db, book_id)
         .await
         .map_err(HttpError)?;
-
-    // Inspect the token for future search telemetry.
-    let _maybe_user_id: Option<Uuid> = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(|token| {
-            verify_access_token(token, state.config.jwt_secret())
-                .ok()
-                .map(|c| c.sub)
-        });
 
     let limit = payload.limit.unwrap_or(5);
 
@@ -105,7 +93,7 @@ pub async fn search_book_quotes(
 
 // Saved Quotes Management & Vintage Quote Card
 
-/// Saves a quote; guests get guest_mode, members persist with a card URL.
+/// Saves a quote for the authenticated user and returns a card URL.
 #[utoipa::path(
     post,
     path = "/api/v1/quotes/save",
@@ -113,6 +101,7 @@ pub async fn search_book_quotes(
     responses(
         (status = 201, description = "Quote saved successfully"),
         (status = 400, description = "Validation error or chapter does not belong to the book"),
+        (status = 401, description = "Authentication required"),
         (status = 404, description = "Unknown book or chapter"),
         (status = 500, description = "Database error")
     ),
@@ -121,38 +110,18 @@ pub async fn search_book_quotes(
 )]
 pub async fn handle_save_quote(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    auth_user: AuthUser,
     Json(payload): Json<SaveQuoteRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
     payload
         .validate()
         .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
 
-    let maybe_user_id: Option<Uuid> = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(|token| {
-            verify_access_token(token, state.config.jwt_secret())
-                .ok()
-                .map(|c| c.sub)
-        });
-
-    let Some(user_id) = maybe_user_id else {
-        return Ok((
-            StatusCode::CREATED,
-            Json(ApiResponse::success(serde_json::json!({
-                "saved": false,
-                "reason": "guest_mode"
-            }))),
-        ));
-    };
-
     let id = Uuid::new_v4();
     let card_url = format!("/api/v1/quotes/{id}/card");
 
-    // Validate the (book_id, chapter_id) pair: 404 for unknown ids, 400 for
-    // cross-book mismatches — never a raw 500 FK violation.
+    // Validate the (book_id, chapter_id) pair: 404 for unknown or draft ids,
+    // 400 for cross-book mismatches — never a raw 500 FK violation.
     get_book_by_id(&state.db, payload.book_id)
         .await
         .map_err(HttpError)?;
@@ -169,7 +138,7 @@ pub async fn handle_save_quote(
     repo_save_quote(
         &state.db,
         id,
-        user_id,
+        auth_user.id,
         payload.book_id,
         payload.chapter_id,
         &payload.quote_text,
@@ -268,7 +237,8 @@ fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) ->
     )
 }
 
-/// Vintage SVG quote card for social sharing.
+/// Vintage SVG quote card for social sharing. Requires ownership: a quote is
+/// only rendered for the user who saved it.
 #[utoipa::path(
     get,
     path = "/api/v1/quotes/{quote_id}/card",
@@ -277,16 +247,19 @@ fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) ->
     ),
     responses(
         (status = 200, description = "Vintage quote card SVG image", content_type = "image/svg+xml"),
+        (status = 401, description = "Authentication required"),
         (status = 404, description = "Quote not found"),
         (status = 500, description = "Database error")
     ),
+    security(("BearerAuth" = [])),
     tag = "Semantic Search"
 )]
 pub async fn get_quote_card(
     State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
     Path(quote_id): Path<Uuid>,
 ) -> Result<Response, HttpError> {
-    let quote = get_saved_quote_by_id(&state.db, quote_id)
+    let quote = get_saved_quote_by_id(&state.db, quote_id, auth_user.id)
         .await
         .map_err(HttpError)?
         .ok_or_else(|| HttpError(AppError::NotFound("Saved quote not found".to_string())))?;

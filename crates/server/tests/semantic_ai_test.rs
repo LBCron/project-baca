@@ -32,6 +32,40 @@ fn one_hot(hot_index: usize) -> Vec<f32> {
     v
 }
 
+/// Second reader for ownership checks (a different user must not see the
+/// first user's private quotes).
+async fn seed_reader(harness: &TestHarness, email: &str) -> SeededReader {
+    let now = Utc::now();
+    let user_id = Uuid::new_v4();
+    users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.to_string()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Intruding Reader".to_string()),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Intruder seed must succeed");
+    let token = infra::generate_access_token(
+        user_id,
+        email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        1440,
+    )
+    .expect("Intruder token must generate");
+    SeededReader { token }
+}
+
+struct SeededReader {
+    pub token: String,
+}
+
 async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, String> {
     let now = Utc::now();
 
@@ -583,6 +617,23 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
         .await
         .expect("Seeding must succeed");
 
+    // Unauthenticated saves are rejected before any persistence.
+    let anon_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": "A quote with no credentials attached."
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+    let resp = harness.send_request(anon_req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
     // Unknown book_id must yield 404, not a 500 FK violation.
     let bogus_book_req = Request::builder()
         .method("POST")
@@ -670,29 +721,6 @@ async fn test_saved_quotes_and_vintage_card_export() {
         .await
         .expect("Seeding must succeed");
 
-    // Guest save (no Authorization header) returns 201 with guest_mode
-    let guest_req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/quotes/save")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            serde_json::json!({
-                "book_id": seeded.book_id,
-                "chapter_id": seeded.chapter1_id,
-                "quote_text": "The oldest and strongest emotion of mankind is fear."
-            })
-            .to_string(),
-        ))
-        .expect("Valid request");
-
-    let resp = harness.send_request(guest_req).await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["success"], true);
-    assert_eq!(json["data"]["saved"], false);
-    assert_eq!(json["data"]["reason"], "guest_mode");
-
     // Authenticated save persists quote and creates image_card_url
     let auth_save_req = Request::builder()
         .method("POST")
@@ -723,6 +751,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
     let card_req = Request::builder()
         .method("GET")
         .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
         .body(Body::empty())
         .expect("Valid request");
 
@@ -737,6 +766,26 @@ async fn test_saved_quotes_and_vintage_card_export() {
     assert!(svg_str.contains("<svg"));
     assert!(svg_str.contains("PROJECT BACA"));
     assert!(svg_str.contains("The oldest and strongest emotion"));
+
+    // Another user cannot render this quote card: same id, wrong owner.
+    let other = seed_reader(&harness, &format!("intruder_{}@baca.local", Uuid::new_v4())).await;
+    let intruder_req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", other.token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(intruder_req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Unauthenticated card access is rejected.
+    let anon_req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(anon_req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
     // Authenticated list retrieves saved quotes with image_card_url
     let list_req = Request::builder()

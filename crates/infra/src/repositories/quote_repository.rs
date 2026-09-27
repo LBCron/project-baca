@@ -203,21 +203,22 @@ pub async fn save_quote(
     Ok(())
 }
 
-/// Retrieve single saved quote by its ID.
+/// Retrieve single saved quote by its ID, scoped to the owning user.
 pub async fn get_saved_quote_by_id(
     db: &DatabaseConnection,
     id: Uuid,
+    user_id: Uuid,
 ) -> Result<Option<SavedQuoteDto>, AppError> {
     let sql = r#"
         SELECT id, book_id, chapter_id, quote_text, image_card_url, created_at
         FROM saved_quotes
-        WHERE id = $1
+        WHERE id = $1 AND user_id = $2
     "#;
 
     let stmt = Statement::from_sql_and_values(
         sea_orm::DatabaseBackend::Postgres,
         sql,
-        [sea_orm::Value::from(id)],
+        [sea_orm::Value::from(id), sea_orm::Value::from(user_id)],
     );
 
     let row = SavedQuoteRow::find_by_statement(stmt)

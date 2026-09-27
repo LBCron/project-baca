@@ -43,25 +43,41 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         let claims =
             verify_access_token(token, state.config.jwt_secret()).map_err(HttpError::from)?;
 
-        // Enforce OWASP Token Revocation & Blacklisting via Redis
-        if let Ok(mut redis_conn) = state.get_redis_conn().await {
-            if is_token_blacklisted(&mut redis_conn, claims.jti)
-                .await
-                .unwrap_or(false)
-            {
-                return Err(HttpError(AppError::Unauthorized(
-                    "Access token has been revoked. Please log in again.".to_string(),
-                )));
-            }
+        // Fail closed when auth state cannot be verified: a revoked token must
+        // never be accepted just because Redis is unreachable.
+        let mut redis_conn = state.get_redis_conn().await.map_err(|e| {
+            tracing::warn!(target: "server::auth", error = %e, "Redis unavailable; rejecting request");
+            HttpError(AppError::Unauthorized(
+                "Authentication service temporarily unavailable".to_string(),
+            ))
+        })?;
 
-            if is_user_token_revoked(&mut redis_conn, claims.sub, claims.iat)
-                .await
-                .unwrap_or(false)
-            {
-                return Err(HttpError(AppError::Unauthorized(
-                    "Session has been invalidated. Please log in again.".to_string(),
-                )));
-            }
+        if is_token_blacklisted(&mut redis_conn, claims.jti)
+            .await
+            .map_err(|e| {
+                tracing::warn!(target: "server::auth", error = %e, "Blacklist check failed; rejecting request");
+                HttpError(AppError::Unauthorized(
+                    "Authentication service temporarily unavailable".to_string(),
+                ))
+            })?
+        {
+            return Err(HttpError(AppError::Unauthorized(
+                "Access token has been revoked. Please log in again.".to_string(),
+            )));
+        }
+
+        if is_user_token_revoked(&mut redis_conn, claims.sub, claims.iat)
+            .await
+            .map_err(|e| {
+                tracing::warn!(target: "server::auth", error = %e, "Revocation check failed; rejecting request");
+                HttpError(AppError::Unauthorized(
+                    "Authentication service temporarily unavailable".to_string(),
+                ))
+            })?
+        {
+            return Err(HttpError(AppError::Unauthorized(
+                "Session has been invalidated. Please log in again.".to_string(),
+            )));
         }
 
         Ok(AuthUser {

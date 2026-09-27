@@ -25,6 +25,14 @@ async fn test_auth_full_lifecycle() {
         }
     };
 
+    // A unique IP per run keeps this flow out of the shared rate-limit
+    // bucket (the lifecycle alone issues ~10 auth requests).
+    let lifecycle_ip = format!(
+        "198.51.{}.{}",
+        200 + (Uuid::new_v4().as_u128() % 40) as u8,
+        200
+    );
+
     let test_email = format!("reader_{}@example.com", Uuid::new_v4());
     let test_password = "Password1234!";
 
@@ -38,6 +46,8 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
+        .header("cf-connecting-ip", &lifecycle_ip)
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -59,6 +69,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&wrong_otp_req).unwrap()))
         .unwrap();
@@ -82,6 +93,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&verify_req).unwrap()))
         .unwrap();
@@ -108,6 +120,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&login_req).unwrap()))
         .unwrap();
@@ -150,12 +163,14 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(updated_body["data"]["display_name"], "MasterBibliophile");
 
-    // Change Password (/api/v1/me/password)
+    // Change Password (/api/v1/me/password) with explicit opt-out of session
+    // revocation so the pre-change refresh token stays valid for the
+    // rotation assertions below.
     let new_password = "BrandNewSecurePassword123!";
     let change_pwd_req = ChangePasswordRequest {
         current_password: test_password.to_string(),
         new_password: new_password.to_string(),
-        revoke_other_sessions: None,
+        revoke_other_sessions: Some(false),
     };
     let req = Request::builder()
         .method("PUT")
@@ -175,6 +190,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&refresh_req).unwrap()))
         .unwrap();
@@ -193,6 +209,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&refresh_req).unwrap()))
         .unwrap();
@@ -206,23 +223,120 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/logout")
+        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {active_access_token}"))
         .body(Body::from(serde_json::to_vec(&logout_req).unwrap()))
         .unwrap();
     let (resp, logout_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(logout_body["success"], true);
 
+    // The access token used at logout is now blacklisted.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {active_access_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Re-login for the account-deletion step (the old token is revoked).
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header("cf-connecting-ip", &lifecycle_ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&LoginRequest {
+                email: test_email.clone(),
+                password: new_password.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, relogin_body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fresh_access_token = relogin_body["data"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
     // Delete Account
     let req = Request::builder()
         .method("DELETE")
         .uri("/api/v1/me")
-        .header("authorization", format!("Bearer {active_access_token}"))
+        .header("authorization", format!("Bearer {fresh_access_token}"))
         .body(Body::empty())
         .unwrap();
     let (resp, delete_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(delete_body["success"], true);
+}
+
+#[tokio::test]
+async fn test_change_password_revokes_sessions_by_default() {
+    let harness = TestHarness::new().await;
+    let user_id = Uuid::new_v4();
+    let email = format!("pwd_revoke_{user_id}@example.com");
+    let user = infra::entities::users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.clone()),
+        display_name: Set("PwdRevoker".to_string()),
+        password_hash: Set(None),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(chrono::Utc::now().into()),
+        updated_at: Set(chrono::Utc::now().into()),
+    };
+    if user.insert(&harness.state.db).await.is_err() {
+        println!("Database not reachable, skipping password-revoke test");
+        return;
+    }
+
+    let password = "OrigSecurePassword123!";
+    let stored = infra::hash_password_async(password.to_string())
+        .await
+        .unwrap();
+    infra::update_user_password(&harness.state.db, user_id, &stored)
+        .await
+        .unwrap();
+    let access_token = infra::generate_access_token(
+        user_id,
+        &email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        15,
+    )
+    .unwrap();
+
+    // Change password without the flag: other sessions must be revoked.
+    let change_req = ChangePasswordRequest {
+        current_password: password.to_string(),
+        new_password: "BrandNewSecurePassword456!".to_string(),
+        revoke_other_sessions: None,
+    };
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&change_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The pre-change access token is now revoked via user_revoked_before.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {access_token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -357,6 +471,70 @@ async fn test_auth_guest_progress_merge() {
         progress_res.try_get_by("completion_percentage").unwrap();
     let completion_f64: f64 = completion.to_string().parse().unwrap();
     assert_eq!(completion_f64, 75.0);
+
+    // Unknown book ids fail the whole batch with 404 and commit nothing.
+    let bad_merge = GuestMergeRequest {
+        records: vec![GuestProgressRecord {
+            book_id: Uuid::new_v4(),
+            last_chapter_id: chapter_id,
+            last_anchor_cfi: "epubcfi(/6/2[chapter1]!/4/2/40:15)".to_string(),
+            completion_percentage: 90.0,
+            is_finished: Some(false),
+            last_read_at: Some(chrono::Utc::now()),
+        }],
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/progress/merge")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&bad_merge).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Cross-book chapter ids are a 400, not a 500 FK violation.
+    let other_book_id = Uuid::new_v4();
+    let other_book = infra::entities::books::ActiveModel {
+        id: Set(other_book_id),
+        title: Set("Other Novel".to_string()),
+        author: Set("Someone".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Fiction".to_string()),
+        sub_theme: Set(None),
+        description: Set("Other.".to_string()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set("books/other.epub".to_string()),
+        total_words: Set(1000),
+        estimated_reading_minutes: Set(5),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set("published".to_string()),
+        created_at: Set(chrono::Utc::now().into()),
+        updated_at: Set(chrono::Utc::now().into()),
+    };
+    other_book.insert(&harness.state.db).await.unwrap();
+    let mismatch_merge = GuestMergeRequest {
+        records: vec![GuestProgressRecord {
+            book_id: other_book_id,
+            last_chapter_id: chapter_id,
+            last_anchor_cfi: "epubcfi(/6/2[chapter1]!/4/2/40:15)".to_string(),
+            completion_percentage: 90.0,
+            is_finished: Some(false),
+            last_read_at: Some(chrono::Utc::now()),
+        }],
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/progress/merge")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&mismatch_merge).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // Clean up
     let _ = harness

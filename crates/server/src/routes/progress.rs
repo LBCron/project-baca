@@ -9,9 +9,14 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use sea_orm::{entity::prelude::Decimal, ConnectionTrait, DatabaseBackend, Statement};
+use infra::entities::{books, chapters};
+use sea_orm::{
+    entity::prelude::Decimal, ConnectionTrait, DatabaseBackend, EntityTrait, Statement,
+    TransactionTrait,
+};
 use shared::{
-    ActiveProgressDto, ApiResponse, ErrorPayload, GuestMergeRequest, UpdateProgressRequest,
+    ActiveProgressDto, ApiResponse, AppError, ErrorPayload, GuestMergeRequest,
+    UpdateProgressRequest,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -93,17 +98,51 @@ pub async fn merge_guest_progress(
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
 
-    let mut merged_count = 0;
-
-    for record in req.records {
-        let decimal_str = format!("{:.2}", record.completion_percentage);
-        let completion: Decimal = decimal_str.parse().unwrap_or(Decimal::ZERO);
-        let last_read_at = record.last_read_at.unwrap_or_else(Utc::now);
-        let is_finished = record.is_finished.unwrap_or(false);
-
-        let stmt = Statement::from_sql_and_values(
-            DatabaseBackend::Postgres,
-            r#"
+    {
+        let txn = state.db.begin().await.map_err(HttpError::from)?;
+        for record in &req.records {
+            let book_exists = books::Entity::find_by_id(record.book_id)
+                .one(&txn)
+                .await
+                .map_err(|e| HttpError(AppError::Database(format!("Book lookup failed: {e}"))))?;
+            if book_exists.is_none() {
+                let _ = txn.rollback().await;
+                return Err(HttpError(AppError::NotFound(format!(
+                    "Book not found: {}",
+                    record.book_id
+                ))));
+            }
+            let chapter = chapters::Entity::find_by_id(record.last_chapter_id)
+                .one(&txn)
+                .await
+                .map_err(|e| {
+                    HttpError(AppError::Database(format!("Chapter lookup failed: {e}")))
+                })?;
+            match chapter {
+                None => {
+                    let _ = txn.rollback().await;
+                    return Err(HttpError(AppError::NotFound(format!(
+                        "Chapter not found: {}",
+                        record.last_chapter_id
+                    ))));
+                }
+                Some(c) if c.book_id != record.book_id => {
+                    let _ = txn.rollback().await;
+                    return Err(HttpError(AppError::BadRequest(
+                        "Chapter does not belong to the specified book".to_string(),
+                    )));
+                }
+                _ => {}
+            }
+            let decimal_str = format!("{:.2}", record.completion_percentage);
+            let completion: Decimal = decimal_str
+                .parse()
+                .map_err(|e| HttpError(AppError::BadRequest(format!("Invalid percentage: {e}"))))?;
+            let last_read_at = record.last_read_at.unwrap_or_else(Utc::now);
+            let is_finished = record.is_finished.unwrap_or(false);
+            let stmt = Statement::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                r#"
             INSERT INTO user_reading_progress (
                 id, user_id, book_id, last_chapter_id, last_anchor_cfi,
                 completion_percentage, is_finished, last_read_at, updated_at
@@ -117,21 +156,23 @@ pub async fn merge_guest_progress(
                 last_read_at = GREATEST(user_reading_progress.last_read_at, EXCLUDED.last_read_at),
                 updated_at = NOW();
             "#,
-            vec![
-                Uuid::new_v4().into(),
-                auth.id.into(),
-                record.book_id.into(),
-                record.last_chapter_id.into(),
-                record.last_anchor_cfi.into(),
-                completion.into(),
-                is_finished.into(),
-                last_read_at.into(),
-            ],
-        );
-
-        state.db.execute(stmt).await.map_err(HttpError::from)?;
-        merged_count += 1;
+                vec![
+                    Uuid::new_v4().into(),
+                    auth.id.into(),
+                    record.book_id.into(),
+                    record.last_chapter_id.into(),
+                    record.last_anchor_cfi.clone().into(),
+                    completion.into(),
+                    is_finished.into(),
+                    last_read_at.into(),
+                ],
+            );
+            txn.execute(stmt).await.map_err(HttpError::from)?;
+        }
+        txn.commit().await.map_err(HttpError::from)?;
     }
+
+    let merged_count = req.records.len() as i32;
 
     Ok((
         StatusCode::OK,

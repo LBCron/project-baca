@@ -53,6 +53,8 @@ pub async fn upload_book(
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&auth_user).map_err(HttpError)?;
 
+    // A caller-controlled job id would let anyone read arbitrary job hashes,
+    // so validate the path parameter strictly on the read side.
     let storage = state.storage.clone().ok_or_else(|| {
         HttpError(AppError::Internal(
             "Object storage unavailable; upload rejected".to_string(),
@@ -102,10 +104,18 @@ pub async fn upload_book(
             }
             file_bytes = Some((filename, buf));
         } else {
+            // Text fields arrive buffered by axum; cap them before the DB does
+            // so one giant field cannot exhaust server memory.
+            const MAX_TEXT_FIELD_BYTES: usize = 8 * 1024;
             let text = field
                 .text()
                 .await
                 .map_err(|e| HttpError(AppError::BadRequest(format!("Field read failed: {e}"))))?;
+            if text.len() > MAX_TEXT_FIELD_BYTES {
+                return Err(HttpError(AppError::BadRequest(format!(
+                    "Field '{name}' exceeds 8 KiB"
+                ))));
+            }
             match name.as_str() {
                 "title" => title = Some(text),
                 "author" => author = Some(text),
@@ -215,14 +225,17 @@ pub async fn ingestion_status(
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&auth_user).map_err(HttpError)?;
 
-    let status = get_job_status(&state.redis, &job_id)
+    let job_id = job_id.trim();
+    if Uuid::parse_str(job_id).is_err() {
+        return Err(HttpError(AppError::NotFound(
+            "Ingestion job not found".to_string(),
+        )));
+    }
+
+    let status = get_job_status(&state.redis, job_id)
         .await
         .map_err(HttpError)?
-        .ok_or_else(|| {
-            HttpError(AppError::NotFound(format!(
-                "Ingestion job not found: {job_id}"
-            )))
-        })?;
+        .ok_or_else(|| HttpError(AppError::NotFound("Ingestion job not found".to_string())))?;
 
     Ok((StatusCode::OK, Json(ApiResponse::success(status))))
 }

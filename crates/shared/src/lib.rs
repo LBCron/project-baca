@@ -170,7 +170,25 @@ pub struct UpdateProfileRequest {
         message = "Display name must be between 2 and 100 characters"
     ))]
     pub display_name: Option<String>,
+    #[validate(custom(function = "validate_avatar_url"))]
     pub avatar_url: Option<String>,
+}
+
+/// Avatar URLs are rendered by clients, never fetched server-side. Only
+/// `http(s)://` is accepted so `javascript:`/`data:` payloads cannot be
+/// stored for later XSS.
+pub fn validate_avatar_url(url: &str) -> Result<(), validator::ValidationError> {
+    if url.len() > 2048 {
+        let mut err = validator::ValidationError::new("avatar_url_too_long");
+        err.message = Some("Avatar URL must not exceed 2048 characters".into());
+        return Err(err);
+    }
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        let mut err = validator::ValidationError::new("avatar_url_scheme");
+        err.message = Some("Avatar URL must start with https:// or http://".into());
+        return Err(err);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

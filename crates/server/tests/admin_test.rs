@@ -307,6 +307,28 @@ async fn test_job_status_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn test_job_status_rejects_malformed_id() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    // Non-UUID ids are rejected without echoing the raw input back.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/jobs/not-a-job-id")
+        .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(!json["error"]["message"]
+        .as_str()
+        .unwrap_or("")
+        .contains("not-a-job-id"));
+}
+
 /// Seeds a book with 2 chapters and progress for 2 users (one finishes ch1
 /// only, the other reaches ch2). Returns the book id.
 async fn seed_funnel(harness: &TestHarness) -> Uuid {

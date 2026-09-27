@@ -107,5 +107,9 @@ async fn test_reliability_oversized_request_id_handling() {
 
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(resp.headers().contains_key("x-request-id"));
+    let returned = resp.headers()["x-request-id"].to_str().unwrap();
+    assert!(
+        Uuid::parse_str(returned).is_ok(),
+        "oversized client id must be replaced by a server UUID, got {returned}"
+    );
 }

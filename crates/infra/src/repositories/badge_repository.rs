@@ -141,7 +141,14 @@ pub async fn seed_default_badges_if_empty(db: &DatabaseConnection) -> Result<(),
             xp_reward: Set(xp),
             created_at: Set(now.into()),
         };
-        let _ = badge.insert(db).await;
+        // A concurrent cold start may win the race; unique violations are
+        // benign, anything else must surface instead of failing silently.
+        if let Err(e) = badge.insert(db).await {
+            let msg = e.to_string();
+            if !(msg.contains("duplicate") || msg.contains("unique") || msg.contains("conflict")) {
+                return Err(AppError::Database(format!("Failed to seed badge: {msg}")));
+            }
+        }
     }
 
     Ok(())

@@ -37,6 +37,18 @@ async fn test_owasp_security_headers_and_error_handling() {
         resp.headers().get("referrer-policy").unwrap(),
         "strict-origin-when-cross-origin"
     );
+    assert_eq!(
+        resp.headers().get("content-security-policy").unwrap(),
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    );
+    assert_eq!(
+        resp.headers().get("cross-origin-opener-policy").unwrap(),
+        "same-origin"
+    );
+    assert_eq!(
+        resp.headers().get("cross-origin-resource-policy").unwrap(),
+        "same-origin"
+    );
 
     // Structured validation errors on bad signup payload (CWE-209 prevention)
     let invalid_signup = serde_json::json!({

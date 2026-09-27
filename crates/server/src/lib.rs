@@ -168,22 +168,20 @@ impl utoipa::Modify for SecurityAddon {
 
 /// Middleware for request ID correlation (x-request-id) across tracing spans and HTTP responses
 pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> Response<Body> {
-    let request_id = match req.headers().get(&REQUEST_ID_HEADER) {
-        Some(id) => id.clone(),
-        None => {
-            let new_id = uuid::Uuid::new_v4().to_string();
-            HeaderValue::from_str(&new_id).unwrap_or_else(|_| HeaderValue::from_static("unknown"))
-        }
+    // Server-generated IDs are never trusted from the client: a caller-supplied
+    // id could collide or be used to probe correlation, so always mint fresh.
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let Ok(request_id_value) = HeaderValue::from_str(&request_id) else {
+        return next.run(req).await;
     };
 
-    let req_id_str = request_id.to_str().unwrap_or("unknown").to_string();
-    let span = tracing::info_span!("http_request", request_id = %req_id_str);
+    let span = tracing::info_span!("http_request", request_id = %request_id);
     let _guard = span.enter();
 
     let mut response = next.run(req).await;
     response
         .headers_mut()
-        .insert(REQUEST_ID_HEADER.clone(), request_id);
+        .insert(REQUEST_ID_HEADER.clone(), request_id_value);
     response
 }
 
@@ -209,6 +207,22 @@ pub async fn security_headers_middleware(
     headers.insert(
         HeaderName::from_static("x-xss-protection"),
         HeaderValue::from_static("0"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
     response
 }
