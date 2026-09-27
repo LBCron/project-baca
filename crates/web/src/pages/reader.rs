@@ -131,12 +131,25 @@ pub fn ReaderPage() -> impl IntoView {
         let cfi = anchor.get_untracked();
         spawn_local(async move {
             if let Ok(detail) = api::chapter(&id, number).await {
-                let update = shared::ReadingProgressUpdateDto {
-                    chapter_id: detail.id,
-                    last_anchor_cfi: cfi,
-                    completion_percentage: 0.0,
-                };
-                let _ = api::save_progress(&id, &update).await;
+                if crate::api::is_authed() {
+                    let update = shared::ReadingProgressUpdateDto {
+                        chapter_id: detail.id,
+                        last_anchor_cfi: cfi,
+                        completion_percentage: 0.0,
+                    };
+                    let _ = api::save_progress(&id, &update).await;
+                } else if let Ok(book) = id.parse::<uuid::Uuid>() {
+                    let record = shared::GuestProgressRecord {
+                        book_id: book,
+                        last_chapter_id: detail.id,
+                        last_anchor_cfi: cfi,
+                        completion_percentage: 0.0,
+                        is_finished: Some(false),
+                        last_read_at: None,
+                    };
+                    let _ =
+                        crate::storage::put(crate::storage::STORE_GUEST_PROGRESS, &record).await;
+                }
                 if let Ok(uuid) = id.parse::<uuid::Uuid>() {
                     if let Ok(resp) = api::heartbeat(&shared::ReadingHeartbeatRequest {
                         book_id: uuid,

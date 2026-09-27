@@ -25,10 +25,18 @@ def check(name, cond, detail=""):
 
 
 def api_book_id():
-    with urllib.request.urlopen(f"{API}/books?limit=1") as r:
+    with urllib.request.urlopen(f"{API}/books?limit=20") as r:
         data = json.load(r)["data"]
     assert data, "catalog empty, seed or ingest a book first"
-    return data[0]["id"]
+    for book in data:
+        try:
+            with urllib.request.urlopen(f"{API}/books/{book['id']}") as r:
+                detail = json.load(r)["data"]
+            if detail.get("chapters"):
+                return book["id"]
+        except Exception:
+            continue
+    raise AssertionError("no book with chapters found; ingest a sample EPUB first")
 
 
 async def main():

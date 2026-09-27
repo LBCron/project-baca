@@ -14,16 +14,17 @@ async fn upload_epub(file: web_sys::File, title: String, author: String) -> Resu
     form.append_with_str("author", &author)
         .map_err(|e| format!("{e:?}"))?;
     let body = wasm_bindgen::JsValue::from(form);
-    let resp = gloo_net::http::Request::post("http://localhost:8080/api/v1/admin/books/upload")
-        .header(
-            "Authorization",
-            &format!("Bearer {}", api::token().unwrap_or_default()),
-        )
-        .body(body)
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let resp =
+        gloo_net::http::Request::post(&format!("{}/admin/books/upload", crate::api::API_BASE))
+            .header(
+                "Authorization",
+                &format!("Bearer {}", api::token().unwrap_or_default()),
+            )
+            .body(body)
+            .map_err(|e| e.to_string())?
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
     let envelope = resp
         .json::<shared::ApiResponse<shared::UploadBookResponseDto>>()
         .await
@@ -35,7 +36,7 @@ async fn upload_epub(file: web_sys::File, title: String, author: String) -> Resu
 }
 
 async fn job_status(job_id: &str) -> Result<shared::JobStatusDto, String> {
-    let url = format!("http://localhost:8080/api/v1/admin/jobs/{job_id}");
+    let url = format!("{}/admin/jobs/{job_id}", crate::api::API_BASE);
     let builder = gloo_net::http::Request::get(&url);
     let authed = match api::token() {
         Some(t) => builder.header("Authorization", &format!("Bearer {t}")),

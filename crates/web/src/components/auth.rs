@@ -23,8 +23,16 @@ pub fn AuthModal(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                 storage::get_all::<GuestProgressRecord>(storage::STORE_GUEST_PROGRESS).await
             {
                 if !records.is_empty() {
-                    let _ = api::merge_guest_progress(&GuestMergeRequest { records }).await;
-                    let _ = storage::clear(storage::STORE_GUEST_PROGRESS).await;
+                    match api::merge_guest_progress(&GuestMergeRequest { records }).await {
+                        Ok(()) => {
+                            let _ = storage::clear(storage::STORE_GUEST_PROGRESS).await;
+                        }
+                        Err(e) => {
+                            web_sys::console::error_1(
+                                &format!("guest merge failed, kept locally: {e}").into(),
+                            );
+                        }
+                    }
                 }
             }
             on_authed.run(());

@@ -131,6 +131,9 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                                 <p class="book-synopsis">"No quotes yet — this copy has no indexed passages."</p>
                             })
                         }}
+                        {move || (!crate::api::is_authed() && !results.get().is_empty()).then(|| view! {
+                            <p class="book-synopsis">"Sign in to save quotes to your shelf."</p>
+                        })}
                         {move || results.get().into_iter().map(|r| {
                             let book = book_for_rows.get_value();
                             let jump = format!("/read/{book}?chapter={}", r.chapter_number);

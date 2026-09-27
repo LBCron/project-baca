@@ -14,7 +14,7 @@ use shared::{
 use wasm_bindgen::JsCast;
 use web_sys::window;
 
-const API_BASE: &str = "http://localhost:8080/api/v1";
+pub const API_BASE: &str = "http://localhost:8080/api/v1";
 const TOKEN_KEY: &str = "baca_access_token";
 const REFRESH_KEY: &str = "baca_refresh_token";
 
@@ -99,16 +99,25 @@ async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result
     })
 }
 
+fn encode_param(value: &str) -> String {
+    js_sys::encode_uri_component(value)
+        .as_string()
+        .unwrap_or_default()
+}
+
 pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, String> {
     let mut url = format!("{API_BASE}/books?limit={}", query.limit.unwrap_or(20));
     if let Some(cursor) = &query.cursor {
-        url.push_str(&format!("&cursor={cursor}"));
+        url.push_str(&format!("&cursor={}", encode_param(&cursor.to_string())));
     }
     if let Some(language) = &query.language {
-        url.push_str(&format!("&language={language}"));
+        url.push_str(&format!("&language={}", encode_param(language)));
     }
     if let Some(theme) = &query.theme {
-        url.push_str(&format!("&theme={theme}"));
+        url.push_str(&format!("&theme={}", encode_param(theme)));
+    }
+    if let Some(tag) = &query.tag {
+        url.push_str(&format!("&tag={}", encode_param(tag)));
     }
     let envelope = Request::get(&url)
         .send()
@@ -125,7 +134,7 @@ pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, St
 pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>, String> {
     let url = format!(
         "{API_BASE}/books/search?q={}&limit={}",
-        query.q,
+        encode_param(&query.q),
         query.limit.unwrap_or(10)
     );
     let envelope = Request::get(&url)
