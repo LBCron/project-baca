@@ -18,8 +18,8 @@
     "semantic_hash": ""
   },
   "knowledge/erd.md": {
-    "mtime": 1790502866.8586414,
-    "seen": 1790504063.0588593,
+    "mtime": 1790505160.616697,
+    "seen": 1790525752.0224268,
     "ast_hash": "47905b4b122ed2aa0c43ce9532a5106f",
     "semantic_hash": ""
   },
@@ -42,8 +42,8 @@
     "semantic_hash": ""
   },
   "knowledge/srs.md": {
-    "mtime": 1790502831.115103,
-    "seen": 1790504063.0591009,
+    "mtime": 1790505154.8935177,
+    "seen": 1790525752.0228024,
     "ast_hash": "03c83229cc99b600eafda3f5361daa27",
     "semantic_hash": ""
   },
@@ -114,9 +114,9 @@
     "semantic_hash": "1a26c370e32e83a41844535fa92252bf"
   },
   "knowledge/log.md": {
-    "mtime": 1790504968.4810522,
-    "seen": 1790505136.15058,
-    "ast_hash": "27e4073ef3d11ec33d4038cf5b18f5ab",
+    "mtime": 1790525188.6939125,
+    "seen": 1790525752.022507,
+    "ast_hash": "17fae68eab61837754fbc83e97109e01",
     "semantic_hash": ""
   },
   "crates/domain/Cargo.toml": {
@@ -168,16 +168,16 @@
     "semantic_hash": ""
   },
   "crates/web/Cargo.toml": {
-    "mtime": 1790355115.7605588,
-    "seen": 1790356301.8309765,
-    "ast_hash": "10ea21c161b498a2d0ebeb20739908f6",
-    "semantic_hash": "10ea21c161b498a2d0ebeb20739908f6"
+    "mtime": 1790522016.8285835,
+    "seen": 1790525752.0211284,
+    "ast_hash": "c532aeb4623d9d0f3ddae0cc5c3afcd6",
+    "semantic_hash": ""
   },
   "crates/web/src/lib.rs": {
-    "mtime": 1790402591.323741,
-    "seen": 1790405608.193864,
-    "ast_hash": "81bb48d54300744ef4d805a8c6320ec5",
-    "semantic_hash": "81bb48d54300744ef4d805a8c6320ec5"
+    "mtime": 1790524762.7766607,
+    "seen": 1790525752.0211468,
+    "ast_hash": "d46bcb294df3d9922581d867b52e19a2",
+    "semantic_hash": ""
   },
   "crates/web/src/main.rs": {
     "mtime": 1790355168.8014588,
@@ -186,16 +186,16 @@
     "semantic_hash": "7aa2c064071de4dcbeba48d0f6c658f7"
   },
   "assets/README.md": {
-    "mtime": 1790402952.1669657,
-    "seen": 1790405608.1939955,
-    "ast_hash": "e223380b9098ee7821a18dbd0546317d",
-    "semantic_hash": "e223380b9098ee7821a18dbd0546317d"
+    "mtime": 1790520705.2964816,
+    "seen": 1790525752.0222924,
+    "ast_hash": "a0fdbedab64da7dd988dddbcfebe618d",
+    "semantic_hash": ""
   },
   "crates/web/index.html": {
-    "mtime": 1790402705.0600088,
-    "seen": 1790405608.1939971,
-    "ast_hash": "5f55b37c11f2f11a7b75208d859f4ae2",
-    "semantic_hash": "5f55b37c11f2f11a7b75208d859f4ae2"
+    "mtime": 1790521018.5802224,
+    "seen": 1790525752.0222945,
+    "ast_hash": "937684ea9bf75d0970e5f65dd95fbcfa",
+    "semantic_hash": ""
   },
   "scripts/migrate.sh": {
     "mtime": 1790402383.4186044,
@@ -222,14 +222,14 @@
     "semantic_hash": ""
   },
   "knowledge/tasks/04_semantic_ai_and_insights.md": {
-    "mtime": 1790502941.3976438,
-    "seen": 1790504063.059109,
+    "mtime": 1790505153.5122287,
+    "seen": 1790525752.0229452,
     "ast_hash": "ab5c6899c05f3c28741db12c79de75c2",
     "semantic_hash": ""
   },
   "knowledge/tasks/05_ingestion_pipeline_and_admin.md": {
-    "mtime": 1790502955.3534722,
-    "seen": 1790504063.0591106,
+    "mtime": 1790505152.6848357,
+    "seen": 1790525752.0229473,
     "ast_hash": "c8ba520ccc4f3cbff16c3bf487bd8dd6",
     "semantic_hash": ""
   },
@@ -240,8 +240,8 @@
     "semantic_hash": ""
   },
   "knowledge/tasks/07_quality_assurance_and_launch.md": {
-    "mtime": 1790502883.8704178,
-    "seen": 1790504063.0591142,
+    "mtime": 1790505151.5918546,
+    "seen": 1790525752.022996,
     "ast_hash": "a1df48f8efd0d0bb0049c3453d462a5f",
     "semantic_hash": ""
   },
@@ -582,20 +582,20 @@
     "semantic_hash": ""
   },
   "knowledge/manual-test/01_infrastructure.md": {
-    "mtime": 1790501173.4570534,
-    "seen": 1790504063.0589077,
+    "mtime": 1790505159.6392357,
+    "seen": 1790525752.0225098,
     "ast_hash": "95a751ad44557ed831db5aba669292cb",
     "semantic_hash": ""
   },
   "knowledge/manual-test/02_authentication.md": {
-    "mtime": 1790502923.3888888,
-    "seen": 1790504063.0589097,
+    "mtime": 1790505159.05051,
+    "seen": 1790525752.0225122,
     "ast_hash": "85a3c97bf58c284e169e2c4732967bba",
     "semantic_hash": ""
   },
   "knowledge/manual-test/03_catalog_and_reader.md": {
-    "mtime": 1790501218.1047182,
-    "seen": 1790504063.0589123,
+    "mtime": 1790505158.413281,
+    "seen": 1790525752.0225143,
     "ast_hash": "8ee706fe57895d3efc61772e4254c6c2",
     "semantic_hash": ""
   },
@@ -804,39 +804,249 @@
     "semantic_hash": ""
   },
   "knowledge/manual-test/04_semantic_ai.md": {
-    "mtime": 1790501236.9488068,
-    "seen": 1790504063.0589147,
-    "ast_hash": "9cb9d119389d1508ffd964facb267210",
+    "mtime": 1790505157.7634594,
+    "seen": 1790525752.0225163,
+    "ast_hash": "a6052b288b68586e538e0e31dd99a402",
     "semantic_hash": ""
   },
   "knowledge/manual-test/05_ingestion_and_admin.md": {
-    "mtime": 1790501260.5093446,
-    "seen": 1790504063.0589168,
+    "mtime": 1790505157.1573603,
+    "seen": 1790525752.022518,
     "ast_hash": "8467bebacb55cd303e118a1bf3d096d5",
     "semantic_hash": ""
   },
   "knowledge/planning/README.md": {
-    "mtime": 1790504910.182069,
-    "seen": 1790505136.1509955,
-    "ast_hash": "70516b9acc64dcba53e80dcac094982d",
+    "mtime": 1790520621.268088,
+    "seen": 1790525752.022568,
+    "ast_hash": "38c2dc6e537357cdf951a80592e6050c",
     "semantic_hash": ""
   },
   "knowledge/planning/backlog.md": {
-    "mtime": 1790504920.6708863,
-    "seen": 1790505136.150998,
-    "ast_hash": "cbf03b32210284985d7b110d78a09295",
+    "mtime": 1790520561.6112974,
+    "seen": 1790525752.0225694,
+    "ast_hash": "ed5118ba5db5c5c66534c034a53ce2c3",
     "semantic_hash": ""
   },
   "knowledge/planning/ideas.md": {
-    "mtime": 1790504939.485558,
-    "seen": 1790505136.1509998,
-    "ast_hash": "d5ac0271b8a0c6b652242be70209d4a4",
+    "mtime": 1790505156.2308624,
+    "seen": 1790525752.0225735,
+    "ast_hash": "fbd3664314b5d58f9d0a6412e7e66afb",
     "semantic_hash": ""
   },
   "knowledge/planning/tech-debt.md": {
-    "mtime": 1790504930.8487086,
-    "seen": 1790505136.1510017,
-    "ast_hash": "509ec6999d2640af7ffb73e86c99cc1a",
+    "mtime": 1790505155.7115657,
+    "seen": 1790525752.0225782,
+    "ast_hash": "40f20ce5cb897ea43a4737091089d3c4",
+    "semantic_hash": ""
+  },
+  "crates/web/src/api/mod.rs": {
+    "mtime": 1790521969.953884,
+    "seen": 1790525752.021133,
+    "ast_hash": "423ee6364577d9a7ec2c2daf0144aae1",
+    "semantic_hash": ""
+  },
+  "crates/web/src/components/auth.rs": {
+    "mtime": 1790524557.099084,
+    "seen": 1790525752.0211356,
+    "ast_hash": "44d4c65c6815435532f92cebd87e50d8",
+    "semantic_hash": ""
+  },
+  "crates/web/src/components/header.rs": {
+    "mtime": 1790524716.7710643,
+    "seen": 1790525752.021138,
+    "ast_hash": "7d5f1a6b217a651fd208c0e030748ad2",
+    "semantic_hash": ""
+  },
+  "crates/web/src/components/insights.rs": {
+    "mtime": 1790524628.173349,
+    "seen": 1790525752.0211396,
+    "ast_hash": "8e27ccbed42ca85882e3a5f354ef7be2",
+    "semantic_hash": ""
+  },
+  "crates/web/src/components/mod.rs": {
+    "mtime": 1790524449.2648544,
+    "seen": 1790525752.021142,
+    "ast_hash": "e583e14846fb0c048b3e4f85248cde02",
+    "semantic_hash": ""
+  },
+  "crates/web/src/i18n/mod.rs": {
+    "mtime": 1790524414.6493227,
+    "seen": 1790525752.0211434,
+    "ast_hash": "eca8e12b5c96a7fd574dc6143661aba0",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/admin.rs": {
+    "mtime": 1790524487.3184943,
+    "seen": 1790525752.021208,
+    "ast_hash": "ce8e872fb8722ca606635cb2e4d79ae3",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/book.rs": {
+    "mtime": 1790524991.378952,
+    "seen": 1790525752.0212102,
+    "ast_hash": "bd773480e45a4b4dd153b0d54f673fa1",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/home.rs": {
+    "mtime": 1790524426.6631608,
+    "seen": 1790525752.021212,
+    "ast_hash": "e322f62ae26c135a1f890d686a65b709",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/mod.rs": {
+    "mtime": 1790521977.9056625,
+    "seen": 1790525752.0212142,
+    "ast_hash": "0b77aee049f3c4d90d3ee33e8b8e98e8",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/profile.rs": {
+    "mtime": 1790524672.1997137,
+    "seen": 1790525752.0212157,
+    "ast_hash": "a496c583d3ad777429c851cbfa12e25b",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/reader.rs": {
+    "mtime": 1790524657.1419315,
+    "seen": 1790525752.0212173,
+    "ast_hash": "914e65a4712d48f5424d1d09f00b95cd",
+    "semantic_hash": ""
+  },
+  "crates/web/src/storage/mod.rs": {
+    "mtime": 1790524700.1473072,
+    "seen": 1790525752.0212202,
+    "ast_hash": "bab8ab8d2b6ab4b75a177f72d38c93d0",
+    "semantic_hash": ""
+  },
+  "crates/web/tests_e2e/m6_reader.py": {
+    "mtime": 1790522415.9748511,
+    "seen": 1790525752.021222,
+    "ast_hash": "64d5340739b6ddbd80a7a7aac35de552",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/REPORT.md": {
+    "mtime": 1790525175.402119,
+    "seen": 1790525752.0225654,
+    "ast_hash": "edbef336238849fc180c05dd322dacc2",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/brand-rotaria.md": {
+    "mtime": 1790520635.421801,
+    "seen": 1790525752.0225716,
+    "ast_hash": "831a1c0dba41a9f35c431323e46915d3",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/research-genz-engagement.md": {
+    "mtime": 1790519935.7209847,
+    "seen": 1790525752.0225751,
+    "ast_hash": "91017f9667843db0abe2ac7f0363d318",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/research-rotaria-brand.md": {
+    "mtime": 1790520527.8269823,
+    "seen": 1790525752.0225766,
+    "ast_hash": "b7f3e2abf111c65bf89ab49627e13407",
+    "semantic_hash": ""
+  },
+  "assets/illustrations/rotaria-windmill.svg": {
+    "mtime": 1790520677.209954,
+    "seen": 1790525752.0233905,
+    "ast_hash": "6c620298b924ac694d7a354c8a7d43b8",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/01-home.png": {
+    "mtime": 1790524157.6331418,
+    "seen": 1790525752.0234394,
+    "ast_hash": "10cd7db4d2af964d2b5629e85ece66b6",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/02-home-carousel.png": {
+    "mtime": 1790524157.751226,
+    "seen": 1790525752.0234413,
+    "ast_hash": "10cd7db4d2af964d2b5629e85ece66b6",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/03-overview.png": {
+    "mtime": 1790524161.157885,
+    "seen": 1790525752.0234432,
+    "ast_hash": "cc7c61c2fa21eaf4f2657944ac8860f0",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/04-quote-finder.png": {
+    "mtime": 1790524165.9281125,
+    "seen": 1790525752.023445,
+    "ast_hash": "4618ea550b925d15f27258a58241a2f9",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/05-atomic.png": {
+    "mtime": 1790524171.3434944,
+    "seen": 1790525752.0234463,
+    "ast_hash": "28783275ff576d824d204ca5c629d6a8",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/06-reader.png": {
+    "mtime": 1790524174.738963,
+    "seen": 1790525752.0234478,
+    "ast_hash": "4babdf7472a133c97cfd2389e5750cb7",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/07-reader-drawer.png": {
+    "mtime": 1790524175.39236,
+    "seen": 1790525752.0234494,
+    "ast_hash": "fa1aba4e313d8a155ec73fcc579255f9",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/08-profile.png": {
+    "mtime": 1790524178.2114117,
+    "seen": 1790525752.0234513,
+    "ast_hash": "2f9cabce0c96cdfb50ebe9c7d04a9648",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/09-admin.png": {
+    "mtime": 1790524180.50571,
+    "seen": 1790525752.0234535,
+    "ast_hash": "decf088cd430b98cf9f809a39c9be8bc",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/10-saved-offline.png": {
+    "mtime": 1790524285.2511132,
+    "seen": 1790525752.0234547,
+    "ast_hash": "7c08ef484fcba0b0acfa67be288c6567",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/11-reader-ch2.png": {
+    "mtime": 1790524296.606206,
+    "seen": 1790525752.0234563,
+    "ast_hash": "3eea8bec01c497be8ccdafad90e13547",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/12-auth-register.png": {
+    "mtime": 1790524302.4656491,
+    "seen": 1790525752.0234578,
+    "ast_hash": "e979a6c7cdceffbd063115853b39fd69",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/20-quote-empty.png": {
+    "mtime": 1790525082.6334188,
+    "seen": 1790525752.0234654,
+    "ast_hash": "5c49a9614602db4601b31d288c0f51ec",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/21-drawer-styled.png": {
+    "mtime": 1790525086.426576,
+    "seen": 1790525752.0234673,
+    "ast_hash": "a739002f1d7d4287608a4685dcfd26f6",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/22-saved.png": {
+    "mtime": 1790525094.3296983,
+    "seen": 1790525752.0234685,
+    "ast_hash": "4d9d4185eba9dd84dc93f67b2cf13f84",
+    "semantic_hash": ""
+  },
+  "knowledge/output/audit-2026-09-27/23-profile-cta.png": {
+    "mtime": 1790525097.1815772,
+    "seen": 1790525752.0234704,
+    "ast_hash": "547a6e0663094453f0babd76a0ef6428",
     "semantic_hash": ""
   }
 }
