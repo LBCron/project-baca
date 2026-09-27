@@ -1,0 +1,34 @@
+# Project Baca — Caddy Edge Gateway (Sub-Task 6.8)
+#
+# Terminates HTTP/3 (QUIC over UDP 443) and HTTP/2 (TCP 443) with automatic
+# HTTPS; Axum backend stays pure stateless TCP. Caddy emits
+# `Alt-Svc: h3=":443"` by default on HTTPS sites, negotiating transparent
+# QUIC upgrades with HTTP/2-over-TCP fallback for UDP-blocked networks.
+#
+# DEVELOPMENT (default): Caddy runs on the host alongside `make dev-server`
+# (Axum :8080) and `make dev-web` (Trunk :3000). Targets use
+# `host.docker.internal` so the container reaches host-bound dev servers.
+# Run: docker run -p 80:80 -p 443:443 -p 443:443/udp \
+#        -v $PWD/Caddyfile:/etc/caddy/Caddyfile caddy:2-alpine
+# Visit https://localhost (self-signed via Caddy local CA).
+#
+# PRODUCTION: replace the two `reverse_proxy` targets with the compose
+# service names (`http://server:8080`, `http://web:3000`) and set a real
+# domain below. No other change needed.
+{
+	auto_https disable_certs
+}
+
+https://localhost {
+	tls internal
+
+	# Axum REST API + Swagger UI.
+	handle /api/* {
+		reverse_proxy host.docker.internal:8080
+	}
+
+	# Leptos WASM SPA (Trunk dev server, hot reload + WASM bundles).
+	handle /* {
+		reverse_proxy host.docker.internal:3000
+	}
+}

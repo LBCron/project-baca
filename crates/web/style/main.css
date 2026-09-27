@@ -21,7 +21,13 @@
     /* Typography */
     --font-serif-reading: 'Newsreader', 'EB Garamond', Georgia, 'Times New Roman', serif;
     --font-serif-display: 'EB Garamond', 'Newsreader', Georgia, serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-mono: 'Courier Prime', 'JetBrains Mono', monospace;
+
+    /* Reader typography bounds (Sub-Task 6.5 drawer range) */
+    --reader-font-min: 14px;
+    --reader-font-max: 22px;
+    --reader-line-min: 1.5;
+    --reader-line-max: 1.9;
 
     /* Shadows & Elevation */
     --shadow-soft: 0 4px 20px rgba(43, 38, 37, 0.06);
@@ -282,3 +288,39 @@ body::before {
     margin-bottom: 8px;
     font-size: 1.1rem;
 }
+
+/* Dark Roast theme (default reading theme, Sub-Task 6.1) */
+body.theme-dark-roast {
+    --color-paper-bg: #1F1916;
+    --color-paper-card: #29211C;
+    --color-paper-subtle: #362C27;
+    --color-border-parchment: #362C27;
+    --color-ink-primary: #F0EAE1;
+    --color-ink-muted: #C9BFAE;
+    --color-ink-faint: #8A7D72;
+    --color-accent-terracotta: #CE734E;
+    --color-accent-leather: #C89D7C;
+    --color-accent-gold: #C89D7C;
+    --shadow-card: 0 6px 16px rgba(0, 0, 0, 0.35);
+    --shadow-hover: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* Reflowable reader viewport (Sub-Task 6.5) */
+.reader-viewport {
+    column-width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    font-size: var(--reader-font-size, 18px);
+    line-height: var(--reader-line-height, 1.7);
+}
+
+.reader-zone {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 10;
+}
+
+.reader-zone-prev { left: 0; width: 20%; }
+.reader-zone-next { right: 0; width: 20%; }
+.reader-zone-menu { left: 20%; right: 20%; }
