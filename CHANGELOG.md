@@ -11,7 +11,12 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - **Dev Backfill Tool:** `crates/infra/examples/backfill_chunks.rs` for one-shot chapter embedding ahead of the streaming worker.
 - **Admin & Worker Test Suites:** 10 admin integration tests against live MinIO (RBAC, validation, oversize, job lifecycle incl. malformed ids, funnel math); 9 worker unit tests with zero service dependencies; live DLQ E2E (`make worker-test-live`); test-debris janitor (`make purge-test-debris`).
 
+### Added
+- **Milestone 06 (Leptos Web Reader, Rotaria P1-P7):** 5 routes (`/`, `/book/:id`, `/read/:id`, `/me`, `/admin`); Rotaria brand + windmill mark + carousel hero; 19-key ID/EN dictionary (`rotaria_lang` persist); live catalog + 250ms search + Load More; CFI reader + heartbeat/streak toast; auth modal + guest auto-merge; quote finder + atomic/recap drawers + PNG export; `/me` profile (badges, quotes, logout); `/admin` EPUB upload + job monitor; local Caddyfile (`caddy validate`); `make test-web-e2e` gate (22 Playwright checks); pre-M7 audit evidence in `knowledge/output/audit-2026-09-27/`.
+
 ### Fixed
+- **Save Offline dead path (TD-06):** `offline_books` keyPath `book_id` mismatched `BookDetailDto.id` (now `id`, DB v1->v2); untyped `serde_json::Value` chapter records replaced with typed `OfflineChapterRecord`.
+- **Web chrome consistency (TD-07):** shared `SiteHeader`, serif `.btn-ghost` secondary buttons, terracotta slider accent, guest profile CTA, `‹ Overview` reader bar + tap-zone hint footer, quote empty-state.
 - **Quote API contracts:** Unknown-book search returns 404 (was 200 `[]`); quote save validates the (book, chapter) pair (was 500 on foreign-key violation); saving and card rendering require auth with per-owner scoping (ADR-21; guest mode removed).
 - **Audit hardening (ADR-21):** Guest merge transactional with pair validation; heartbeat rejects unknown/draft books; auth fails closed on Redis outage; JWT default secret panics in production; OTP redacted from logs; avatar URL allowlist; server-minted request ids; CSP/COOP/CORP headers; password change revokes other sessions by default.
 - **Pre-M6 paydown (ADR-22):** SHA-256 refresh storage + replay-triggered family revocation; heartbeat anti-farm (1/60s, 429); admin orphan compensation; Swagger off in production; CORS narrowed; catalog tags N+1 batched; OTP SLA corrected 40ms → 100ms with warmup.
