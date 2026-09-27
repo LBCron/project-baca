@@ -15,8 +15,9 @@ use axum::{
     Json, Router,
 };
 use infra::{
-    get_book_by_id, get_saved_quote_by_id, list_saved_quotes as repo_list_saved_quotes,
-    save_quote as repo_save_quote, search_quotes_by_embedding, verify_access_token,
+    get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
+    list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
+    search_quotes_by_embedding, verify_access_token,
 };
 use shared::{ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteRequest, SavedQuoteResponseDto};
 use std::sync::Arc;
@@ -82,6 +83,12 @@ pub async fn search_book_quotes(
         .validate()
         .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
 
+    // Contracted 404 (OpenAPI + SRS 17): fail fast on an unknown book before
+    // spending embedding budget on a query that can only return [].
+    get_book_by_id(&state.db, book_id)
+        .await
+        .map_err(HttpError)?;
+
     // Optional user authentication inspection (for future search telemetry / reading progress)
     let _maybe_user_id: Option<Uuid> = headers
         .get("authorization")
@@ -138,7 +145,8 @@ pub async fn search_book_quotes(
     request_body = SaveQuoteRequest,
     responses(
         (status = 201, description = "Quote saved successfully"),
-        (status = 400, description = "Validation error"),
+        (status = 400, description = "Validation error or chapter does not belong to the book"),
+        (status = 404, description = "Unknown book or chapter"),
         (status = 500, description = "Database error")
     ),
     security(("BearerAuth" = [])),
@@ -175,6 +183,21 @@ pub async fn handle_save_quote(
 
     let id = Uuid::new_v4();
     let card_url = format!("/api/v1/quotes/{id}/card");
+
+    // Validate the (book_id, chapter_id) pair: 404 for unknown ids, 400 for
+    // cross-book mismatches — never a raw 500 FK violation.
+    get_book_by_id(&state.db, payload.book_id)
+        .await
+        .map_err(HttpError)?;
+    let chapter_book_id = get_chapter_book_id(&state.db, payload.chapter_id)
+        .await
+        .map_err(HttpError)?;
+    if chapter_book_id != payload.book_id {
+        return Err(HttpError(AppError::ValidationError(format!(
+            "Chapter {} does not belong to book {}",
+            payload.chapter_id, payload.book_id
+        ))));
+    }
 
     repo_save_quote(
         &state.db,

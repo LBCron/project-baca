@@ -244,6 +244,24 @@ pub async fn get_book_by_id(
     })
 }
 
+/// Returns the owning `book_id` for a chapter UUID.
+///
+/// Used to validate (book_id, chapter_id) pairs on write paths (e.g. saving a
+/// quote): 404 when the chapter does not exist, letting the caller reject
+/// cross-book mismatches with a 400 instead of leaking a 500 FK violation.
+pub async fn get_chapter_book_id(
+    db: &DatabaseConnection,
+    chapter_id: Uuid,
+) -> Result<Uuid, AppError> {
+    let chapter = chapters::Entity::find_by_id(chapter_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?
+        .ok_or_else(|| AppError::NotFound(format!("Chapter not found: {chapter_id}")))?;
+
+    Ok(chapter.book_id)
+}
+
 /// Retrieves single chapter content by chapter number.
 pub async fn get_chapter_by_number(
     db: &DatabaseConnection,

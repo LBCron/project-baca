@@ -48,8 +48,7 @@ project-baca/
 │
 ├── migrations/                      # Paired SQL migrations (.up.sql & .down.sql)
 │
-├── crates/                          # Rust workspace crates
-│   ├── domain/                      # Pure domain models and entities (Book, User, Progress)
+├── crates/                          # Rust workspace crates (shared, infra, server, web)
 │   ├── shared/                      # DTOs, validation, and API contracts (Axum & WASM)
 │   ├── infra/                       # Database pool (SeaORM), Redis, MinIO client
 │   ├── server/                      # HTTP API gateway (Axum REST, OpenAPI, Auth)
@@ -60,8 +59,10 @@ project-baca/
 
 ## 3. Rust-Friendly Domain-Driven Design (DDD)
 
-* **Current state (honest):** `crates/domain` holds plain serializable models (`User`, `Book`, `Chapter`, …) mirroring the SeaORM entities. It is not yet consumed by `infra`/`server` — there is no enforced boundary today.
-* **Deferred per YAGNI:** Newtype IDs (e.g., `BookId(Uuid)`) and repository port traits (e.g., `trait BookRepository`) stay out until real business logic needs them. Repositories currently live directly in `crates/infra/src/repositories/`:
+* **Current state (honest):** the former `crates/domain` (plain serializable models
+  mirroring the SeaORM entities, consumed by nothing) was deleted 2026-09-27 as
+  dead code. There is no enforced domain boundary today.
+* **Deferred per YAGNI:** Newtype IDs (e.g., `BookId(Uuid)`) and repository port traits stay out until real business logic needs them. Repositories live directly in `crates/infra/src/repositories/`:
   ```rust
   // Target shape when the boundary earns its keep:
   pub trait BookRepository: Send + Sync {
@@ -139,7 +140,7 @@ project-baca/
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
 4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist).
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Planned — Task 06; no Caddyfile or compose service exists yet.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
@@ -161,7 +162,7 @@ project-baca/
 ## 10. Core Engineering Invariants
 
 1. **ROBUST:**
-   - Zero panics in production Rust code (`unwrap()` and `expect()` prohibited in `crates/server`, `crates/domain`, `crates/infra`, `crates/shared`, `crates/web`). Errors handled through `Result<T, AppError>`.
+   - Zero panics in production Rust code (`unwrap()` and `expect()` prohibited in `crates/server`, `crates/infra`, `crates/shared`, `crates/web`). Errors handled through `Result<T, AppError>`.
    - Foreign key cascading constraints and check constraints enforced in PostgreSQL.
    - Graceful offline fallback in Leptos WASM via IndexedDB.
 2. **SCALABLE:**
@@ -169,7 +170,7 @@ project-baca/
    - Scoped semantic search per book (`WHERE book_id = $1`).
    - Partial GIN index filtering only active books (`WHERE status = 'published'`).
 3. **EASY TO MAINTAIN:**
-   - Modular crate boundaries (`domain`, `shared`, `infra`, `server`, `web`).
+   - Modular crate boundaries (`shared`, `infra`, `server`, `web`).
    - Paired reversible SQL migrations.
    - Centralized Makefile automation.
 4. **DRY (Don't Repeat Yourself):**

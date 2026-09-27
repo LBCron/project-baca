@@ -20,6 +20,7 @@ struct SeededAiContext {
     pub user_id: Uuid,
     pub token: String,
     pub other_book_id: Uuid,
+    pub other_chapter_id: Uuid,
 }
 
 /// Deterministic 768-dim one-hot vector. Index 0 reproduces the
@@ -232,6 +233,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         user_id,
         token,
         other_book_id,
+        other_chapter_id,
     })
 }
 
@@ -437,6 +439,115 @@ async fn test_ai_rate_limiter_burst_enforcement() {
         assert_eq!(json["success"], false);
         assert_eq!(json["error"]["code"], "AI_RATE_LIMITED");
     }
+}
+
+#[tokio::test]
+async fn test_quote_search_unknown_book_returns_404() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+
+    // Contracted 404 (OpenAPI + SRS 17): unknown book must not return 200 [].
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/books/{}/quotes/search", Uuid::new_v4()))
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "query": "anything at all", "limit": 5 }).to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], false);
+    assert_eq!(json["error"]["code"], "NOT_FOUND");
+}
+
+#[tokio::test]
+async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+
+    // 1. Unknown book_id must yield 404, not a 500 FK violation.
+    let bogus_book_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "book_id": Uuid::new_v4(),
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": "A quote attached to a book that does not exist."
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(bogus_book_req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 2. Unknown chapter_id must yield 404.
+    let bogus_chapter_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": Uuid::new_v4(),
+                "quote_text": "A quote attached to a chapter that does not exist."
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(bogus_chapter_req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 3. Cross-book mismatch (real chapter of another book) must yield 400.
+    let mismatch_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "book_id": seeded.other_book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": "A quote pairing a book with another book's chapter."
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(mismatch_req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"]["code"], "VALIDATION_FAILED");
+
+    // 4. Control: correct pair still saves (uses the other book's own chapter).
+    let ok_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "book_id": seeded.other_book_id,
+                "chapter_id": seeded.other_chapter_id,
+                "quote_text": "Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn."
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(ok_req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
 }
 
 #[tokio::test]

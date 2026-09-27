@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 shared = { workspace = true }
-domain = { workspace = true }
 sea-orm = { workspace = true }
 redis = { workspace = true }
 tokio = { workspace = true }

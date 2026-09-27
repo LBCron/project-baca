@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/domain",
     "crates/shared",
     "crates/infra",
     "crates/server",
@@ -16,7 +15,6 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/aprxty3/project-baca"
 
 [workspace.dependencies]
-domain = { path = "crates/domain" }
 shared = { path = "crates/shared" }
 infra = { path = "crates/infra" }
 

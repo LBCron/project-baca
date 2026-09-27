@@ -16,7 +16,7 @@ Clear separation between stateless HTTP API nodes and background compute workers
 ```text
 +-------------------+       +-------------------+       +-------------------+       +-----------------------+
 |  Web/PWA Client   | ----> |  Caddy Edge Gate  | ----> |  Axum API Server  | ----> |  Redis 7 Streams      |
-|  (Leptos WASM)    | <==== |  HTTP/3 QUIC Edge | <---- |  (Stateless Node) |       |  Stream: epub:ingest  |
+|  (Leptos WASM)    | <==== |  HTTP/3 QUIC Edge | <---- |  (Stateless Node) |       |  Stream: stream:epub_ingestion |
 +-------------------+       +-------------------+       +-------------------+       +-----------------------+
 
                                                                     |
@@ -41,7 +41,7 @@ Public domain manuscript ingestion executes in 5 isolated phases:
 
 1. **Upload & Object Storage:**
    - Admin uploads `.epub` file via `/api/admin/books/upload`.
-   - Axum validates file magic bytes, saves raw EPUB to `baca-epubs/raw/<book_id>.epub` in S3/MinIO, and pushes event to Redis Stream `stream:epub:ingestion`.
+   - Axum validates file magic bytes, saves raw EPUB to `baca-epubs/raw/<book_id>.epub` in S3/MinIO, and pushes event to Redis Stream `stream:epub_ingestion`.
 2. **Parsing & Sanitization (Python Worker):**
    - Worker consumes task from `ingestion-workers` consumer group via `XREADGROUP`.
    - Validates OPF metadata, extracts cover image to `baca-covers/`, and cleans HTML (stripping malicious tags, inline scripts, and styling).
@@ -75,10 +75,10 @@ Vector search memory scales with corpus size. Project Baca uses a scoped search 
 
 1. **Message Acknowledgment:** Tasks are only removed from the pending list after worker calls `XACK`.
 2. **Dead Worker Recovery:** Supervisor monitors `XPENDING` every 60 seconds; uncompleted tasks past 5 minutes are reclaimed via `XCLAIM`.
-3. **Dead-Letter Queue (DLQ):** Corrupt files failing after 3 retries move to `stream:epub:dlq` for curator inspection without stalling the main queue.
+3. **Dead-Letter Queue (DLQ):** Corrupt files failing after 3 retries move to `stream:epub_ingestion:dlq` for curator inspection without stalling the main queue.
 
 ## 5. Horizontal Scaling Roadmap (Phase 2)
 
-* **Worker Autoscaling:** Scale Python worker pods based on queue length (`XLEN stream:epub:ingestion`) via Kubernetes KEDA.
+* **Worker Autoscaling:** Scale Python worker pods based on queue length (`XLEN stream:epub_ingestion`) via Kubernetes KEDA.
 * **Read Replicas:** Route FTS catalog queries to PostgreSQL read replicas, preserving the primary database for write transactions and reading progress updates.
 * **Edge Caching:** Cache sanitized HTML chapters at Cloudflare edge locations (7-day TTL) for sub-20ms reader access globally.
