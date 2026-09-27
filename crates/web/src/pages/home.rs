@@ -1,5 +1,4 @@
-//! Home page: live catalog grid, debounced search, cursor infinite scroll,
-//! continue-reading card (Sub-Task 6.3).
+//! Live catalog, debounced search, cursor pagination, continue reading.
 
 use crate::api;
 use crate::components::auth::AuthModal;

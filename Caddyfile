@@ -1,4 +1,4 @@
-# Project Baca — Caddy Edge Gateway (Sub-Task 6.8)
+# Project Baca — Caddy edge gateway
 #
 # Terminates HTTP/3 (QUIC over UDP 443) and HTTP/2 (TCP 443) with automatic
 # HTTPS; Axum backend stays pure stateless TCP. Caddy emits

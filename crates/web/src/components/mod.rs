@@ -1,4 +1,4 @@
-//! Shared UI components: auth modal (6.7) and semantic insight drawers (6.6).
+//! Shared UI components.
 
 pub mod auth;
 pub mod insights;

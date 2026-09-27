@@ -1,5 +1,4 @@
-//! Semantic drawers: scoped quote finder, atomic cards modal, catch-up recap,
-//! vintage quote-card PNG exporter (Sub-Task 6.6).
+//! Quote finder, atomic cards, recap, PNG export.
 
 use crate::api;
 use leptos::prelude::*;

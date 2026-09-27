@@ -1,5 +1,4 @@
-//! Auth modal: signup, OTP verify, login, guest-to-cloud auto-merge banner
-//! (Sub-Task 6.7).
+//! Signup, OTP, login, guest progress merge.
 
 use crate::{api, storage};
 use leptos::prelude::*;

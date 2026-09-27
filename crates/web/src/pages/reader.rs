@@ -1,5 +1,4 @@
-//! Reflowable e-reader: multi-column viewport, tap-to-turn zones, DOM CFI
-//! anchor tracking, typography drawer (Sub-Task 6.5).
+//! Reflowable reader with CFI position tracking.
 
 use crate::api;
 use crate::components::insights::CatchupRecap;

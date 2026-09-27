@@ -1,5 +1,4 @@
-//! Book overview page: cover, blurb, reading-time, mood tags, chapter list
-//! with duration estimates, Start Reading + Save Offline (Sub-Task 6.4).
+//! Book overview, chapter list, offline save.
 
 use crate::components::insights::{AtomicCards, QuoteFinder};
 use crate::{api, storage};
