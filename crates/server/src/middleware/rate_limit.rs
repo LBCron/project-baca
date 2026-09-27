@@ -14,8 +14,13 @@ use shared::ApiResponse;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-/// Client IP from edge headers or peer connection.
-pub fn extract_client_ip(req: &Request<Body>) -> String {
+/// Client IP for rate limiting. Proxy headers are honored only when the
+/// deployment sets `TRUST_PROXY_HEADERS=true` (edge overwrites them);
+/// otherwise every direct client shares the fallback bucket.
+pub fn extract_client_ip(req: &Request<Body>, trusted_proxy: bool) -> String {
+    if !trusted_proxy {
+        return "127.0.0.1".to_string();
+    }
     // Cloudflare header first (behind edge WAF).
     if let Some(cf_ip) = req
         .headers()
@@ -63,7 +68,7 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let client_ip = extract_client_ip(&req);
+    let client_ip = extract_client_ip(&req, state.config.server.trust_proxy_headers);
     let redis_key = format!("rate_limit:auth:{client_ip}");
     let max_requests: i64 = 20;
     let window_seconds: i64 = 60;
@@ -122,4 +127,31 @@ pub async fn rate_limit_middleware(
     }
 
     next.run(req).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request_with_ip(header: &str, value: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/")
+            .header(header, value)
+            .body(Body::empty())
+            .expect("valid test request")
+    }
+
+    #[test]
+    fn untrusted_mode_ignores_spoofed_headers() {
+        let req = request_with_ip("cf-connecting-ip", "203.0.113.7");
+        assert_eq!(extract_client_ip(&req, false), "127.0.0.1");
+    }
+
+    #[test]
+    fn trusted_mode_honors_edge_headers() {
+        let req = request_with_ip("cf-connecting-ip", "203.0.113.7");
+        assert_eq!(extract_client_ip(&req, true), "203.0.113.7");
+        let bare = Request::builder().uri("/").body(Body::empty()).unwrap();
+        assert_eq!(extract_client_ip(&bare, true), "127.0.0.1");
+    }
 }

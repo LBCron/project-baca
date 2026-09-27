@@ -8,7 +8,7 @@ import io
 import unittest
 import zipfile
 
-from worker import chunk_words, extract_text, parse_epub, sanitize_html
+from worker import check_archive_limits, chunk_words, extract_text, parse_epub, sanitize_html
 
 
 def make_epub(
@@ -129,6 +129,20 @@ class ParseTest(unittest.TestCase):
         data = make_epub([])
         with self.assertRaises(ValueError):
             parse_epub(data)
+
+
+class ArchiveLimitsTest(unittest.TestCase):
+    def test_rejects_oversized_archives(self):
+        from types import SimpleNamespace
+
+        huge = [SimpleNamespace(file_size=200_000_001)]
+        with self.assertRaises(ValueError):
+            check_archive_limits(huge)
+        many = [SimpleNamespace(file_size=10)] * 5_001
+        with self.assertRaises(ValueError):
+            check_archive_limits(many)
+        fine = [SimpleNamespace(file_size=1_000_000)] * 10
+        check_archive_limits(fine)  # must not raise
 
 
 if __name__ == "__main__":

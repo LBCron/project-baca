@@ -463,6 +463,94 @@ async fn test_ai_rate_limiter_burst_enforcement() {
 }
 
 #[tokio::test]
+async fn test_scoped_quote_search_empty_book_returns_empty_array() {
+    let harness = TestHarness::new().await;
+    let now = Utc::now();
+    let empty_book_id = Uuid::new_v4();
+    books::ActiveModel {
+        id: Set(empty_book_id),
+        title: Set("Empty Shelves".to_string()),
+        author: Set("Nobody".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Test".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(0),
+        estimated_reading_minutes: Set(0),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set("published".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Empty book seed must succeed");
+
+    // A published book without chunks yields 200 with zero results.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/books/{empty_book_id}/quotes/search"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "query": "anything at all", "limit": 5 }).to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["data"].as_array().expect("data array").len(), 0);
+}
+
+#[tokio::test]
+async fn test_guest_ai_burst_enforcement() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+
+    // Unique IP per run isolates this bucket from other tests and re-runs.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock must advance")
+        .as_nanos();
+    let guest_ip = format!("198.51.100.{}", (nanos % 200 + 1) as u8);
+
+    let mut ok_count = 0;
+    for _ in 0..25 {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
+            .header("cf-connecting-ip", &guest_ip)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "query": "foggy harbor", "limit": 2 }).to_string(),
+            ))
+            .expect("Valid request");
+        let resp = harness.send_request(req).await;
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            let has_retry = resp.headers().get(header::RETRY_AFTER).is_some();
+            let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "AI_RATE_LIMITED");
+            assert!(has_retry);
+            break;
+        }
+        assert_eq!(resp.status(), StatusCode::OK);
+        ok_count += 1;
+    }
+    assert!(ok_count >= 1, "guest burst must allow initial requests");
+    assert!(ok_count <= 10, "guest burst must shed past 10 req/min");
+}
+
+#[tokio::test]
 async fn test_quote_search_unknown_book_returns_404() {
     let harness = TestHarness::new().await;
     let seeded = seed_test_context(&harness)
@@ -666,6 +754,73 @@ async fn test_saved_quotes_and_vintage_card_export() {
     let quotes = json["data"].as_array().expect("Array of saved quotes");
     assert!(!quotes.is_empty());
     assert!(quotes[0]["image_card_url"].is_string());
+}
+
+#[tokio::test]
+async fn test_atomic_cards_scoped_to_path_book() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+
+    // Seed cards for chapter 1 of the main book.
+    tldr_cache::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(seeded.book_id),
+        chapter_id: Set(Some(seeded.chapter1_id)),
+        recap_type: Set("chapter_atomic_cards".to_string()),
+        content_json: Set(serde_json::json!({"key_concepts": ["fear"]})),
+        model_version: Set("test".to_string()),
+        created_at: Set(Utc::now().into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("tldr seed must succeed");
+
+    // Same chapter UUID under the other book must 404 (scoped lookup).
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/books/{}/chapters/{}/atomic-cards",
+            seeded.other_book_id, seeded.chapter1_id
+        ))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_chapter1_recap_unavailable_by_uuid() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+
+    // Even with a recap row present, chapter 1 stays recap-free by UUID too.
+    tldr_cache::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(seeded.book_id),
+        chapter_id: Set(Some(seeded.chapter1_id)),
+        recap_type: Set("chapter_recap".to_string()),
+        content_json: Set(serde_json::json!({"summary": "stale"})),
+        model_version: Set("test".to_string()),
+        created_at: Set(Utc::now().into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("tldr seed must succeed");
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/books/{}/chapters/{}/recap",
+            seeded.book_id, seeded.chapter1_id
+        ))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

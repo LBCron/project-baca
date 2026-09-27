@@ -17,7 +17,7 @@ use infra::{AppConfig, EmbeddingProvider, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -270,8 +270,16 @@ pub async fn not_found_handler() -> impl IntoResponse {
 
 /// Assembles Axum Router with Swagger UI, sub-routers, and middleware pipeline
 pub fn create_app(state: Arc<AppState>) -> Router {
+    // Browsers only: origins restricted to the configured allowlist. Any other
+    // origin gets no ACAO header, so credentialed cross-site reads fail closed.
+    let allowed_origins = state.config.server.cors_allowed_origins.clone();
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
+            origin
+                .to_str()
+                .map(|s| allowed_origins.iter().any(|o| o == s))
+                .unwrap_or(false)
+        }))
         .allow_methods(Any)
         .allow_headers(Any);
 

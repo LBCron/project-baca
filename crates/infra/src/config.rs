@@ -13,6 +13,10 @@ pub struct ServerConfig {
     pub env: String,
     pub cors_allowed_origins: Vec<String>,
     pub log_format: String,
+    /// Trust `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For` for rate
+    /// limiting. Keep false unless the edge proxy overwrites these headers
+    /// (spoofable by direct clients otherwise).
+    pub trust_proxy_headers: bool,
 }
 
 impl Default for ServerConfig {
@@ -26,6 +30,7 @@ impl Default for ServerConfig {
                 "http://127.0.0.1:3000".to_string(),
             ],
             log_format: "text".to_string(),
+            trust_proxy_headers: false,
         }
     }
 }
@@ -196,6 +201,9 @@ impl AppConfig {
             })
             .unwrap_or(default_server.cors_allowed_origins);
         let log_format = env::var("LOG_FORMAT").unwrap_or(default_server.log_format);
+        let trust_proxy_headers = env::var("TRUST_PROXY_HEADERS")
+            .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
+            .unwrap_or(default_server.trust_proxy_headers);
 
         let server = ServerConfig {
             host,
@@ -203,6 +211,7 @@ impl AppConfig {
             env: env_mode,
             cors_allowed_origins,
             log_format,
+            trust_proxy_headers,
         };
 
         let db_url = env::var("DATABASE_URL").unwrap_or(default_db.url);
@@ -360,6 +369,7 @@ mod tests {
 
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
+        assert!(!config.server.trust_proxy_headers);
         assert_eq!(config.database.max_connections, 20);
         assert_eq!(config.database.min_connections, 5);
         assert_eq!(config.auth.access_expiry_minutes, 1440);

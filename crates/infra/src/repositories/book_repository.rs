@@ -262,6 +262,19 @@ pub async fn get_chapter_book_id(
     Ok(chapter.book_id)
 }
 
+/// Returns the chapter number for a chapter UUID, if it exists.
+pub async fn get_chapter_number(
+    db: &DatabaseConnection,
+    chapter_id: Uuid,
+) -> Result<Option<i32>, AppError> {
+    let chapter = chapters::Entity::find_by_id(chapter_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?;
+
+    Ok(chapter.map(|c| c.chapter_number))
+}
+
 /// Retrieves single chapter content by chapter number.
 pub async fn get_chapter_by_number(
     db: &DatabaseConnection,

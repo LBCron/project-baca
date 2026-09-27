@@ -13,6 +13,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Fixed
 - **Quote API contracts:** Unknown-book search returns 404 (was 200 `[]`); quote save validates the (book, chapter) pair (was 500 on foreign-key violation).
+- **Post-auth hardening (ADR-20):** Proxy-header trust flag for rate limits; CORS allowlist (was `Any`); upload metadata capped to column sizes; chapter-1 recap closed on the UUID path; badge awards batched; worker zip-bomb guard; lexical SLA aligned <3ms → <5ms to match measurements.
 - **Comment hygiene:** Module headers reduced to single purpose lines; spec tracers (task/SRS/FR/US tags) removed from code comments; OpenAPI descriptions kept concise.
 - **Docs SSOT:** SRS token lifetimes and Argon2 params, ERD migration 07, 13-table counts, canonical Redis Stream name, dual route-mount note, admin Screens 6–7 in UX flow.
 

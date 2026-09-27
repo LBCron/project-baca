@@ -276,26 +276,59 @@ async fn check_and_award_badges(
     total_seconds: i64,
 ) -> Result<(), AppError> {
     // Domain-owned eligibility matrix (ids must exist in `badges` seed data).
-    let eligible_badges: Vec<&str> = domain::eligible_badges(streak_days, total_seconds);
-
-    for badge_id in eligible_badges {
-        let exists = user_badges::Entity::find()
-            .filter(user_badges::Column::UserId.eq(user_id))
-            .filter(user_badges::Column::BadgeId.eq(badge_id))
-            .one(db)
-            .await
-            .map_err(|e| AppError::Database(format!("Failed to query user badge: {e}")))?;
-
-        if exists.is_none() {
-            let user_badge = user_badges::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                user_id: Set(user_id),
-                badge_id: Set(badge_id.to_string()),
-                unlocked_at: Set(Utc::now().into()),
-            };
-            let _ = user_badge.insert(db).await;
-        }
+    let eligible = domain::eligible_badges(streak_days, total_seconds);
+    if eligible.is_empty() {
+        return Ok(());
     }
+
+    let existing: Vec<String> = user_badges::Entity::find()
+        .filter(user_badges::Column::UserId.eq(user_id))
+        .all(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to query user badges: {e}")))?
+        .into_iter()
+        .map(|b| b.badge_id)
+        .collect();
+
+    let missing: Vec<&str> = eligible
+        .into_iter()
+        .filter(|id| !existing.iter().any(|e| e == id))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    let mut values_sql = String::new();
+    let mut values: Vec<Value> = Vec::with_capacity(missing.len() * 4);
+    for (i, badge_id) in missing.iter().enumerate() {
+        if i > 0 {
+            values_sql.push_str(", ");
+        }
+        let base = i * 4 + 1;
+        values_sql.push_str(&format!(
+            "(${base}, ${}, ${}, ${})",
+            base + 1,
+            base + 2,
+            base + 3
+        ));
+        values.push(Value::from(Uuid::new_v4()));
+        values.push(Value::from(user_id));
+        values.push(Value::from((*badge_id).to_string()));
+        values.push(Value::from(now));
+    }
+    let sql = format!(
+        "INSERT INTO user_badges (id, user_id, badge_id, unlocked_at) \
+         VALUES {values_sql} ON CONFLICT (user_id, badge_id) DO NOTHING"
+    );
+
+    db.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        sql,
+        values,
+    ))
+    .await
+    .map_err(|e| AppError::Database(format!("Failed to award badges: {e}")))?;
 
     Ok(())
 }

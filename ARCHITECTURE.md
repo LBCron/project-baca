@@ -90,7 +90,7 @@ project-baca/
    [Axum: GET /api/books?q=sherlock&lang=en]
              │
              ▼
-   [PostgreSQL GIN FTS + Trigram Index] (<3ms latency)
+   [PostgreSQL GIN FTS + Trigram Index] (<5ms latency)
    * Typo-tolerant lexical search without Elasticsearch JVM overhead.
 
 3. SCOPED QUOTE FINDER (PostgreSQL 17 pgvector HNSW)

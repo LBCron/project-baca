@@ -63,6 +63,9 @@ class Settings:
     stream: str = "stream:epub_ingestion"
     dlq_stream: str = "stream:epub_ingestion:dlq"
     group: str = "ingestion-workers"
+    reclaim_idle_ms: int = field(
+        default_factory=lambda: int(env("RECLAIM_IDLE_MS", "300000"))
+    )
 
 
 # Pure helpers (import-safe: stdlib only)
@@ -186,6 +189,19 @@ class ParsedEpub:
     chapters: list[ParsedChapter]
 
 
+# Maximum total uncompressed bytes accepted from one archive.
+MAX_ARCHIVE_BYTES = 200_000_000
+# Maximum entries accepted from one archive.
+MAX_ARCHIVE_FILES = 5_000
+
+
+def check_archive_limits(infos: list) -> None:
+    """Rejects zip bombs before any entry is extracted."""
+    total = sum(info.file_size for info in infos)
+    if len(infos) > MAX_ARCHIVE_FILES or total > MAX_ARCHIVE_BYTES:
+        raise ValueError("Archive exceeds decompression limits")
+
+
 def _opf_path(epub: zipfile.ZipFile) -> str:
     try:
         container = epub.read("META-INF/container.xml").decode("utf-8", "replace")
@@ -205,6 +221,7 @@ def parse_epub(data: bytes) -> ParsedEpub:
         epub = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
         raise ValueError("Upload is not a valid ZIP/EPUB archive") from exc
+    check_archive_limits(epub.infolist())
 
     opf_path = _opf_path(epub)
     base = opf_path.rpartition("/")[0]
@@ -307,7 +324,11 @@ def parse_epub(data: bytes) -> ParsedEpub:
 def make_redis(settings: Settings):
     import redis
 
-    return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    # socket_timeout must exceed the XREADGROUP BLOCK window, or long polls
+    # raise TimeoutError instead of returning empty.
+    return redis.Redis.from_url(
+        settings.redis_url, decode_responses=True, socket_timeout=30
+    )
 
 
 def make_minio(settings: Settings):
@@ -678,7 +699,7 @@ def run(once: bool = False) -> int:
                         settings.stream,
                         settings.group,
                         consumer,
-                        min_idle_time=300_000,
+                        min_idle_time=settings.reclaim_idle_ms,
                         start_id="0-0",
                         count=1,
                     )

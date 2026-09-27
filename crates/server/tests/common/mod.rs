@@ -18,7 +18,11 @@ pub struct TestHarness {
 impl TestHarness {
     /// Initializes test harness with active database/redis connections or graceful fallbacks
     pub async fn new() -> Self {
-        let config = Arc::new(AppConfig::from_env().unwrap_or_default());
+        // Tests simulate edge-provided IP headers, so proxy trust is on here
+        // (production keeps the default off unless the edge overwrites headers).
+        let mut app_config = AppConfig::from_env().unwrap_or_default();
+        app_config.server.trust_proxy_headers = true;
+        let config = Arc::new(app_config);
 
         let db = match init_db_pool(&config).await {
             Ok(pool) => pool,

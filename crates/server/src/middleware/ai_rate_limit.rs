@@ -18,7 +18,10 @@ use std::sync::Arc;
 const AI_MAX_REQUESTS: i64 = 10;
 const AI_WINDOW_SECONDS: i64 = 60;
 
-fn get_client_ip(req: &Request<Body>) -> String {
+fn get_client_ip(req: &Request<Body>, trusted_proxy: bool) -> String {
+    if !trusted_proxy {
+        return "127.0.0.1".to_string();
+    }
     // Cloudflare connecting IP
     if let Some(cf_ip) = req
         .headers()
@@ -80,7 +83,7 @@ pub async fn ai_rate_limit_middleware(
     let redis_key = match &maybe_user_id {
         Some(user_id) => format!("rate_limit:ai:user:{user_id}"),
         None => {
-            let ip = get_client_ip(&req);
+            let ip = get_client_ip(&req, state.config.server.trust_proxy_headers);
             format!("rate_limit:ai:guest:{ip}")
         }
     };

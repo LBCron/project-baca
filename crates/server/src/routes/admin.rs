@@ -122,6 +122,24 @@ pub async fn upload_book(
         ))
     })?;
 
+    // Reject overlong metadata before the database does (VARCHAR limits).
+    let check_len = |name: &str, value: &str, max: usize| {
+        if value.len() > max {
+            return Err(HttpError(AppError::BadRequest(format!(
+                "Field '{name}' exceeds {max} characters"
+            ))));
+        }
+        Ok(())
+    };
+    if let Some(t) = &title {
+        check_len("title", t, 255)?;
+    }
+    if let Some(a) = &author {
+        check_len("author", a, 255)?;
+    }
+    check_len("language", &language, 10)?;
+    check_len("theme", &theme, 50)?;
+
     let book_id = Uuid::new_v4();
     let storage_path = format!("raw-epubs/{book_id}.epub");
     storage

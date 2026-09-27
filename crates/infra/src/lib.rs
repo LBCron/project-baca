@@ -22,7 +22,7 @@ pub use repositories::{
     badge_repository::{list_badges, list_user_badges, seed_default_badges_if_empty},
     book_repository::{
         chapter_dropoff, get_book_by_id, get_chapter_book_id, get_chapter_by_number,
-        get_offline_bundle, list_books, search_books,
+        get_chapter_number, get_offline_bundle, list_books, search_books,
     },
     progress_repository::{get_active_progress, record_heartbeat, update_progress},
     quote_repository::{

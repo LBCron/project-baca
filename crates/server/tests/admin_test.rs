@@ -232,6 +232,67 @@ async fn test_upload_happy_path_queues_job() {
 }
 
 #[tokio::test]
+async fn test_job_status_requires_admin_role() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    // Guest without token is rejected.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/jobs/{}", Uuid::new_v4()))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Reader role is rejected.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/jobs/{}", Uuid::new_v4()))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", ctx.reader_token),
+        )
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_upload_rejects_oversize_payload() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    // 51 MB exceeds the 50 MB cap and must fail closed.
+    let big = vec![0u8; 51 * 1024 * 1024];
+    let (ctype, body) = multipart_body("huge.epub", "application/epub+zip", &big, &[]);
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_upload_accepts_epub_filename_with_generic_mime() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    assert!(harness.state.storage.is_some(), "MinIO must be reachable");
+
+    // Proxies and browsers often send octet-stream; the .epub name governs.
+    let (ctype, body) = multipart_body(
+        "scan.epub",
+        "application/octet-stream",
+        b"PK\x03\x04payload",
+        &[],
+    );
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
 async fn test_job_status_unknown_id_returns_404() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;

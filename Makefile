@@ -153,6 +153,10 @@ worker-test:
 	@echo "Running worker unit tests (no services required)..."
 	@cd python_worker && .venv/bin/python -m unittest test_worker
 
+worker-test-live:
+	@echo "Running worker live tests (needs Redis + Postgres)..."
+	@cd python_worker && RECLAIM_IDLE_MS=0 .venv/bin/python -m unittest test_worker_live -v
+
 worker:
 	@echo "Starting ingestion worker (long-running consumer)..."
 	@cd python_worker && .venv/bin/python worker.py

@@ -8,7 +8,10 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{get_chapter_by_number, get_chapter_recap as query_chapter_recap, get_tldr_cache};
+use infra::{
+    get_chapter_by_number, get_chapter_number, get_chapter_recap as query_chapter_recap,
+    get_tldr_cache,
+};
 use shared::{ApiResponse, AppError, AtomicCardsDto, ChapterRecapDto};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -111,8 +114,20 @@ pub async fn get_chapter_recap(
         .await
         .map_err(HttpError)?;
 
-    // Only active for chapter > 1
-    if let Some(1) = maybe_num {
+    // Only active for chapter > 1. UUID refs resolve the number explicitly so
+    // chapter 1 cannot be reached through the UUID path either.
+    let number = match maybe_num {
+        Some(n) => n,
+        None => get_chapter_number(&state.db, chapter_id)
+            .await
+            .map_err(HttpError)?
+            .ok_or_else(|| {
+                HttpError(AppError::NotFound(format!(
+                    "Chapter not found: {chapter_id}"
+                )))
+            })?,
+    };
+    if number <= 1 {
         return Err(HttpError(AppError::NotFound(
             "Spoiler-free catch-up recap is only available for chapters > 1.".to_string(),
         )));
