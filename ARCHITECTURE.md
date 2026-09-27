@@ -117,14 +117,13 @@ project-baca/
 * **Reflowable Paginated Layout:** Horizontal multi-column CSS splitting text into screen-sized pages.
 * **Anchor Positioning:** Reading position locked to DOM CFI character offsets, preserving location during device rotation.
 * **Offline Storage:** Downloaded chapters and WebP images stored in browser IndexedDB via `rexie`.
-* **Reactive i18n (`[ ID | EN ]`):** Immediate language switching via `LocaleContext` without full page reload.
+* **Reactive i18n (`[ ID | EN ]`):** Immediate language switching via Leptos signals (`crates/web/src/i18n/mod.rs`, persisted as `rotaria_lang`) without full page reload.
 
 ## 6. Visual Design Identity (Vintage Literary 1900–1950)
 
 * **Color Palette:**
-  * Dark Roast: Background `#1F1916`, surface card `#29211C`, ivory text `#F0EAE1`, terracotta accent `#CE734E`.
-  * Antique Paper: Background `#F7F4EE`, typewriter ink `#231D19`, border `#DBD3C5`.
-* **Typography:** Editorial Serif (*EB Garamond*, *Playfair Display*) with italics, paired with monospace (*JetBrains Mono*, *Courier Prime*) for labels.
+  * Antique Paper (as built): `--color-paper-bg: #F9F6F0`, deep ink `--color-ink-primary: #2B2625`, Terracotta `--color-accent-terracotta: #9D5A3C` (slider accent, CTA pills).
+* **Typography:** `Newsreader` for body (`--font-serif-reading`), `EB Garamond` for display (`--font-serif-display`), `Courier Prime` for tool labels (`--font-mono`).
 * **Illustrations:** Classic Victorian and Edwardian cross-hatching engravings in `assets/illustrations/`.
 
 ## 7. Infrastructure Services (`docker-compose.yml`)
@@ -133,7 +132,7 @@ project-baca/
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
 4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Planned — Task 06; no Caddyfile or compose service exists yet.)*
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Shipped as host-run local `Caddyfile` in Task 06, validated with `caddy validate`; prod compose wiring is an M7 launch item.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
