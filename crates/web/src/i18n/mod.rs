@@ -60,6 +60,27 @@ impl Lang {
                     "Klasik domain publik, dijilid ulang untukmu.".into()
                 }
             }
+            "hero_head_a" => {
+                if en {
+                    "Timeless words, ".into()
+                } else {
+                    "Kata abadi, ".into()
+                }
+            }
+            "hero_head_b" => {
+                if en {
+                    "bound anew".into()
+                } else {
+                    "dijilid ulang".into()
+                }
+            }
+            "hero_desc" => {
+                if en {
+                    "Read world literary masterpieces with elegant typography, a reflowable reader layout, and semantic quote discovery.".into()
+                } else {
+                    "Baca mahakarya sastra dunia dengan tipografi elegan, tata baca reflowable, dan penemuan kutipan semantik.".into()
+                }
+            }
             "search_ph" => {
                 if en {
                     "Search title or author…".into()
@@ -159,6 +180,9 @@ impl Lang {
         let keys = [
             "tagline",
             "hero_sub",
+            "hero_head_a",
+            "hero_head_b",
+            "hero_desc",
             "search_ph",
             "catalog",
             "continue_reading",

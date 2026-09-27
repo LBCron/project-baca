@@ -108,7 +108,7 @@ pub fn AuthModal(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                         <button class="btn-read" on:click=submit disabled=move || busy.get()>
                             {move || if busy.get() { "Working…" } else { "Continue" }}
                         </button>
-                        <button class="lang-switch" on:click=move |_| show.set(false)>"Cancel"</button>
+                        <button class="btn-ghost" on:click=move |_| show.set(false)>"Cancel"</button>
                     </div>
                     <div class="auth-switch">
                         <button class="nav-link" on:click=move |_| set_mode.set("login".to_string())>"Login"</button>

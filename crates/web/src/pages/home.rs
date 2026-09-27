@@ -181,8 +181,10 @@ pub fn HomePage() -> impl IntoView {
                 <div class="hero-copy">
                     <div class="hero-subtitle">{move || lang.get().text("hero_sub")}</div>
                     <h1 class="hero-heading">
-                        "Rotaria — " <em>{move || lang.get().text("tagline")}</em>
+                        {move || lang.get().text("hero_head_a")} <em>{move || lang.get().text("hero_head_b")}</em>
                     </h1>
+                    <p class="hero-desc">{move || lang.get().text("hero_desc")}</p>
+                    <p class="hero-tagline">{move || lang.get().text("tagline")}</p>
                     <input
                         type="search"
                         class="search-bar"

@@ -1,4 +1,4 @@
-//! Project Baca — Leptos 0.7 WASM Single Page Application
+//! Rotaria — Leptos 0.7 WASM Single Page Application
 //! Theme: Vintage Literary (1900–1950)
 
 pub mod api;

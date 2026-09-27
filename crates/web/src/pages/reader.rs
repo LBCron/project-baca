@@ -156,13 +156,13 @@ pub fn ReaderPage() -> impl IntoView {
     view! {
         <div class="reader-shell">
             <header class="reader-bar">
-                <a href=format!("/book/{}", book_id()) class="nav-link">"‹ Catalog"</a>
+                <a href=format!("/book/{}", book_id()) class="nav-link">"‹ Overview"</a>
                 <span class="reader-title">
-                    {move || chapter.get().map(|c| format!("Chapter {} — {}", c.chapter_number, c.title)).unwrap_or_default()}
+                    {move || chapter.get().map(|c| c.title.clone()).unwrap_or_default()}
                 </span>
                 <div class="reader-tools">
                     {move || (chapter_no.get() > 1).then(|| view! {
-                        <button class="lang-switch" on:click=move |_| recap_open.set(true)>"Recap"</button>
+                        <button class="btn-ghost" on:click=move |_| recap_open.set(true)>"Recap"</button>
                     })}
                     <button class="lang-switch" on:click=toggle_menu>"Aa"</button>
                 </div>
@@ -203,7 +203,7 @@ pub fn ReaderPage() -> impl IntoView {
             <div class="reader-zone reader-zone-next" on:click=next></div>
 
             <footer class="reader-status" on:click=persist_progress>
-                {move || format!("Anchor: {} (tap to save position)", anchor.get())}
+                {move || format!("‹ Prev · Anchor: {} · Next › (tap to save)", anchor.get())}
             </footer>
             {move || streak.get().map(|days| view! {
                 <div class="streak-toast" role="status">{format!("❖ {days}-day streak")}</div>

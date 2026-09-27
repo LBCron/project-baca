@@ -122,9 +122,15 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                         <button class="btn-read" on:click=run disabled=move || busy.get()>
                             {move || if busy.get() { "Searching…" } else { "Search" }}
                         </button>
-                        <button class="lang-switch" on:click=move |_| show.set(false)>"Close"</button>
+                        <button class="btn-ghost" on:click=move |_| show.set(false)>"Close"</button>
                     </div>
                     <ol class="quote-results">
+                        {move || {
+                            let items = results.get();
+                            (items.is_empty() && !busy.get()).then(|| view! {
+                                <p class="book-synopsis">"No quotes yet — this copy has no indexed passages."</p>
+                            })
+                        }}
                         {move || results.get().into_iter().map(|r| {
                             let book = book_for_rows.get_value();
                             let jump = format!("/read/{book}?chapter={}", r.chapter_number);
@@ -139,7 +145,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                                     <p>{r.content.clone()}</p>
                                     <div class="book-actions">
                                         <a href=jump class="btn-read"><span>"Jump to Reader"</span></a>
-                                        <button class="lang-switch" on:click=move |_| {
+                                        <button class="btn-ghost" on:click=move |_| {
                                             let text = save_text.clone();
                                             let book = save_book.clone();
                                             spawn_local(async move {
@@ -153,7 +159,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                                                 }
                                             });
                                         }>"Save"</button>
-                                        <button class="lang-switch" on:click=move |_| export_quote_png(&text, &label)>"Export PNG"</button>
+                                        <button class="btn-ghost" on:click=move |_| export_quote_png(&text, &label)>"Export PNG"</button>
                                     </div>
                                 </li>
                             }
@@ -181,7 +187,7 @@ pub fn AtomicCards(book_id: String, chapter: i32, show: RwSignal<bool>) -> impl 
                     <div class="catalog-section-title"><span>{format!("Atomic Insights — Ch. {chapter}")}</span></div>
                     <p class="hero-desc">{move || body.get().unwrap_or_else(|| "Loading…".to_string())}</p>
                     <div class="book-actions">
-                        <button class="lang-switch" on:click=move |_| show.set(false)>"Close"</button>
+                        <button class="btn-ghost" on:click=move |_| show.set(false)>"Close"</button>
                     </div>
                 </div>
             </div>
@@ -205,7 +211,7 @@ pub fn CatchupRecap(book_id: String, chapter: i32, show: RwSignal<bool>) -> impl
                     <div class="catalog-section-title"><span>"Catch-up Recap"</span></div>
                     <p class="hero-desc">{move || body.get().unwrap_or_else(|| "Loading…".to_string())}</p>
                     <div class="book-actions">
-                        <button class="lang-switch" on:click=move |_| show.set(false)>"Close"</button>
+                        <button class="btn-ghost" on:click=move |_| show.set(false)>"Close"</button>
                     </div>
                 </div>
             </div>

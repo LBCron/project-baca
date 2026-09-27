@@ -1,6 +1,7 @@
 //! Admin: EPUB upload (multipart) + ingestion job monitor (P7).
 
 use crate::api;
+use crate::components::header::SiteHeader;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -83,12 +84,7 @@ pub fn AdminPage() -> impl IntoView {
 
     view! {
         <div class="app-container">
-            <header class="header-vintage">
-                <a href="/" class="brand-title">
-                    <img src="/assets/rotaria-windmill.svg" alt="Rotaria" class="brand-mark"/>
-                    <span>"Rotaria"</span>
-                </a>
-            </header>
+            <SiteHeader/>
             <div class="catalog-section-title"><span>"II — Admin Upload"</span></div>
             {move || error.get().map(|e| view! { <p class="form-error">{e}</p> })}
             <label>"EPUB file (max 50 MB)"

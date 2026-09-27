@@ -1,6 +1,7 @@
 //! Profile: stats, streak, badges, saved quotes, logout (P4/P5/P6).
 
 use crate::api;
+use crate::components::header::SiteHeader;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{SavedQuoteResponseDto, UserBadgeDto, UserProfileDto};
@@ -36,23 +37,26 @@ pub fn ProfilePage() -> impl IntoView {
 
     view! {
         <div class="app-container">
-            <header class="header-vintage">
-                <a href="/" class="brand-title">
-                    <img src="/assets/rotaria-windmill.svg" alt="Rotaria" class="brand-mark"/>
-                    <span>"Rotaria"</span>
-                </a>
-            </header>
+            <SiteHeader/>
             {move || match profile.get() {
                 None => match error.get() {
                     None => view! { <p class="hero-desc">"Loading profile…"</p> }.into_any(),
-                    Some(_) => view! { <p class="hero-desc">"Sign in to see your shelf."</p> }.into_any(),
+                    Some(_) => view! {
+                        <section class="book-overview">
+                            <div class="catalog-section-title"><span>"Your Shelf"</span></div>
+                            <p class="hero-desc">"Sign in to see your shelf, streaks, and saved quotes."</p>
+                            <div class="book-actions">
+                                <a href="/" class="btn-read"><span>"Back to Catalog"</span></a>
+                            </div>
+                        </section>
+                    }.into_any(),
                 },
                 Some(me) => view! {
                     <section>
                         <div class="catalog-section-title"><span>{me.display_name.clone()}</span></div>
                         <p class="book-author">{me.email.clone()}</p>
                         <div class="book-actions">
-                            <button class="lang-switch" on:click=logout>"Log Out"</button>
+                            <button class="btn-ghost" on:click=logout>"Log Out"</button>
                         </div>
                         <div class="catalog-section-title"><span>"❖ Badges"</span></div>
                         <div class="book-grid">

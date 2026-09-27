@@ -8,7 +8,7 @@ use serde::Serialize;
 use wasm_bindgen::JsValue;
 
 const DB_NAME: &str = "project_baca_db";
-const DB_VERSION: u32 = 1;
+const DB_VERSION: u32 = 2;
 
 pub const STORE_GUEST_PROGRESS: &str = "guest_progress";
 pub const STORE_OFFLINE_BOOKS: &str = "offline_books";
@@ -19,7 +19,7 @@ async fn db() -> Result<Rexie, String> {
     Rexie::builder(DB_NAME)
         .version(DB_VERSION)
         .add_object_store(ObjectStore::new(STORE_GUEST_PROGRESS).key_path("book_id"))
-        .add_object_store(ObjectStore::new(STORE_OFFLINE_BOOKS).key_path("book_id"))
+        .add_object_store(ObjectStore::new(STORE_OFFLINE_BOOKS).key_path("id"))
         .add_object_store(ObjectStore::new(STORE_OFFLINE_CHAPTERS).key_path("chapter_id"))
         .add_object_store(ObjectStore::new(STORE_PENDING_SYNC).auto_increment(true))
         .build()

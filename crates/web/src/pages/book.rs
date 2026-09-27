@@ -1,11 +1,21 @@
 //! Book overview, chapter list, offline save.
 
+use crate::components::header::SiteHeader;
 use crate::components::insights::{AtomicCards, QuoteFinder};
 use crate::{api, storage};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_params_map;
 use shared::BookDetailDto;
+
+#[derive(serde::Serialize)]
+struct OfflineChapterRecord {
+    chapter_id: uuid::Uuid,
+    book_id: uuid::Uuid,
+    chapter_number: i32,
+    title: String,
+    html_content: String,
+}
 
 #[component]
 pub fn BookPage() -> impl IntoView {
@@ -39,11 +49,13 @@ pub fn BookPage() -> impl IntoView {
                         .is_ok();
                     let mut chapters_ok = true;
                     for chapter in &bundle.chapters {
-                        let record = serde_json::json!({
-                            "chapter_id": chapter.id,
-                            "book_id": chapter.book_id,
-                            "chapter": chapter,
-                        });
+                        let record = OfflineChapterRecord {
+                            chapter_id: chapter.id,
+                            book_id: chapter.book_id,
+                            html_content: chapter.html_content.clone(),
+                            chapter_number: chapter.chapter_number,
+                            title: chapter.title.clone(),
+                        };
                         if storage::put(storage::STORE_OFFLINE_CHAPTERS, &record)
                             .await
                             .is_err()
@@ -65,12 +77,7 @@ pub fn BookPage() -> impl IntoView {
 
     view! {
         <div class="app-container">
-            <header class="header-vintage">
-                <a href="/" class="brand-title">
-                    <span class="brand-ornament">"❖"</span>
-                    <span>"Project Baca"</span>
-                </a>
-            </header>
+            <SiteHeader/>
             {move || match book.get() {
                 None => match error.get() {
                     None => view! { <p class="hero-desc">"Loading manuscript…"</p> }.into_any(),
@@ -95,8 +102,8 @@ pub fn BookPage() -> impl IntoView {
                             <button class="btn-read" on:click=save_offline disabled=move || saving.get() || saved.get()>
                                 {move || if saved.get() { "Saved Offline" } else if saving.get() { "Saving…" } else { "Save Offline" }}
                             </button>
-                            <button class="lang-switch" on:click=move |_| quotes_open.set(true)>"Quote Finder"</button>
-                            <button class="lang-switch" on:click=move |_| cards_open.set(true)>"Atomic Cards"</button>
+                            <button class="btn-ghost" on:click=move |_| quotes_open.set(true)>"Quote Finder"</button>
+                            <button class="btn-ghost" on:click=move |_| cards_open.set(true)>"Atomic Cards"</button>
                         </div>
                         <QuoteFinder book_id=b.id.to_string() show=quotes_open/>
                         {b.chapters.first().map(|first| {

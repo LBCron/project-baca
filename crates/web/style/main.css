@@ -360,6 +360,26 @@ body::before {
     background: var(--color-accent-leather);
 }
 
+.btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    color: var(--color-ink-primary);
+    border: 1px solid var(--color-border-parchment);
+    border-radius: var(--radius-sm);
+    padding: 6px 14px;
+    font-family: var(--font-serif-display);
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.btn-ghost:hover {
+    border-color: var(--color-accent-terracotta);
+    color: var(--color-accent-terracotta);
+}
+
 /* Footer */
 .footer-vintage {
     border-top: 2px solid var(--color-border-parchment);
@@ -460,6 +480,10 @@ body.theme-dark-roast {
     display: flex;
     gap: 12px;
     margin: 20px 0 36px;
+}
+
+input[type="range"] {
+    accent-color: var(--color-accent-terracotta);
 }
 
 .chapter-list {
