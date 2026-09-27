@@ -24,7 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.40", features = ["full"] }
 futures = "0.3"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs", "request-id"] }
 sea-orm = { version = "1.1.20", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "postgres-vector"] }
@@ -39,6 +39,8 @@ validator = { version = "0.19", features = ["derive"] }
 utoipa = { version = "6.0", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "10.0", features = ["axum"] }
 argon2 = "0.5"
+aws-credential-types = "1"
+aws-sdk-s3 = "1"
 sha2 = "0.10"
 jsonwebtoken = "9.3"
 rand = "0.8"

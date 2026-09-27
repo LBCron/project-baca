@@ -41,6 +41,7 @@ async fn test_reliability_disconnected_database_fallback() {
         redis_conn: None,
         config,
         embedding,
+        storage: None,
     });
 
     let app = create_app(state);

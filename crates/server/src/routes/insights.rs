@@ -1,8 +1,8 @@
 //! Atomic insight cards and spoiler-free chapter recap handlers.
 //!
 //! Endpoints:
-//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/atomic-cards  — Chapter atomic insight cards (SRS 18)
-//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/recap         — Spoiler-free catch-up recap (SRS 19)
+//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/atomic-cards  — Chapter atomic insight cards
+//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/recap         — Spoiler-free catch-up recap
 //!
 //! `{chapter_ref}` supports both chapter numbers (e.g. `2`) and chapter UUIDs for maximum client flexibility.
 //! Both endpoints read from the `tldr_cache` table with sub-5ms latency on cache hit.
@@ -60,7 +60,7 @@ pub fn insights_routes() -> Router<Arc<AppState>> {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.3: Chapter Atomic Insight Cards (SRS 18)
+// Chapter Atomic Insight Cards
 // ---------------------------------------------------------------------------
 
 /// Retrieve precomputed atomic insight cards for a chapter from `tldr_cache`.
@@ -90,10 +90,9 @@ pub async fn get_atomic_cards(
         .await
         .map_err(HttpError)?;
 
-    let maybe_cards =
-        get_tldr_cache(&state.db, book_id, chapter_id, "chapter_atomic_cards")
-            .await
-            .map_err(HttpError)?;
+    let maybe_cards = get_tldr_cache(&state.db, book_id, chapter_id, "chapter_atomic_cards")
+        .await
+        .map_err(HttpError)?;
 
     match maybe_cards {
         Some(cards_json) => {
@@ -111,7 +110,7 @@ pub async fn get_atomic_cards(
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.4: Spoiler-Free Catch-up Recap (SRS 19)
+// Spoiler-Free Catch-up Recap
 // ---------------------------------------------------------------------------
 
 /// Retrieve a spoiler-free catch-up summary for a chapter from `tldr_cache`.
@@ -141,7 +140,7 @@ pub async fn get_chapter_recap(
         .await
         .map_err(HttpError)?;
 
-    // SRS 19: Only active for chapter > 1
+    // Only active for chapter > 1
     if let Some(1) = maybe_num {
         return Err(HttpError(AppError::NotFound(
             "Spoiler-free catch-up recap is only available for chapters > 1.".to_string(),

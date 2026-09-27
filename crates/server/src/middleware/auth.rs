@@ -2,9 +2,7 @@
 
 use crate::{error::HttpError, AppState};
 use axum::{extract::FromRequestParts, http::request::Parts};
-use infra::{
-    is_token_blacklisted, is_user_token_revoked, security::jwt::verify_access_token,
-};
+use infra::{is_token_blacklisted, is_user_token_revoked, security::jwt::verify_access_token};
 use shared::AppError;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -75,4 +73,3 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         })
     }
 }
-

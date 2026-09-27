@@ -206,7 +206,6 @@ pub async fn record_heartbeat(
     let last_active_date = streak_record.as_ref().and_then(|s| s.last_activity_date);
 
     let mut xp_earned = domain::BASE_HEARTBEAT_XP;
-    let mut streak_incremented = false;
 
     // Domain-owned transition rules (threshold evaluation + date arithmetic).
     let outcome = domain::advance_streak(
@@ -218,7 +217,7 @@ pub async fn record_heartbeat(
     );
     current_streak = outcome.current_days;
     longest_streak = outcome.longest_days;
-    streak_incremented = outcome.incremented;
+    let streak_incremented = outcome.incremented;
     xp_earned += outcome.bonus_xp;
 
     total_xp += xp_earned;

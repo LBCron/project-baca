@@ -1,10 +1,10 @@
 //! Semantic quote search, saved-quotes management, and vintage quote card handlers.
 //!
 //! Endpoints:
-//! - POST /api/v1/books/{book_id}/quotes/search  — Scoped HNSW cosine-distance search (SRS 17, open to all)
-//! - POST /api/v1/quotes/save                    — Save a favorite quote (SRS 20, optional auth)
-//! - GET  /api/v1/quotes                         — List user saved quotes (SRS 20, auth required)
-//! - GET  /api/v1/quotes/{quote_id}/card         — Vintage quote card SVG export (FR-AI-02 / US-09)
+//! - POST /api/v1/books/{book_id}/quotes/search  — Scoped HNSW cosine-distance search
+//! - POST /api/v1/quotes/save                    — Save a favorite quote
+//! - GET  /api/v1/quotes                         — List user saved quotes
+//! - GET  /api/v1/quotes/{quote_id}/card         — Vintage quote card SVG export
 
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
@@ -19,7 +19,10 @@ use infra::{
     list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
     search_quotes_by_embedding, verify_access_token,
 };
-use shared::{ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteRequest, SavedQuoteResponseDto};
+use shared::{
+    ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteRequest,
+    SavedQuoteResponseDto,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -31,8 +34,7 @@ use validator::Validate;
 /// Sub-router for scoped quote search, mounted at /api/v1/books and /api/books.
 /// Rate limiting is applied externally via `ai_rate_limit_middleware` (per-user or per-IP).
 pub fn quotes_routes() -> Router<Arc<AppState>> {
-    Router::new()
-        .route("/{book_id}/quotes/search", post(search_book_quotes))
+    Router::new().route("/{book_id}/quotes/search", post(search_book_quotes))
 }
 
 /// Sub-router for saved quotes and cards, mounted at /api/v1/quotes and /api/quotes.
@@ -44,7 +46,7 @@ pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.2: Scoped Semantic Quote Finder (Open to Guests & Users)
+// Scoped Semantic Quote Finder (Open to Guests & Users)
 // ---------------------------------------------------------------------------
 
 /// Search for semantically relevant quotes within a specific book using HNSW cosine distance.
@@ -83,8 +85,8 @@ pub async fn search_book_quotes(
         .validate()
         .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
 
-    // Contracted 404 (OpenAPI + SRS 17): fail fast on an unknown book before
-    // spending embedding budget on a query that can only return [].
+    // Fail fast on an unknown book before spending embedding budget on a query
+    // that can only return [].
     get_book_by_id(&state.db, book_id)
         .await
         .map_err(HttpError)?;
@@ -124,14 +126,11 @@ pub async fn search_book_quotes(
         })
         .collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(ApiResponse::success(results)),
-    ))
+    Ok((StatusCode::OK, Json(ApiResponse::success(results))))
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.5: Saved Quotes Management & Vintage Quote Card
+// Saved Quotes Management & Vintage Quote Card
 // ---------------------------------------------------------------------------
 
 /// Save a favorite quote to the authenticated user's collection.
@@ -257,7 +256,7 @@ pub async fn handle_list_saved_quotes(
 }
 
 // ---------------------------------------------------------------------------
-// FR-AI-02 / US-09: Vintage Quote Card Export (SVG)
+// Vintage Quote Card Export (SVG)
 // ---------------------------------------------------------------------------
 
 fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) -> String {
@@ -329,9 +328,7 @@ pub async fn get_quote_card(
         .map_err(HttpError)?
         .ok_or_else(|| HttpError(AppError::NotFound("Saved quote not found".to_string())))?;
 
-    let book = get_book_by_id(&state.db, quote.book_id)
-        .await
-        .ok();
+    let book = get_book_by_id(&state.db, quote.book_id).await.ok();
 
     let title = book
         .as_ref()

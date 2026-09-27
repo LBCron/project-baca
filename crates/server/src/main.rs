@@ -91,12 +91,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Object storage (MinIO/S3). Optional: uploads fail closed when unreachable.
+    let storage = match infra::StorageService::init(&config.storage).await {
+        Ok(service) => {
+            tracing::info!("Object storage initialized");
+            Some(Arc::new(service))
+        }
+        Err(e) => {
+            tracing::warn!("Object storage unavailable ({e}). Admin upload disabled.");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         db,
         redis,
         redis_conn,
         config: Arc::clone(&config),
         embedding,
+        storage,
     });
     let app = create_app(state);
 

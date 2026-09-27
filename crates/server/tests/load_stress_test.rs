@@ -185,8 +185,14 @@ async fn test_stress_rate_limit_saturation_and_shedding() {
         elapsed.as_millis()
     );
 
-    assert_eq!(accepted_count, 20, "Exactly 20 requests should be accepted before limit");
-    assert_eq!(rejected_count, 20, "Exactly 20 subsequent requests should be cleanly shed");
+    assert_eq!(
+        accepted_count, 20,
+        "Exactly 20 requests should be accepted before limit"
+    );
+    assert_eq!(
+        rejected_count, 20,
+        "Exactly 20 subsequent requests should be cleanly shed"
+    );
 }
 
 #[tokio::test]

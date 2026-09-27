@@ -98,7 +98,9 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_number: Set(1),
         title: Set("Chapter I: The Old Curiosity".to_string()),
         word_count: Set(4200),
-        html_content: Set("<p>The oldest and strongest emotion of mankind is fear.</p>".to_string()),
+        html_content: Set(
+            "<p>The oldest and strongest emotion of mankind is fear.</p>".to_string(),
+        ),
         created_at: Set(now.into()),
     };
 
@@ -115,7 +117,9 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_number: Set(2),
         title: Set("Chapter II: The Decaying Seaport".to_string()),
         word_count: Set(3800),
-        html_content: Set("<p>The crumbling roofs of Innsmouth hung over the dark bay.</p>".to_string()),
+        html_content: Set(
+            "<p>The crumbling roofs of Innsmouth hung over the dark bay.</p>".to_string(),
+        ),
         created_at: Set(now.into()),
     };
 
@@ -213,10 +217,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         book_id: Set(other_book_id),
         chapter_id: Set(other_chapter_id),
         chunk_index: Set(0),
-        chunk_text: Set(
-            "Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn."
-                .to_string(),
-        ),
+        chunk_text: Set("Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.".to_string()),
         embedding: Set(PgVector::from(one_hot(0))),
         created_at: Set(now.into()),
     };
@@ -240,14 +241,18 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
 #[tokio::test]
 async fn test_scoped_quote_search_open_to_guests_and_validation() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // 1. Unauthenticated (Guest) request succeeds! (US-08: open to all readers)
     let guest_req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::json!({ "query": "foggy harbor" }).to_string()))
+        .body(Body::from(
+            serde_json::json!({ "query": "foggy harbor" }).to_string(),
+        ))
         .expect("Valid request");
 
     let resp = harness.send_request(guest_req).await;
@@ -290,7 +295,9 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
         .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(serde_json::json!({ "query": "foggy harbor", "limit": 50 }).to_string()))
+        .body(Body::from(
+            serde_json::json!({ "query": "foggy harbor", "limit": 50 }).to_string(),
+        ))
         .expect("Valid request");
 
     let resp = harness.send_request(invalid_limit_req).await;
@@ -300,7 +307,9 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
 #[tokio::test]
 async fn test_scoped_quote_search_success_and_ratelimit_headers() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     let req = Request::builder()
         .method("POST")
@@ -331,7 +340,11 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
     assert_eq!(json["success"], true);
     let data = json["data"].as_array().expect("data must be an array");
     // Honest relevance: the seeded book holds exactly 2 embedded chunks.
-    assert_eq!(data.len(), 2, "seeded book must return its 2 chunks, got {data:?}");
+    assert_eq!(
+        data.len(),
+        2,
+        "seeded book must return its 2 chunks, got {data:?}"
+    );
     // The mock query vector is one-hot index 0, so the chapter-1 chunk
     // (embedded identically) must rank first with similarity ~1.0 (> 0.65
     // per Task 04 success criteria), and the orthogonal chapter-2 chunk last.
@@ -365,12 +378,17 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
 #[tokio::test]
 async fn test_scoped_quote_search_isolated_per_book() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // Search scoped to the second book returns only its own chunk.
     let req = Request::builder()
         .method("POST")
-        .uri(format!("/api/v1/books/{}/quotes/search", seeded.other_book_id))
+        .uri(format!(
+            "/api/v1/books/{}/quotes/search",
+            seeded.other_book_id
+        ))
         .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
@@ -388,7 +406,11 @@ async fn test_scoped_quote_search_isolated_per_book() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
     let data = json["data"].as_array().expect("data must be an array");
-    assert_eq!(data.len(), 1, "other book holds exactly 1 chunk, got {data:?}");
+    assert_eq!(
+        data.len(),
+        1,
+        "other book holds exactly 1 chunk, got {data:?}"
+    );
     assert!(data[0]["content"]
         .as_str()
         .expect("content must be a string")
@@ -398,7 +420,9 @@ async fn test_scoped_quote_search_isolated_per_book() {
 #[tokio::test]
 async fn test_ai_rate_limiter_burst_enforcement() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // Make 10 requests that should all be accepted
     for _ in 1..=10 {
@@ -444,7 +468,9 @@ async fn test_ai_rate_limiter_burst_enforcement() {
 #[tokio::test]
 async fn test_quote_search_unknown_book_returns_404() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // Contracted 404 (OpenAPI + SRS 17): unknown book must not return 200 [].
     let req = Request::builder()
@@ -468,7 +494,9 @@ async fn test_quote_search_unknown_book_returns_404() {
 #[tokio::test]
 async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // 1. Unknown book_id must yield 404, not a 500 FK violation.
     let bogus_book_req = Request::builder()
@@ -553,7 +581,9 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
 #[tokio::test]
 async fn test_saved_quotes_and_vintage_card_export() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // 1. Guest save (no Authorization header) returns 201 with guest_mode
     let guest_req = Request::builder()
@@ -644,7 +674,9 @@ async fn test_saved_quotes_and_vintage_card_export() {
 #[tokio::test]
 async fn test_atomic_insight_cards_cache_hit_and_miss() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // 1. Cache miss returns 404 (by chapter number or UUID)
     let miss_req = Request::builder()
@@ -718,15 +750,14 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
 #[tokio::test]
 async fn test_chapter_recap_by_number_and_uuid() {
     let harness = TestHarness::new().await;
-    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
 
     // 1. Chapter 1 recap must ALWAYS return 404 (SRS 19: only active for chapters > 1)
     let chap1_req = Request::builder()
         .method("GET")
-        .uri(format!(
-            "/api/v1/books/{}/chapters/1/recap",
-            seeded.book_id
-        ))
+        .uri(format!("/api/v1/books/{}/chapters/1/recap", seeded.book_id))
         .body(Body::empty())
         .expect("Valid request");
 
@@ -736,10 +767,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
     // 2. Chapter 2 without cache entry returns 404
     let miss_req = Request::builder()
         .method("GET")
-        .uri(format!(
-            "/api/v1/books/{}/chapters/2/recap",
-            seeded.book_id
-        ))
+        .uri(format!("/api/v1/books/{}/chapters/2/recap", seeded.book_id))
         .body(Body::empty())
         .expect("Valid request");
 
@@ -772,10 +800,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
     // 4. Cache hit returns 200 when querying by chapter number: /chapters/2/recap
     let hit_num_req = Request::builder()
         .method("GET")
-        .uri(format!(
-            "/api/v1/books/{}/chapters/2/recap",
-            seeded.book_id
-        ))
+        .uri(format!("/api/v1/books/{}/chapters/2/recap", seeded.book_id))
         .body(Body::empty())
         .expect("Valid request");
 

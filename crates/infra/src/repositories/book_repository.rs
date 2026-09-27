@@ -319,6 +319,60 @@ pub async fn get_offline_bundle(
     Ok(OfflineBundleDto { book, chapters })
 }
 
+/// Chapter drop-off funnel for the admin retention analytics.
+pub async fn chapter_dropoff(
+    db: &DatabaseConnection,
+    book_id: Uuid,
+) -> Result<Vec<shared::DropOffPointDto>, AppError> {
+    #[derive(Debug, FromQueryResult)]
+    struct FunnelRow {
+        chapter_number: i32,
+        title: String,
+        reached: i64,
+    }
+
+    let sql = r#"
+        SELECT ch.chapter_number, ch.title,
+               COUNT(DISTINCT p.user_id)::bigint AS reached
+        FROM chapters ch
+        LEFT JOIN user_reading_progress p
+          ON p.book_id = ch.book_id
+         AND p.last_chapter_id IN (
+                SELECT id FROM chapters
+                WHERE book_id = $1 AND chapter_number >= ch.chapter_number
+             )
+        WHERE ch.book_id = $1
+        GROUP BY ch.chapter_number, ch.title
+        ORDER BY ch.chapter_number ASC
+    "#;
+
+    let stmt =
+        Statement::from_sql_and_values(DatabaseBackend::Postgres, sql, [Value::from(book_id)]);
+
+    let rows = FunnelRow::find_by_statement(stmt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Drop-off funnel query failed: {e}")))?;
+
+    let baseline = rows.first().map(|r| r.reached).unwrap_or(0);
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let drop_off_pct = if baseline > 0 {
+                ((baseline - r.reached).max(0) as f32 / baseline as f32) * 100.0
+            } else {
+                0.0
+            };
+            shared::DropOffPointDto {
+                chapter_number: r.chapter_number,
+                chapter_title: r.title,
+                readers_reached: r.reached,
+                drop_off_pct,
+            }
+        })
+        .collect())
+}
+
 /// Helper function to retrieve tag names for a given book.
 async fn get_tags_for_book(
     db: &DatabaseConnection,

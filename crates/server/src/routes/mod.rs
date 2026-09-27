@@ -1,5 +1,6 @@
 //! REST API route registration and sub-routers.
 
+pub mod admin;
 pub mod auth;
 pub mod books;
 pub mod gamification;
@@ -7,6 +8,7 @@ pub mod insights;
 pub mod progress;
 pub mod quotes;
 
+pub use admin::{admin_routes, dropoff_analytics, ingestion_status, upload_book};
 pub use auth::{auth_routes, user_routes};
 pub use books::{
     books_routes, get_book, get_chapter, get_offline_bundle, list_books, search_books,

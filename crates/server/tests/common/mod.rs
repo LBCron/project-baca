@@ -41,12 +41,18 @@ impl TestHarness {
         })
         .expect("mock provider must always succeed");
 
+        let storage = infra::StorageService::init(&config.storage)
+            .await
+            .ok()
+            .map(Arc::new);
+
         let state = Arc::new(AppState {
             db,
             redis,
             redis_conn,
             config: Arc::clone(&config),
             embedding,
+            storage,
         });
 
         let app = create_app(state.clone());

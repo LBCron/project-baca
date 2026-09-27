@@ -1,4 +1,4 @@
-//! Authentication & User REST API Handlers (SRS 1–7)
+//! Authentication & User REST API Handlers
 //! High-performance async endpoints with connection reuse and repository queries.
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
@@ -39,7 +39,7 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     }
 }
 
-/// Register a new account with email OTP verification (SRS 1)
+/// Register a new account with email OTP verification
 #[utoipa::path(
     post,
     path = "/api/v1/auth/signup",
@@ -112,7 +112,7 @@ pub async fn signup(
         .into_response())
 }
 
-/// Verify email registration OTP and issue initial tokens (SRS 2)
+/// Verify email registration OTP and issue initial tokens
 #[utoipa::path(
     post,
     path = "/api/v1/auth/verify-otp",
@@ -175,7 +175,7 @@ pub async fn verify_otp(
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
-/// Login with email and password (SRS 3)
+/// Login with email and password
 #[utoipa::path(
     post,
     path = "/api/v1/auth/login",
@@ -211,7 +211,8 @@ pub async fn login(
         Some(u) => u,
         None => {
             // OWASP ASVS V2.1.1: Dummy verification to prevent timing attack enumeration
-            let _ = verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
+            let _ =
+                verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
 
             let fail_key = format!("auth:login:fail:{}", req.email);
             let count: Result<i64, _> = redis_conn.incr(&fail_key, 1).await;
@@ -288,7 +289,7 @@ pub async fn login(
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
-/// Refresh expired access token with refresh token rotation (SRS 4)
+/// Refresh expired access token with refresh token rotation
 #[utoipa::path(
     post,
     path = "/api/v1/auth/refresh",
@@ -346,7 +347,7 @@ pub async fn refresh(
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
-/// Logout and invalidate active refresh token session (SRS 5)
+/// Logout and invalidate active refresh token session
 #[utoipa::path(
     post,
     path = "/api/v1/auth/logout",
@@ -372,7 +373,11 @@ pub async fn logout(
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
             if let Ok(claims) = verify_access_token(token, state.config.jwt_secret()) {
                 let now = Utc::now().timestamp() as usize;
-                let remaining = if claims.exp > now { (claims.exp - now) as u64 } else { 0 };
+                let remaining = if claims.exp > now {
+                    (claims.exp - now) as u64
+                } else {
+                    0
+                };
                 let _ = blacklist_access_token(&mut redis_conn, claims.jti, remaining).await;
             }
         }
@@ -387,7 +392,7 @@ pub async fn logout(
         .into_response())
 }
 
-/// Retrieve authenticated user profile (SRS 6)
+/// Retrieve authenticated user profile
 #[utoipa::path(
     get,
     path = "/api/v1/me",
@@ -414,7 +419,7 @@ pub async fn get_me(
         .into_response())
 }
 
-/// Update user profile details (SRS 6)
+/// Update user profile details
 #[utoipa::path(
     patch,
     path = "/api/v1/me",
@@ -444,7 +449,7 @@ pub async fn update_me(
         .into_response())
 }
 
-/// Change password for authenticated user (SRS 7)
+/// Change password for authenticated user
 #[utoipa::path(
     put,
     path = "/api/v1/me/password",
@@ -537,7 +542,7 @@ pub async fn change_password(
         .into_response())
 }
 
-/// Delete account with cascading data deletion (SRS 8)
+/// Delete account with cascading data deletion
 #[utoipa::path(
     delete,
     path = "/api/v1/me",
@@ -575,7 +580,7 @@ pub async fn delete_me(
         .into_response())
 }
 
-/// Revoke all active sessions and access tokens for the authenticated user (SRS 5)
+/// Revoke all active sessions and access tokens for the authenticated user
 #[utoipa::path(
     post,
     path = "/api/v1/auth/revoke-all",

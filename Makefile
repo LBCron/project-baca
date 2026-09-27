@@ -121,6 +121,14 @@ test-security:
 	@echo "Running OWASP security vulnerability tests..."
 	@cargo test -p server --test security_owasp_test
 
+test-admin:
+	@echo "Running admin ingestion, job monitoring and analytics tests..."
+	@cargo test -p server --test admin_test
+
+test-domain:
+	@echo "Running domain-core pure unit tests (no database)..."
+	@cargo test -p domain
+
 test-all:
 	@echo "Running complete test suite..."
 	@cargo test --workspace
@@ -131,6 +139,27 @@ check:
 	@cargo check --workspace
 	@echo "Checking WASM frontend crate..."
 	@cargo check -p web --target wasm32-unknown-unknown
+	@echo "Running clippy lints (deny warnings)..."
+	@cargo clippy --workspace --all-targets -- -D warnings
+	@echo "Checking formatting..."
+	@cargo fmt --check
+
+# Ingestion worker
+worker-install:
+	@echo "Creating worker venv and installing dependencies..."
+	@cd python_worker && uv venv .venv && uv pip install -r requirements.txt
+
+worker-test:
+	@echo "Running worker unit tests (no services required)..."
+	@cd python_worker && .venv/bin/python -m unittest test_worker
+
+worker:
+	@echo "Starting ingestion worker (long-running consumer)..."
+	@cd python_worker && .venv/bin/python worker.py
+
+worker-once:
+	@echo "Processing a single ingestion job then exiting..."
+	@cd python_worker && .venv/bin/python worker.py --once
 
 # Production release build
 build:

@@ -104,7 +104,9 @@ pub async fn invalidate_user_tokens(
     let _: () = redis
         .set_ex(&redis_key, now, ttl_seconds)
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to record token revocation in Redis: {e}")))?;
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to record token revocation in Redis: {e}"))
+        })?;
     Ok(())
 }
 
@@ -115,10 +117,9 @@ pub async fn is_user_token_revoked(
     token_iat: usize,
 ) -> Result<bool, AppError> {
     let redis_key = format!("user_revoked_before:{user_id}");
-    let revoked_before_str: Option<String> = redis
-        .get(&redis_key)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to check user revocation in Redis: {e}")))?;
+    let revoked_before_str: Option<String> = redis.get(&redis_key).await.map_err(|e| {
+        AppError::Internal(format!("Failed to check user revocation in Redis: {e}"))
+    })?;
 
     if let Some(s) = revoked_before_str {
         if let Ok(revoked_timestamp) = s.parse::<i64>() {
@@ -299,4 +300,3 @@ mod tests {
         assert!(token.len() > 30);
     }
 }
-

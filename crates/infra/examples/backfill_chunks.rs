@@ -1,20 +1,16 @@
 //! One-shot dev backfill: chunk live `chapters` and embed into `book_chunks`.
 //!
-//! Closes the Task 04 residual (empty `book_chunks` in production) ahead of the
-//! Task 05 worker, which replaces this script with the streaming pipeline.
-//! Idempotent: chapters that already own chunks are skipped.
-//!
 //! Usage: `cargo run -p infra --example backfill_chunks`
 //! Uses the configured embedding provider (`EMBEDDING_PROVIDER`, default
 //! `gemini` via `GEMINI_API_KEY`).
 
 use infra::{build_embedding_provider, entities::book_chunks, init_db_pool, AppConfig};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use sea_orm::entity::prelude::PgVector;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Target chunk size in words (Task 05 scene-chunking range is 300-500).
+/// Target chunk size in words.
 const CHUNK_WORDS: usize = 350;
 /// Minimum stripped characters for a chapter to be worth embedding.
 const MIN_CHARS: usize = 20;

@@ -1,7 +1,7 @@
 //! Project Baca domain core: pure business rules with zero I/O.
 //!
 //! This crate owns cross-context invariants shared by the reader, engagement,
-//! and curation bounded contexts (ADR-18):
+//! and curation bounded contexts:
 //! - [`Percentage`]: validated reading completion (0.0-100.0).
 //! - [`BookStatus`]: legal publication lifecycle transitions.
 //! - [`advance_streak`]: daily streak transition rules.
@@ -13,6 +13,7 @@
 //! here; persistence lives in `crates/infra` (adapters).
 
 use chrono::NaiveDate;
+use std::str::FromStr;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -42,10 +43,6 @@ pub const COMPLETION_MIN: f32 = 0.0;
 pub const COMPLETION_MAX: f32 = 100.0;
 
 /// Validated reading completion percentage.
-///
-/// The API edge (`shared::ReadingProgressUpdateDto`) validates the wire range;
-/// this type enforces the same invariant for every non-HTTP caller (workers,
-/// tests, future admin tools) so the rule has a single owner.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Percentage(f32);
 
@@ -85,10 +82,6 @@ pub fn merge_percentage(existing: Option<f32>, incoming: f32) -> f32 {
 // ---------------------------------------------------------------------------
 
 /// Legal book publication states.
-///
-/// Lifecycle: `draft -> processing -> published`, with `archived` (catalog
-/// soft-delete, US-14) reachable from any active state. Same-state
-/// transitions are idempotent no-ops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BookStatus {
     Draft,
@@ -97,8 +90,10 @@ pub enum BookStatus {
     Archived,
 }
 
-impl BookStatus {
-    pub fn from_str(s: &str) -> Result<Self, DomainError> {
+impl FromStr for BookStatus {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, DomainError> {
         match s {
             "draft" => Ok(Self::Draft),
             "processing" => Ok(Self::Processing),
@@ -109,7 +104,9 @@ impl BookStatus {
             ))),
         }
     }
+}
 
+impl BookStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Draft => "draft",
@@ -186,9 +183,7 @@ pub fn advance_streak(
     let yesterday = today - chrono::Duration::days(1);
     let (current_days, incremented, bonus_xp) = match last_active {
         Some(date) if date == today => (current_days, false, 0),
-        Some(date) if date == yesterday => {
-            (current_days + 1, true, STREAK_BONUS_XP)
-        }
+        Some(date) if date == yesterday => (current_days + 1, true, STREAK_BONUS_XP),
         _ => (1, true, DAILY_MILESTONE_BONUS_XP),
     };
 
@@ -266,9 +261,9 @@ mod tests {
             BookStatus::Published,
             BookStatus::Archived,
         ] {
-            assert_eq!(BookStatus::from_str(status.as_str()).unwrap(), status);
+            assert_eq!(status.as_str().parse(), Ok(status));
         }
-        assert!(BookStatus::from_str("deleted").is_err());
+        assert!("deleted".parse::<BookStatus>().is_err());
     }
 
     #[test]
@@ -312,13 +307,7 @@ mod tests {
     #[test]
     fn streak_consecutive_day_increments_with_bonus() {
         let today = day(2026, 9, 27);
-        let outcome = advance_streak(
-            2,
-            5,
-            Some(today - chrono::Duration::days(1)),
-            today,
-            true,
-        );
+        let outcome = advance_streak(2, 5, Some(today - chrono::Duration::days(1)), today, true);
         assert_eq!(outcome.current_days, 3);
         assert_eq!(outcome.longest_days, 5);
         assert_eq!(outcome.incremented, true);
@@ -329,13 +318,7 @@ mod tests {
     #[test]
     fn streak_broken_restarts_at_day_one_and_extends_longest() {
         let today = day(2026, 9, 27);
-        let outcome = advance_streak(
-            4,
-            4,
-            Some(today - chrono::Duration::days(5)),
-            today,
-            true,
-        );
+        let outcome = advance_streak(4, 4, Some(today - chrono::Duration::days(5)), today, true);
         assert_eq!(outcome.current_days, 1);
         assert_eq!(outcome.longest_days, 4);
         assert_eq!(outcome.bonus_xp, DAILY_MILESTONE_BONUS_XP);
@@ -357,7 +340,12 @@ mod tests {
         assert_eq!(eligible_badges(3, 61), vec!["first_step", "streak_3_days"]);
         assert_eq!(
             eligible_badges(7, 3600),
-            vec!["first_step", "streak_3_days", "streak_7_days", "dedicated_reader"]
+            vec![
+                "first_step",
+                "streak_3_days",
+                "streak_7_days",
+                "dedicated_reader"
+            ]
         );
     }
 

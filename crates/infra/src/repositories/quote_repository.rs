@@ -8,9 +8,7 @@
 //! - Scoped HNSW traversal: < 10 ms (PostgreSQL 17 with pgvector HNSW index).
 //! - Saved-quotes write: < 5 ms (B-Tree indexed insert).
 
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, FromQueryResult, JsonValue, Statement,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection, FromQueryResult, JsonValue, Statement};
 use serde::{Deserialize, Serialize};
 use shared::AppError;
 use uuid::Uuid;
@@ -65,20 +63,10 @@ pub struct SavedQuoteDto {
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.2: Scoped HNSW Semantic Quote Search
+// Scoped HNSW Semantic Quote Search
 // ---------------------------------------------------------------------------
 
 /// Execute a cosine-distance query against `book_chunks` scoped to a single book.
-///
-/// The query uses pgvector `<=>` (cosine distance) operator on the HNSW index.
-/// Results are ordered by ascending cosine distance (closest first) and then
-/// mapped to cosine *similarity* (1 - distance) before returning.
-///
-/// # Arguments
-/// - `db`: Active SeaORM database connection.
-/// - `book_id`: Scopes the search to a single book (`WHERE c.book_id = $2`).
-/// - `embedding`: The 768-dimensional query vector produced by `EmbeddingProvider`.
-/// - `limit`: Maximum results to return (capped at 20 server-side).
 pub async fn search_quotes_by_embedding(
     db: &DatabaseConnection,
     book_id: Uuid,
@@ -140,16 +128,10 @@ pub async fn search_quotes_by_embedding(
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.3 / 4.4: Atomic Cards & Recap from tldr_cache
+// Atomic Cards & Recap from tldr_cache
 // ---------------------------------------------------------------------------
 
 /// Retrieve precomputed atomic insight cards from `tldr_cache`.
-///
-/// Returns the raw `content_json` blob for a specific chapter and recap type.
-/// Returns `None` on cache miss (caller handles 404 or fallback generation).
-///
-/// # Arguments
-/// - `recap_type`: One of `"chapter_atomic_cards"` or `"chapter_recap"`.
 pub async fn get_tldr_cache(
     db: &DatabaseConnection,
     book_id: Uuid,
@@ -189,9 +171,6 @@ pub async fn get_tldr_cache(
 }
 
 /// Retrieve a spoiler-free chapter recap from `tldr_cache`.
-///
-/// Identical to `get_tldr_cache` but scoped to `recap_type = 'chapter_recap'`.
-/// Chapters with `chapter_number <= 1` have no recap (nothing prior to summarize).
 pub async fn get_chapter_recap(
     db: &DatabaseConnection,
     book_id: Uuid,
@@ -201,13 +180,10 @@ pub async fn get_chapter_recap(
 }
 
 // ---------------------------------------------------------------------------
-// Sub-Task 4.5: Saved Quotes Management & Vintage Quote Card
+// Saved Quotes Management & Vintage Quote Card
 // ---------------------------------------------------------------------------
 
 /// Persist a user-selected quote to `saved_quotes`.
-///
-/// Silently ignores duplicate inserts using `ON CONFLICT DO NOTHING` to ensure
-/// idempotent behavior for optimistic offline clients.
 pub async fn save_quote(
     db: &DatabaseConnection,
     id: Uuid,

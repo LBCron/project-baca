@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 shared = { workspace = true }
 domain = { workspace = true }
+aws-credential-types = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 sea-orm = { workspace = true }
 redis = { workspace = true }
 tokio = { workspace = true }

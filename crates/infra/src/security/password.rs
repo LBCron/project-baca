@@ -85,15 +85,20 @@ mod tests {
 
     #[test]
     fn test_dummy_argon2_hash_validity() {
-        let valid = verify_password("AnyPassword!", DUMMY_ARGON2_HASH).expect("Should parse dummy hash");
+        let valid =
+            verify_password("AnyPassword!", DUMMY_ARGON2_HASH).expect("Should parse dummy hash");
         assert!(!valid);
     }
 
     #[tokio::test]
     async fn test_async_hash_and_verify() {
         let password = "AsyncSecretPassword123!".to_string();
-        let hash = hash_password_async(password.clone()).await.expect("Async hash should succeed");
-        let valid = verify_password_async(password, hash).await.expect("Async verify should succeed");
+        let hash = hash_password_async(password.clone())
+            .await
+            .expect("Async hash should succeed");
+        let valid = verify_password_async(password, hash)
+            .await
+            .expect("Async verify should succeed");
         assert!(valid);
     }
 }

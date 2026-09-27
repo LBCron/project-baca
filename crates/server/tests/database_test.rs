@@ -5,7 +5,9 @@ mod common;
 
 use chrono::Utc;
 use common::TestHarness;
-use infra::entities::{book_tags, books, chapters, tags, user_badges, user_reading_progress, users};
+use infra::entities::{
+    book_tags, books, chapters, tags, user_badges, user_reading_progress, users,
+};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
     Set, Statement, TransactionTrait,
@@ -35,7 +37,10 @@ async fn test_db_unique_email_constraint_enforcement() {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    user1.insert(&harness.state.db).await.expect("First user insert should succeed");
+    user1
+        .insert(&harness.state.db)
+        .await
+        .expect("First user insert should succeed");
 
     // Attempt to insert second user with identical email
     let user2 = users::ActiveModel {
@@ -107,7 +112,9 @@ async fn test_db_unique_tag_slug_constraint() {
         slug: Set(shared_slug.clone()),
         created_at: Set(now.into()),
     };
-    tag1.insert(&harness.state.db).await.expect("Tag 1 insert should succeed");
+    tag1.insert(&harness.state.db)
+        .await
+        .expect("Tag 1 insert should succeed");
 
     let tag2 = tags::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -142,7 +149,9 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    user.insert(&harness.state.db).await.expect("User insert failed");
+    user.insert(&harness.state.db)
+        .await
+        .expect("User insert failed");
 
     // 2. Create Book & Chapter
     let book_id = Uuid::new_v4();
@@ -166,7 +175,9 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    book.insert(&harness.state.db).await.expect("Book insert failed");
+    book.insert(&harness.state.db)
+        .await
+        .expect("Book insert failed");
 
     let chapter_id = Uuid::new_v4();
     let chapter = chapters::ActiveModel {
@@ -178,7 +189,10 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         html_content: Set("<p>Chapter content</p>".to_string()),
         created_at: Set(now.into()),
     };
-    chapter.insert(&harness.state.db).await.expect("Chapter insert failed");
+    chapter
+        .insert(&harness.state.db)
+        .await
+        .expect("Chapter insert failed");
 
     // 3. Create Reading Progress for User
     let progress_id = Uuid::new_v4();
@@ -193,17 +207,25 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         last_read_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    progress.insert(&harness.state.db).await.expect("Progress insert failed");
+    progress
+        .insert(&harness.state.db)
+        .await
+        .expect("Progress insert failed");
 
     // 4. Create User Badge
-    infra::seed_default_badges_if_empty(&harness.state.db).await.expect("Badge seed failed");
+    infra::seed_default_badges_if_empty(&harness.state.db)
+        .await
+        .expect("Badge seed failed");
     let user_badge = user_badges::ActiveModel {
         id: Set(Uuid::new_v4()),
         user_id: Set(user_id),
         badge_id: Set("first_step".to_string()),
         unlocked_at: Set(now.into()),
     };
-    user_badge.insert(&harness.state.db).await.expect("User badge insert failed");
+    user_badge
+        .insert(&harness.state.db)
+        .await
+        .expect("User badge insert failed");
 
     // Verify records exist before deletion
     let progress_count_before = user_reading_progress::Entity::find()
@@ -226,14 +248,22 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .all(&harness.state.db)
         .await
         .expect("Query progress after deletion failed");
-    assert_eq!(progress_after.len(), 0, "User progress must be cascaded on user deletion");
+    assert_eq!(
+        progress_after.len(),
+        0,
+        "User progress must be cascaded on user deletion"
+    );
 
     let badges_after = user_badges::Entity::find()
         .filter(user_badges::Column::UserId.eq(user_id))
         .all(&harness.state.db)
         .await
         .expect("Query badges after deletion failed");
-    assert_eq!(badges_after.len(), 0, "User badges must be cascaded on user deletion");
+    assert_eq!(
+        badges_after.len(),
+        0,
+        "User badges must be cascaded on user deletion"
+    );
 }
 
 #[tokio::test]
@@ -268,7 +298,9 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    book.insert(&harness.state.db).await.expect("Book insert failed");
+    book.insert(&harness.state.db)
+        .await
+        .expect("Book insert failed");
 
     // 2. Insert Chapter
     let chapter = chapters::ActiveModel {
@@ -280,7 +312,10 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         html_content: Set("<p>Chapter</p>".to_string()),
         created_at: Set(now.into()),
     };
-    chapter.insert(&harness.state.db).await.expect("Chapter insert failed");
+    chapter
+        .insert(&harness.state.db)
+        .await
+        .expect("Chapter insert failed");
 
     // 3. Insert Tag and BookTag
     let tag_id = Uuid::new_v4();
@@ -290,13 +325,18 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         slug: Set(format!("slug-{}", tag_id)),
         created_at: Set(now.into()),
     };
-    tag.insert(&harness.state.db).await.expect("Tag insert failed");
+    tag.insert(&harness.state.db)
+        .await
+        .expect("Tag insert failed");
 
     let book_tag = book_tags::ActiveModel {
         book_id: Set(book_id),
         tag_id: Set(tag_id),
     };
-    book_tag.insert(&harness.state.db).await.expect("BookTag insert failed");
+    book_tag
+        .insert(&harness.state.db)
+        .await
+        .expect("BookTag insert failed");
 
     // 4. Delete Book
     books::Entity::delete_by_id(book_id)
@@ -310,14 +350,22 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         .all(&harness.state.db)
         .await
         .expect("Query chapters failed");
-    assert_eq!(chapters_after.len(), 0, "Chapters must be cascaded on book deletion");
+    assert_eq!(
+        chapters_after.len(),
+        0,
+        "Chapters must be cascaded on book deletion"
+    );
 
     let book_tags_after = book_tags::Entity::find()
         .filter(book_tags::Column::BookId.eq(book_id))
         .all(&harness.state.db)
         .await
         .expect("Query book_tags failed");
-    assert_eq!(book_tags_after.len(), 0, "Book tags must be cascaded on book deletion");
+    assert_eq!(
+        book_tags_after.len(),
+        0,
+        "Book tags must be cascaded on book deletion"
+    );
 }
 
 #[tokio::test]
@@ -352,10 +400,14 @@ async fn test_db_transaction_atomicity_and_rollback() {
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    user.insert(&txn).await.expect("User insert inside txn should succeed");
+    user.insert(&txn)
+        .await
+        .expect("User insert inside txn should succeed");
 
     // Rollback explicitly
-    txn.rollback().await.expect("Transaction rollback should succeed");
+    txn.rollback()
+        .await
+        .expect("Transaction rollback should succeed");
 
     // Verify user record does NOT exist in main database connection
     let found = users::Entity::find_by_id(user_id)
@@ -388,7 +440,10 @@ async fn test_db_index_query_plan_verification() {
         .query_all(catalog_check)
         .await
         .expect("Query pg_indexes failed");
-    assert!(!rows.is_empty(), "Index 'idx_users_email' must exist in PostgreSQL catalog");
+    assert!(
+        !rows.is_empty(),
+        "Index 'idx_users_email' must exist in PostgreSQL catalog"
+    );
 
     // 2. Begin transaction and disable seqscan to verify index path usability
     let txn = harness.state.db.begin().await.expect("Begin txn failed");
@@ -403,7 +458,10 @@ async fn test_db_index_query_plan_verification() {
         harness.state.db.get_database_backend(),
         "EXPLAIN (FORMAT TEXT) SELECT * FROM users WHERE email = 'benchmark@test.local';",
     );
-    let query_result = txn.query_all(explain_stmt).await.expect("EXPLAIN query failed");
+    let query_result = txn
+        .query_all(explain_stmt)
+        .await
+        .expect("EXPLAIN query failed");
 
     let mut full_plan = String::new();
     for row in query_result {
@@ -444,7 +502,10 @@ async fn test_db_catalog_default_pagination_index_plan() {
         harness.state.db.get_database_backend(),
         "EXPLAIN (FORMAT TEXT) SELECT id, title, author, publication_year FROM books WHERE status = 'published' ORDER BY publication_year DESC NULLS LAST, id ASC LIMIT 20;",
     );
-    let query_result = txn.query_all(explain_stmt).await.expect("EXPLAIN query failed");
+    let query_result = txn
+        .query_all(explain_stmt)
+        .await
+        .expect("EXPLAIN query failed");
 
     let mut full_plan = String::new();
     for row in query_result {
@@ -501,4 +562,3 @@ async fn test_db_foreign_key_and_optimized_index_coverage() {
         );
     }
 }
-

@@ -2,6 +2,21 @@
 
 All notable changes are documented chronologically following [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Milestone 05 (Ingestion Pipeline & Admin):** MinIO `StorageService`; admin upload with EPUB/50MB validation (202 + Streams dispatch); Python worker (parse, sanitize, chunk, batch embeddings, atomic cards/recaps, WebP covers, DLQ + reclaim); job monitor and drop-off funnel endpoints with OpenAPI docs.
+
+### Added
+- **Milestone 04 (Semantic AI & Insights):** Dual-mode embedding provider (Gemini `text-embedding-004` REST + FastEmbed CPU stub); scoped HNSW quote search (`POST /api/v1/books/{id}/quotes/search`, SRS 17); atomic cards + spoiler-free recap from `tldr_cache` (SRS 18/19); saved quotes + vintage SVG card export (SRS 20b/20c/20d); per-user AI rate limiting (10 req/min).
+- **Domain Core (ADR-18):** Restored `crates/domain` as pure business rules (`Percentage`, `BookStatus`, `advance_streak`, `eligible_badges`, `merge_percentage`), wired into `progress_repository.rs`; 13 DB-free unit tests.
+- **Dev Backfill Tool:** `crates/infra/examples/backfill_chunks.rs` (idempotent chapter chunking + batched embeddings; replaced by the Task 05 worker later).
+
+### Fixed
+- **Quote API contracts:** Unknown-book search now returns contracted 404 (was 200 `[]`); quote save validates the (book, chapter) pair (404 unknown, 400 cross-book mismatch; was 500 FK violation).
+- **Test honesty:** Semantic tests seed embedded chunks and assert ranked, scoped, non-empty results; added per-book isolation, 404, and pair-validation tests (95 green workspace-wide).
+- **Docs SSOT:** SRS token lifetimes/Argon2 params, ERD migration 07, 13-table counts, canonical Redis Stream name, dual route-mount note, admin Screens 6–7 in UX flow.
+
 ## [0.2.1] — 2026-09-26
 
 ### Added

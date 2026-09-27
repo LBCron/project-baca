@@ -8,9 +8,7 @@ use axum::http::{header, Request, StatusCode};
 use common::TestHarness;
 use pretty_assertions::assert_eq;
 use redis::AsyncCommands;
-use shared::{
-    ChangePasswordRequest, LoginRequest, RefreshTokenRequest, SignupRequest,
-};
+use shared::{ChangePasswordRequest, LoginRequest, RefreshTokenRequest, SignupRequest};
 use uuid::Uuid;
 
 fn unique_test_ip() -> String {
@@ -173,7 +171,10 @@ async fn test_owasp_login_brute_force_lockout() {
             .body(Body::from(serde_json::to_vec(&bad_login).unwrap()))
             .unwrap();
         let (resp, _) = harness.send_json_request(req).await;
-        assert!(resp.status() == StatusCode::UNAUTHORIZED || resp.status() == StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.status() == StatusCode::UNAUTHORIZED
+                || resp.status() == StatusCode::TOO_MANY_REQUESTS
+        );
     }
 
     // 6th attempt MUST be locked out with 429 Too Many Requests
@@ -411,7 +412,10 @@ async fn test_owasp_account_deletion_session_cleanup() {
         .exists(format!("refresh_token:{refresh_token}"))
         .await
         .unwrap();
-    assert!(!exists, "Refresh token should be revoked after account deletion");
+    assert!(
+        !exists,
+        "Refresh token should be revoked after account deletion"
+    );
 
     // Access token must be rejected immediately on subsequent requests
     let req = Request::builder()

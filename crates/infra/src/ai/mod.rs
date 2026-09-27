@@ -3,4 +3,6 @@
 
 pub mod embedding;
 
-pub use embedding::{build_embedding_provider, EmbeddingProvider, FastEmbedProvider, GeminiEmbeddingProvider};
+pub use embedding::{
+    build_embedding_provider, EmbeddingProvider, FastEmbedProvider, GeminiEmbeddingProvider,
+};

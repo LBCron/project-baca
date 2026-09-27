@@ -123,4 +123,3 @@ pub async fn rate_limit_middleware(
 
     next.run(req).await
 }
-

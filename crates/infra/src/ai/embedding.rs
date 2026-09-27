@@ -2,7 +2,7 @@
 //!
 //! Implements the `EmbeddingProvider` trait for two backends:
 //! - `GeminiEmbeddingProvider`: calls Google GenAI REST API (text-embedding-004, 768-dim). Zero GPU.
-//! - `FastEmbedProvider`: CPU ONNX runtime via the `fastembed` crate (stub for MVP; activated in Task 05).
+//! - `FastEmbedProvider`: CPU ONNX runtime via the `fastembed` crate.
 //!
 //! Factory function `build_embedding_provider` selects the correct backend based on `AiConfig.provider`.
 
@@ -43,7 +43,10 @@ pub trait EmbeddingProvider: Send + Sync {
 struct GeminiEmbedRequest<'a> {
     model: &'a str,
     content: GeminiContent<'a>,
-    #[serde(rename = "outputDimensionality", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "outputDimensionality",
+        skip_serializing_if = "Option::is_none"
+    )]
     output_dimensionality: Option<usize>,
 }
 
@@ -132,7 +135,10 @@ impl GeminiEmbeddingProvider {
 #[async_trait]
 impl EmbeddingProvider for GeminiEmbeddingProvider {
     async fn embed_text(&self, text: &str) -> Result<Vec<f32>, AppError> {
-        debug!(text_len = text.len(), "Embedding single text via Gemini API");
+        debug!(
+            text_len = text.len(),
+            "Embedding single text via Gemini API"
+        );
 
         let body = GeminiEmbedRequest {
             model: &format!("models/{}", self.model),
@@ -158,10 +164,9 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
             )));
         }
 
-        let parsed: GeminiEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to parse Gemini embed response: {e}")))?;
+        let parsed: GeminiEmbedResponse = response.json().await.map_err(|e| {
+            AppError::Internal(format!("Failed to parse Gemini embed response: {e}"))
+        })?;
 
         Ok(parsed.embedding.values)
     }
@@ -206,10 +211,9 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
             )));
         }
 
-        let parsed: GeminiBatchEmbedResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to parse Gemini batch response: {e}")))?;
+        let parsed: GeminiBatchEmbedResponse = response.json().await.map_err(|e| {
+            AppError::Internal(format!("Failed to parse Gemini batch response: {e}"))
+        })?;
 
         Ok(parsed.embeddings.into_iter().map(|e| e.values).collect())
     }
@@ -224,14 +228,6 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
 // ---------------------------------------------------------------------------
 
 /// CPU ONNX-backed embedding provider using the `fastembed` crate.
-///
-/// This provider is designed for Task 05 (offline ingestion worker) where local
-/// CPU SIMD/NEON acceleration is preferred over outbound API calls.
-///
-/// MVP Status: The `fastembed` crate requires pre-downloaded ONNX model files
-/// and adds significant binary size. This struct is a correct, production-safe
-/// stub that returns a descriptive error instead of panicking, so the factory
-/// can be wired and tested without pulling the heavy dependency yet.
 pub struct FastEmbedProvider {
     dimension: usize,
 }
@@ -321,11 +317,6 @@ impl EmbeddingProvider for MockEmbeddingProvider {
 // ---------------------------------------------------------------------------
 
 /// Constructs the correct `EmbeddingProvider` based on `AiConfig.provider`.
-///
-/// - `"gemini"` (default): Uses `GeminiEmbeddingProvider` calling the cloud REST API.
-/// - `"fastembed"`: Uses `FastEmbedProvider` (CPU ONNX stub; requires Task 05 activation).
-/// - `"mock"`: Uses `MockEmbeddingProvider` (deterministic one-hot unit vectors for CI/testing).
-/// - Any other value: Returns an `AppError::Internal` to fail fast at startup.
 pub fn build_embedding_provider(config: &AiConfig) -> Result<Arc<dyn EmbeddingProvider>, AppError> {
     match config.provider.to_lowercase().as_str() {
         "gemini" => {
@@ -430,7 +421,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_gemini_embedding_live_if_key_available() {
-        let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("AI_API_KEY")) else {
+        let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("AI_API_KEY"))
+        else {
             return;
         };
         if key.is_empty() || key.contains("your-gemini-api-key") {
@@ -444,7 +436,10 @@ mod tests {
             dimension: 768,
         };
         let provider = GeminiEmbeddingProvider::new(&config).expect("Must construct provider");
-        let vec = provider.embed_text("Watson in London fog").await.expect("Must embed text");
+        let vec = provider
+            .embed_text("Watson in London fog")
+            .await
+            .expect("Must embed text");
         assert_eq!(vec.len(), 768);
     }
 }

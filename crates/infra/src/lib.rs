@@ -5,9 +5,10 @@ pub mod config;
 pub mod email;
 pub mod entities;
 pub mod pool;
+pub mod queue;
 pub mod repositories;
 pub mod security;
-
+pub mod storage;
 
 pub use ai::{build_embedding_provider, EmbeddingProvider};
 pub use config::{
@@ -16,11 +17,12 @@ pub use config::{
 };
 pub use email::send_otp_email;
 pub use pool::{init_db_pool, init_redis_client};
+pub use queue::{get_job_status, publish_ingestion_job, INGESTION_GROUP, INGESTION_STREAM};
 pub use repositories::{
     badge_repository::{list_badges, list_user_badges, seed_default_badges_if_empty},
     book_repository::{
-        get_book_by_id, get_chapter_book_id, get_chapter_by_number, get_offline_bundle,
-        list_books, search_books,
+        chapter_dropoff, get_book_by_id, get_chapter_book_id, get_chapter_by_number,
+        get_offline_bundle, list_books, search_books,
     },
     progress_repository::{get_active_progress, record_heartbeat, update_progress},
     quote_repository::{
@@ -40,3 +42,4 @@ pub use security::{
     verify_access_token, verify_and_consume_otp, verify_password, verify_password_async, Claims,
     DUMMY_ARGON2_HASH,
 };
+pub use storage::StorageService;

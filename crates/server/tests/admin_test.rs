@@ -1,0 +1,394 @@
+//! Integration tests: admin EPUB upload, job monitoring,
+//! and drop-off analytics. Requires live MinIO + Redis.
+
+mod common;
+
+use axum::body::{to_bytes, Body};
+use axum::http::{header, Request, StatusCode};
+use chrono::Utc;
+use common::TestHarness;
+use infra::entities::{books, chapters, user_reading_progress, users};
+use sea_orm::{ActiveModelTrait, Set};
+use serde_json::Value;
+use uuid::Uuid;
+
+const BOUNDARY: &str = "BacaTestBoundary123";
+
+struct AdminContext {
+    pub admin_token: String,
+    pub reader_token: String,
+}
+
+/// Seeds one admin and one reader user; returns their bearer tokens.
+async fn seed_users(harness: &TestHarness) -> AdminContext {
+    let now = Utc::now();
+
+    let admin_id = Uuid::new_v4();
+    let admin_email = format!("curator_{}@baca.local", Uuid::new_v4());
+    users::ActiveModel {
+        id: Set(admin_id),
+        email: Set(admin_email.clone()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Curator Admin".to_string()),
+        role: Set("admin".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Admin seed must succeed");
+
+    let reader_id = Uuid::new_v4();
+    let reader_email = format!("reader_{}@baca.local", Uuid::new_v4());
+    users::ActiveModel {
+        id: Set(reader_id),
+        email: Set(reader_email.clone()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Plain Reader".to_string()),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Reader seed must succeed");
+
+    let secret = harness.state.config.jwt_secret();
+    let admin_token = infra::generate_access_token(admin_id, &admin_email, "admin", secret, 1440)
+        .expect("Admin token must generate");
+    let reader_token =
+        infra::generate_access_token(reader_id, &reader_email, "reader", secret, 1440)
+            .expect("Reader token must generate");
+
+    AdminContext {
+        admin_token,
+        reader_token,
+    }
+}
+
+/// Builds a multipart/form-data body with a single file part plus text fields.
+fn multipart_body(
+    filename: &str,
+    content_type: &str,
+    file_bytes: &[u8],
+    fields: &[(&str, &str)],
+) -> (String, Vec<u8>) {
+    let mut body = Vec::new();
+    for (name, value) in fields {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(file_bytes);
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={BOUNDARY}"), body)
+}
+
+fn upload_request(token: Option<&str>, content_type: String, body: Vec<u8>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/books/upload")
+        .header(header::CONTENT_TYPE, content_type);
+    if let Some(t) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    builder.body(Body::from(body)).expect("Valid request")
+}
+
+#[tokio::test]
+async fn test_upload_requires_admin_role() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let (ctype, body) = multipart_body("book.epub", "application/epub+zip", b"PKfake", &[]);
+
+    // 1. Guest (no token) is rejected with 401.
+    let resp = harness
+        .send_request(upload_request(None, ctype.clone(), body.clone()))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. Reader role is rejected with 403.
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.reader_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_upload_rejects_non_epub_and_missing_file() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    // 1. Plain-text file is rejected with 400.
+    let (ctype, body) = multipart_body("notes.txt", "text/plain", b"hello", &[]);
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 2. Multipart without a file part is rejected with 400.
+    let body = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nSome Title\r\n--{BOUNDARY}--\r\n"
+    )
+    .into_bytes();
+    let resp = harness
+        .send_request(upload_request(
+            Some(&ctx.admin_token),
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+            body,
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_upload_happy_path_queues_job() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    assert!(
+        harness.state.storage.is_some(),
+        "MinIO must be reachable for upload tests"
+    );
+
+    // Minimal ZIP header bytes are enough: the API validates type/size only;
+    // the worker validates real EPUB structure later.
+    let epub_bytes = b"PK\x03\x04minimal-epub-payload".to_vec();
+    let (ctype, body) = multipart_body(
+        "sherlock.epub",
+        "application/epub+zip",
+        &epub_bytes,
+        &[
+            ("title", "Sherlock Test"),
+            ("author", "A. C. Doyle"),
+            ("language", "en"),
+        ],
+    );
+
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let raw = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(json["success"], true);
+    let job_id = json["data"]["job_id"].as_str().expect("job_id string");
+    let book_id = json["data"]["book_id"].as_str().expect("book_id string");
+    assert_eq!(json["data"]["status"], "queued");
+
+    // Book row exists in draft status.
+    let stored: Option<books::Model> = {
+        use sea_orm::EntityTrait;
+        books::Entity::find_by_id(Uuid::parse_str(book_id).unwrap())
+            .one(&harness.state.db)
+            .await
+            .expect("Book lookup must succeed")
+    };
+    let stored = stored.expect("Uploaded book must exist");
+    assert_eq!(stored.status, "draft");
+    assert_eq!(stored.title, "Sherlock Test");
+    assert!(stored.epub_storage_path.ends_with(".epub"));
+
+    // Raw bytes landed in MinIO under the recorded key.
+    let fetched = harness
+        .state
+        .storage
+        .as_ref()
+        .expect("storage present")
+        .get_epub(&stored.epub_storage_path)
+        .await
+        .expect("Uploaded bytes must be retrievable from MinIO");
+    assert_eq!(fetched, epub_bytes);
+
+    // Job hash is queryable as queued (canonical and compat alias mounts).
+    for jobs_uri in [
+        format!("/api/v1/admin/jobs/{job_id}"),
+        format!("/api/admin/jobs/{job_id}"),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri(jobs_uri)
+            .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+            .body(Body::empty())
+            .expect("Valid request");
+        let resp = harness.send_request(req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let raw = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let json: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(json["data"]["status"], "queued");
+        assert_eq!(json["data"]["book_id"], book_id);
+    }
+}
+
+#[tokio::test]
+async fn test_job_status_unknown_id_returns_404() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/jobs/{}", Uuid::new_v4()))
+        .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Seeds a book with 2 chapters and progress for 2 users (one finishes ch1
+/// only, the other reaches ch2). Returns the book id.
+async fn seed_funnel(harness: &TestHarness) -> Uuid {
+    let now = Utc::now();
+    let book_id = Uuid::new_v4();
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set("Funnel Novel".to_string()),
+        author: Set("Analyst".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Test".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(2000),
+        estimated_reading_minutes: Set(10),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set("published".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Book seed must succeed");
+
+    let mut chapter_ids = Vec::new();
+    for n in 1..=2 {
+        let id = Uuid::new_v4();
+        chapters::ActiveModel {
+            id: Set(id),
+            book_id: Set(book_id),
+            chapter_number: Set(n),
+            title: Set(format!("Chapter {n}")),
+            word_count: Set(1000),
+            html_content: Set(format!("<p>Content {n}</p>")),
+            created_at: Set(now.into()),
+        }
+        .insert(&harness.state.db)
+        .await
+        .expect("Chapter seed must succeed");
+        chapter_ids.push(id);
+    }
+
+    // Two users: both reach ch1, only the first reaches ch2.
+    for (i, &last_chapter) in [chapter_ids[0], chapter_ids[1]].iter().enumerate() {
+        let user_id = Uuid::new_v4();
+        users::ActiveModel {
+            id: Set(user_id),
+            email: Set(format!("funnel_{}_{}@baca.local", i, Uuid::new_v4())),
+            password_hash: Set(Some("hash".to_string())),
+            display_name: Set(format!("Funnel {i}")),
+            role: Set("reader".to_string()),
+            avatar_url: Set(None),
+            is_active: Set(true),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(&harness.state.db)
+        .await
+        .expect("User seed must succeed");
+        user_reading_progress::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            user_id: Set(user_id),
+            book_id: Set(book_id),
+            last_chapter_id: Set(last_chapter),
+            last_anchor_cfi: Set("epubcfi(/6/2)".to_string()),
+            completion_percentage: Set(sea_orm::prelude::Decimal::new(500, 1)),
+            is_finished: Set(false),
+            last_read_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        }
+        .insert(&harness.state.db)
+        .await
+        .expect("Progress seed must succeed");
+    }
+
+    book_id
+}
+
+#[tokio::test]
+async fn test_dropoff_analytics_funnel_math() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let book_id = seed_funnel(&harness).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/admin/analytics/drop-off?book_id={book_id}"
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let raw = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&raw).unwrap();
+    let data = json["data"].as_array().expect("data array");
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["chapter_number"], 1);
+    assert_eq!(data[0]["readers_reached"], 2);
+    assert_eq!(data[0]["drop_off_pct"], 0.0);
+    assert_eq!(data[1]["chapter_number"], 2);
+    assert_eq!(data[1]["readers_reached"], 1);
+    assert_eq!(data[1]["drop_off_pct"], 50.0);
+}
+
+#[tokio::test]
+async fn test_dropoff_rejects_non_admin_and_unknown_book() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let book_id = seed_funnel(&harness).await;
+
+    // Reader role is rejected.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/admin/analytics/drop-off?book_id={book_id}"
+        ))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", ctx.reader_token),
+        )
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Unknown book is 404.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/admin/analytics/drop-off?book_id={}",
+            Uuid::new_v4()
+        ))
+        .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

@@ -431,7 +431,7 @@ pub struct QuoteSearchResultDto {
 }
 
 // -----------------------------------------------------------------------------
-// Atomic Insight Cards DTOs (SRS 18)
+// Atomic Insight Cards DTOs
 // -----------------------------------------------------------------------------
 
 /// Structured content returned from tldr_cache for recap_type = 'chapter_atomic_cards'.
@@ -444,7 +444,7 @@ pub struct AtomicCardsDto {
     pub cards: serde_json::Value,
 }
 
-/// Spoiler-free catch-up summary for a chapter (SRS 19).
+/// Spoiler-free catch-up summary for a chapter.
 /// The `recap` field is the raw JSON blob from the cache as returned by the AI pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -455,7 +455,7 @@ pub struct ChapterRecapDto {
 }
 
 // -----------------------------------------------------------------------------
-// Saved Quotes DTOs (SRS 20)
+// Saved Quotes DTOs
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -480,4 +480,41 @@ pub struct SavedQuoteResponseDto {
     pub quote_text: String,
     pub image_card_url: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+// -----------------------------------------------------------------------------
+// Ingestion & Admin DTOs
+// -----------------------------------------------------------------------------
+
+/// Ingestion job status snapshot, backed by the Redis `job:{id}` hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JobStatusDto {
+    pub job_id: String,
+    pub book_id: Uuid,
+    /// One of: queued, parsing, chunking, embedding, summarizing, published, failed.
+    pub status: String,
+    /// Completion percentage 0-100.
+    pub progress: i32,
+}
+
+/// Accepted EPUB upload response (HTTP 202).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UploadBookResponseDto {
+    pub job_id: String,
+    pub book_id: Uuid,
+    pub status: String,
+}
+
+/// One funnel step of the chapter drop-off analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DropOffPointDto {
+    pub chapter_number: i32,
+    pub chapter_title: String,
+    /// Distinct readers whose progress reached at least this chapter.
+    pub readers_reached: i64,
+    /// Percentage lost relative to chapter 1 (0.0-100.0).
+    pub drop_off_pct: f32,
 }

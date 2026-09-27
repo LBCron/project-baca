@@ -14,7 +14,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{AppConfig, EmbeddingProvider};
+use infra::{AppConfig, EmbeddingProvider, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
@@ -35,6 +35,9 @@ pub struct AppState {
     /// Dual-mode embedding provider (Gemini REST API or FastEmbed CPU).
     /// Wrapped in Arc so cloning AppState does not clone the provider internals.
     pub embedding: Arc<dyn EmbeddingProvider>,
+    /// S3-compatible object storage. `None` when MinIO/S3 is unreachable at
+    /// startup; upload endpoints fail closed with a 500 in that case.
+    pub storage: Option<Arc<StorageService>>,
 }
 
 impl AppState {
@@ -86,6 +89,9 @@ impl AppState {
         routes::quotes::get_quote_card,
         routes::insights::get_atomic_cards,
         routes::insights::get_chapter_recap,
+        routes::admin::upload_book,
+        routes::admin::ingestion_status,
+        routes::admin::dropoff_analytics,
     ),
     components(
         schemas(
@@ -117,7 +123,10 @@ impl AppState {
             AtomicCardsDto,
             ChapterRecapDto,
             SaveQuoteRequest,
-            SavedQuoteResponseDto
+            SavedQuoteResponseDto,
+            UploadBookResponseDto,
+            JobStatusDto,
+            DropOffPointDto
         )
     ),
     modifiers(&SecurityAddon),
@@ -128,7 +137,8 @@ impl AppState {
         (name = "Catalog", description = "Public domain book catalog, FTS search, and chapter reader"),
         (name = "Reading Progress", description = "Progress tracking, CFI anchors, and guest reconciliation"),
         (name = "Gamification", description = "Reading streaks, heartbeats, and achievement badges"),
-        (name = "Semantic Search", description = "HNSW pgvector quote search and AI-powered atomic insight cards")
+        (name = "Semantic Search", description = "HNSW pgvector quote search and AI-powered atomic insight cards"),
+        (name = "Administration", description = "Admin EPUB ingestion, job monitoring, and retention analytics")
     ),
     info(
         title = "Project Baca REST API",
@@ -179,7 +189,10 @@ pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> R
 }
 
 /// Middleware injecting OWASP recommended security headers across all HTTP responses
-pub async fn security_headers_middleware(req: Request<Body>, next: axum_mw::Next) -> Response<Body> {
+pub async fn security_headers_middleware(
+    req: Request<Body>,
+    next: axum_mw::Next,
+) -> Response<Body> {
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -287,7 +300,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .nest("/api/v1/books", quotes_router.clone())
         .nest("/api/v1/books", routes::insights_routes())
         .nest("/api/v1/quotes", routes::saved_quotes_routes())
-        // Top-level aliases (/api/...) for SRS spec compatibility
+        .nest("/api/v1/admin", routes::admin_routes())
+        // Top-level aliases (/api/...)
         .nest("/api/auth", auth_router)
         .nest("/api/me", routes::user_routes())
         .nest("/api/books", routes::books_routes())
@@ -296,6 +310,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .nest("/api/books", quotes_router)
         .nest("/api/books", routes::insights_routes())
         .nest("/api/quotes", routes::saved_quotes_routes())
+        .nest("/api/admin", routes::admin_routes())
         .fallback(not_found_handler)
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))
