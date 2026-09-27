@@ -22,7 +22,7 @@ ifeq ($(strip $(CARGO_WATCH)),)
 	@cargo run -p server
 else
 	@echo "Live reload enabled via cargo-watch..."
-	@cargo watch -q -c -w crates/server -w crates/infra -w crates/shared -x "run -p server"
+	@cargo watch -q -c -w crates/server -w crates/infra -w crates/domain -w crates/shared -x "run -p server"
 endif
 
 # Starts frontend with Trunk native hot-reload

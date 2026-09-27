@@ -720,6 +720,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "pretty_assertions",
+ "shared",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dotenvy"
 version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1433,6 +1443,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "chrono",
+ "domain",
  "dotenvy",
  "jsonwebtoken",
  "rand 0.8.8",

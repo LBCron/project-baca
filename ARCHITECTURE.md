@@ -48,7 +48,8 @@ project-baca/
 │
 ├── migrations/                      # Paired SQL migrations (.up.sql & .down.sql)
 │
-├── crates/                          # Rust workspace crates (shared, infra, server, web)
+├── crates/                          # Rust workspace crates (domain, shared, infra, server, web)
+│   ├── domain/                      # Pure business rules and invariants, zero I/O
 │   ├── shared/                      # DTOs, validation, and API contracts (Axum & WASM)
 │   ├── infra/                       # Database pool (SeaORM), Redis, MinIO client
 │   ├── server/                      # HTTP API gateway (Axum REST, OpenAPI, Auth)
@@ -57,19 +58,11 @@ project-baca/
 ├── python_worker/                   # Python AI ingestion and NLP worker (Task 05)
 ```
 
-## 3. Rust-Friendly Domain-Driven Design (DDD)
+## 3. Domain Core (`crates/domain`)
 
-* **Current state (honest):** the former `crates/domain` (plain serializable models
-  mirroring the SeaORM entities, consumed by nothing) was deleted 2026-09-27 as
-  dead code. There is no enforced domain boundary today.
-* **Deferred per YAGNI:** Newtype IDs (e.g., `BookId(Uuid)`) and repository port traits stay out until real business logic needs them. Repositories live directly in `crates/infra/src/repositories/`:
-  ```rust
-  // Target shape when the boundary earns its keep:
-  pub trait BookRepository: Send + Sync {
-      async fn find_by_id(&self, id: &BookId) -> Result<Option<Book>, DomainError>;
-      async fn list_books(&self, filter: &BookFilter) -> Result<Vec<BookSummary>, DomainError>;
-  }
-  ```
+* **Owns cross-context invariants, zero I/O:** `Percentage` (0.0-100.0, finished at 100), `BookStatus` lifecycle (`draft -> processing -> published`, `archived` from any active state), `advance_streak` transition rules, `eligible_badges` matrix, `merge_percentage` (guest-to-cloud `GREATEST` without SQL). Dependencies limited to `shared` (error contract), `chrono`, `thiserror`.
+* **Ports deferred per YAGNI:** repository traits (e.g., `trait BookRepository`) stay out until a second consumer needs the same model with different meaning (ADR-18 trigger). Repositories live in `crates/infra/src/repositories/` and call domain functions for rule evaluation.
+* **Layering:** `server` (handlers/DTOs) -> `infra` (adapters/SeaORM) -> `domain` (rules). `server` must not depend on `domain` directly.
 * **Shared DTOs (`crates/shared`):** Single contract definitions compiled to native code for Axum and WebAssembly for Leptos.
 
 ## 4. Ingestion Pipeline & Semantic AI Architecture
@@ -162,7 +155,7 @@ project-baca/
 ## 10. Core Engineering Invariants
 
 1. **ROBUST:**
-   - Zero panics in production Rust code (`unwrap()` and `expect()` prohibited in `crates/server`, `crates/infra`, `crates/shared`, `crates/web`). Errors handled through `Result<T, AppError>`.
+   - Zero panics in production Rust code (`unwrap()` and `expect()` prohibited in `crates/server`, `crates/domain`, `crates/infra`, `crates/shared`, `crates/web`). Errors handled through `Result<T, AppError>`.
    - Foreign key cascading constraints and check constraints enforced in PostgreSQL.
    - Graceful offline fallback in Leptos WASM via IndexedDB.
 2. **SCALABLE:**
@@ -170,7 +163,7 @@ project-baca/
    - Scoped semantic search per book (`WHERE book_id = $1`).
    - Partial GIN index filtering only active books (`WHERE status = 'published'`).
 3. **EASY TO MAINTAIN:**
-   - Modular crate boundaries (`shared`, `infra`, `server`, `web`).
+   - Modular crate boundaries (`domain`, `shared`, `infra`, `server`, `web`).
    - Paired reversible SQL migrations.
    - Centralized Makefile automation.
 4. **DRY (Don't Repeat Yourself):**

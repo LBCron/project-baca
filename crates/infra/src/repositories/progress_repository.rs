@@ -90,8 +90,13 @@ pub async fn update_progress(
         ));
     }
 
-    let is_finished = req.completion_percentage >= 100.0;
-    let percentage_dec: Decimal = format!("{:.2}", req.completion_percentage)
+    // Domain-owned invariant: completion lives in 0.0-100.0 and finishes
+    // exactly at 100 (the API edge validates the wire range; this guards
+    // every non-HTTP caller such as workers and tests).
+    let percentage = domain::Percentage::new(req.completion_percentage)?;
+    let is_finished = percentage.is_finished();
+    let percentage_dec: Decimal = percentage
+        .decimal_string()
         .parse()
         .map_err(|e| AppError::BadRequest(format!("Invalid percentage value: {e}")))?;
 
@@ -200,43 +205,25 @@ pub async fn record_heartbeat(
     let mut total_xp = streak_record.as_ref().map(|s| s.total_xp).unwrap_or(0);
     let last_active_date = streak_record.as_ref().and_then(|s| s.last_activity_date);
 
-    let mut xp_earned = 10; // Base XP for reading heartbeat
+    let mut xp_earned = domain::BASE_HEARTBEAT_XP;
     let mut streak_incremented = false;
 
-    // Daily active threshold is 300 seconds (5 minutes)
-    const DAILY_THRESHOLD_SECONDS: i64 = 300;
-
-    if total_today_seconds >= DAILY_THRESHOLD_SECONDS {
-        match last_active_date {
-            Some(last_date) if last_date == today => {
-                // Streak already counted for today, maintain streak without double increment
-            }
-            Some(last_date) if last_date == today - chrono::Duration::days(1) => {
-                // Consecutive day reading!
-                current_streak += 1;
-                streak_incremented = true;
-                xp_earned += 50; // Streak bonus
-            }
-            _ => {
-                // First day reading or broken streak
-                current_streak = 1;
-                streak_incremented = true;
-                xp_earned += 20; // Daily milestone bonus
-            }
-        }
-
-        if current_streak > longest_streak {
-            longest_streak = current_streak;
-        }
-    }
+    // Domain-owned transition rules (threshold evaluation + date arithmetic).
+    let outcome = domain::advance_streak(
+        current_streak,
+        longest_streak,
+        last_active_date,
+        today,
+        total_today_seconds >= domain::DAILY_THRESHOLD_SECONDS,
+    );
+    current_streak = outcome.current_days;
+    longest_streak = outcome.longest_days;
+    streak_incremented = outcome.incremented;
+    xp_earned += outcome.bonus_xp;
 
     total_xp += xp_earned;
 
-    let updated_last_date = if total_today_seconds >= DAILY_THRESHOLD_SECONDS {
-        Some(today)
-    } else {
-        last_active_date
-    };
+    let updated_last_date = outcome.last_active;
 
     match streak_record {
         Some(existing) => {
@@ -289,20 +276,8 @@ async fn check_and_award_badges(
     streak_days: i32,
     total_seconds: i64,
 ) -> Result<(), AppError> {
-    let mut eligible_badges = Vec::new();
-
-    if total_seconds >= 60 {
-        eligible_badges.push("first_step");
-    }
-    if streak_days >= 3 {
-        eligible_badges.push("streak_3_days");
-    }
-    if streak_days >= 7 {
-        eligible_badges.push("streak_7_days");
-    }
-    if total_seconds >= 3600 {
-        eligible_badges.push("dedicated_reader");
-    }
+    // Domain-owned eligibility matrix (ids must exist in `badges` seed data).
+    let eligible_badges: Vec<&str> = domain::eligible_badges(streak_days, total_seconds);
 
     for badge_id in eligible_badges {
         let exists = user_badges::Entity::find()
