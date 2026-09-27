@@ -26,7 +26,7 @@ Whether you are revisiting timeless world literature or exploring classic Indone
 ## 3. Reader Experience & Key Features
 
 * **Vintage Literary Aesthetic (1900–1950):**
-  Designed with the warmth of aged archival paper (`#F7F4EE`), typewriter ink (`#1F1916`), and terracotta accents. Uses genuine literary serif typography (*EB Garamond*, *Newsreader*) paired with Victorian fleuron chapter ornaments `❖` to provide a reading experience that treats your eyes with respect.
+  Designed with the warmth of aged archival paper (`#F9F6F0`), dense ink (`#2B2625`), and terracotta accents (`#9D5A3C`). Uses genuine literary serif typography (*EB Garamond*, *Newsreader*) paired with Victorian fleuron chapter ornaments `❖` to provide a reading experience that treats your eyes with respect.
 * **Reflowable Tap-to-Turn E-Reader:**
   Horizontal page pagination engineered to feel like turning the pages of a real physical book. Built-in DOM CFI anchor tracking guarantees you will never lose your reading position when rotating your phone or adjusting font sizes.
 * **100% Offline-First Freedom:**
@@ -50,7 +50,7 @@ Project Baca is engineered from the ground up for speed, reliability, and securi
 
 * **Stateless API Gateway:** Built with **Rust (Axum)** for predictable low-latency performance and memory safety.
 * **Client-Side WebAssembly (WASM):** Built with **Leptos 0.7**, delivering native-speed page transitions and smooth 60 FPS pagination inside any modern browser.
-* **Postgres for Everything:** Relational tables, sub-3ms typo-tolerant catalog search (`pg_trgm`), and sub-10ms semantic vector traversal (`pgvector` HNSW) all unified within **PostgreSQL 17**.
+* **Postgres for Everything:** Relational tables, sub-5ms typo-tolerant catalog search (`pg_trgm`), and sub-10ms semantic vector traversal (`pgvector` HNSW) all unified within **PostgreSQL 17**.
 * **Modern Edge Transport:** Terminated via **Caddy Reverse Proxy** supporting **HTTP/3 over QUIC** (UDP 443) with seamless fallback to HTTP/2 (TCP 443). Features 0-RTT/1-RTT handshakes and connection migration for uninterrupted reading while moving between Wi-Fi and mobile networks.
 * **Pragmatic Background Queues:** Asynchronous EPUB processing, HTML cleaning, and transactional notifications managed via **Redis 7 Streams**.
 

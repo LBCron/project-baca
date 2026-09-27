@@ -9,11 +9,12 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - **Milestone 05 (Ingestion Pipeline & Admin):** MinIO `StorageService`; admin EPUB upload with EPUB/50MB validation (202 + Redis Streams dispatch); Python worker (EPUB parse, HTML sanitization, scene chunking, batch embeddings, atomic cards/recaps, WebP covers, DLQ + reclaim); job monitor and drop-off funnel endpoints with OpenAPI docs.
 - **Domain Core (ADR-18):** `crates/domain` owns cross-context invariants (`Percentage`, `BookStatus`, streak rules, badge matrix, progress merge) with DB-free unit tests; repositories call domain functions for rule evaluation.
 - **Dev Backfill Tool:** `crates/infra/examples/backfill_chunks.rs` for one-shot chapter embedding ahead of the streaming worker.
-- **Admin & Worker Test Suites:** 6 admin integration tests against live MinIO (RBAC, validation, job lifecycle, funnel math); 8 worker unit tests with zero service dependencies.
+- **Admin & Worker Test Suites:** 10 admin integration tests against live MinIO (RBAC, validation, oversize, job lifecycle incl. malformed ids, funnel math); 9 worker unit tests with zero service dependencies; live DLQ E2E (`make worker-test-live`); test-debris janitor (`make purge-test-debris`).
 
 ### Fixed
-- **Quote API contracts:** Unknown-book search returns 404 (was 200 `[]`); quote save validates the (book, chapter) pair (was 500 on foreign-key violation).
-- **Post-auth hardening (ADR-20):** Proxy-header trust flag for rate limits; CORS allowlist (was `Any`); upload metadata capped to column sizes; chapter-1 recap closed on the UUID path; badge awards batched; worker zip-bomb guard; lexical SLA aligned <3ms → <5ms to match measurements.
+- **Quote API contracts:** Unknown-book search returns 404 (was 200 `[]`); quote save validates the (book, chapter) pair (was 500 on foreign-key violation); saving and card rendering require auth with per-owner scoping (ADR-21; guest mode removed).
+- **Audit hardening (ADR-21):** Guest merge transactional with pair validation; heartbeat rejects unknown/draft books; auth fails closed on Redis outage; JWT default secret panics in production; OTP redacted from logs; avatar URL allowlist; server-minted request ids; CSP/COOP/CORP headers; password change revokes other sessions by default.
+- **Pre-M6 paydown (ADR-22):** SHA-256 refresh storage + replay-triggered family revocation; heartbeat anti-farm (1/60s, 429); admin orphan compensation; Swagger off in production; CORS narrowed; catalog tags N+1 batched; OTP SLA corrected 40ms → 100ms with warmup.
 - **Comment hygiene:** Module headers reduced to single purpose lines; spec tracers (task/SRS/FR/US tags) removed from code comments; OpenAPI descriptions kept concise.
 - **Docs SSOT:** SRS token lifetimes and Argon2 params, ERD migration 07, 13-table counts, canonical Redis Stream name, dual route-mount note, admin Screens 6–7 in UX flow.
 

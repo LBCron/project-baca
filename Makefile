@@ -172,11 +172,17 @@ build:
 	@echo "Building production WASM frontend bundle..."
 	@cd crates/web && trunk build --release
 
+# Purge test debris from shared dev services (stream PEL, draft rows,
+# fake MinIO objects). Dev-only: never run against production data.
+purge-test-debris:
+	@echo "Purging test debris (pending PEL, draft Sherlock/scan rows, PKfake objects)..."
+	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python ../scripts/purge_test_debris.py
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-load-stress test-api-boundary test-security test-reliability test-all check build clean
+.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-load-stress test-api-boundary test-security test-reliability test-all check build clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain
 

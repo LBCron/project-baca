@@ -47,7 +47,7 @@ Manage database schema via paired SQL files in `migrations/`:
 ```bash
 make migrate-up     # Apply pending migrations
 make migrate-down   # Rollback latest migration
-make migrate-reset  # Full reset and re-apply
+make migrate-status # Show applied migration history
 ```
 
 ## 4. Running Application Components
@@ -65,26 +65,36 @@ make migrate-reset  # Full reset and re-apply
 ### Structured Logging & Observability
 * **Human-readable text:** Default output for local development.
 * **Structured JSON:** Enable via `LOG_FORMAT=json cargo run -p server`.
-* **Request Correlation:** The `request_id_middleware` assigns or propagates `x-request-id` headers across all spans and responses.
+* **Request Correlation:** The `request_id_middleware` mints a fresh UUID `x-request-id` per request (client-supplied values are ignored) across all spans and responses.
 
 ### Ingestion Worker (Python)
 ```bash
-cd python_worker
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
-python -m ingestion.worker
+make worker-install   # create venv + install deps (first time only)
+make worker-test      # unit tests, no services needed (9/9)
+make worker-test-live # DLQ E2E, needs live Redis + Postgres
+make worker-once      # process a single queued job then exit
+make worker           # long-running consumer
 ```
+Worker settings via `.env`: `GEMINI_API_KEY`, `LLM_MODEL_NAME` (default `gemini-flash-latest`), `RECLAIM_IDLE_MS` (default 300000). Canonical stream `stream:epub_ingestion`, DLQ `stream:epub_ingestion:dlq`.
+Test debris (pending PEL, draft probe rows, fake MinIO objects) accumulates on the shared dev stack; clean it with `make purge-test-debris` (dev-only).
 
 ## 5. Testing & Quality Assurance
 
-Comprehensive 4-tier test suite:
+Comprehensive 12-target test suite (`cargo test --workspace`: 112 passed / 0 failed; worker 9/9):
 
 ```bash
 make test-smoke        # Service boot, health endpoints, Swagger UI, network reachability
-make test-integration  # Request ID propagation, CORS, OpenAPI schema verification
-make test-performance  # Latency SLA benchmarks (p95 < 50ms, 50 concurrent tasks)
-make test-reliability  # Database disconnect fallback, fault injection, zero-panic checks
-make test-unit         # Domain models and DTO validation logic
+make test-integration  # Request ID minting, CORS allowlist, OpenAPI schema verification
+make test-auth         # Signup/OTP/login/rotation/logout/revoke + guest merge
+make test-catalog      # Catalog, reader, heartbeat anti-farm, badges
+make test-semantic     # Quote search, save/card ownership, atomic cards, recaps
+make test-admin        # Upload RBAC/validation, job monitor, drop-off analytics
+make test-database     # Constraints, cascades, rollbacks, query plans
+make test-performance  # Latency SLA benchmarks (REST p95 < 50ms, OTP p95 < 100ms)
+make test-load-stress  # Concurrent load + rate-limit shedding
+make test-api-boundary # 404/405, malformed payloads, pagination clamps
+make test-security     # OWASP headers, lockout, revocation, error masking
+make test-reliability  # Disconnect fallback, fault injection, oversized ids
 make test-all          # Complete end-to-end test execution
 ```
 
@@ -97,5 +107,5 @@ make test-all          # Complete end-to-end test execution
 
 1. **Port 5433 Conflict:** Check active processes with `lsof -i :5433` and adjust `docker-compose.yml` if necessary.
 2. **Missing WASM Target:** Run `rustup target add wasm32-unknown-unknown`.
-3. **MinIO Connection Error:** Ensure buckets (`project-baca-books`) are created during container startup.
+3. **MinIO Connection Error:** Ensure buckets (`baca-epubs`, `baca-covers`) exist — the server creates them idempotently at startup; uploads fail closed with 500 when storage is unreachable.
 4. **Redis Streams Group:** The worker auto-initializes the consumer group using `XGROUP CREATE` fallback.
