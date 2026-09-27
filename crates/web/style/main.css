@@ -324,3 +324,76 @@ body.theme-dark-roast {
 .reader-zone-prev { left: 0; width: 20%; }
 .reader-zone-next { right: 0; width: 20%; }
 .reader-zone-menu { left: 20%; right: 20%; }
+
+/* Catalog search + pagination (Sub-Task 6.3) */
+.search-bar {
+    font-family: var(--font-serif-reading);
+    font-size: 1.05rem;
+    padding: 10px 18px;
+    border: 1px solid var(--color-border-parchment);
+    border-radius: var(--radius-lg);
+    background: var(--color-paper-card);
+    color: var(--color-ink-primary);
+    width: min(480px, 90%);
+    margin-top: 20px;
+}
+
+.load-more {
+    text-align: center;
+    margin-bottom: 60px;
+}
+
+.continue-reading {
+    margin-bottom: 16px;
+}
+
+/* Book overview (Sub-Task 6.4) */
+.book-overview {
+    padding: 24px 0 48px;
+}
+
+.book-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    margin: 18px 0;
+    font-size: 0.9rem;
+    color: var(--color-ink-muted);
+}
+
+.book-actions {
+    display: flex;
+    gap: 12px;
+    margin: 20px 0 36px;
+}
+
+.chapter-list {
+    list-style: none;
+    border-top: 1px solid var(--color-border-parchment);
+}
+
+.chapter-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    padding: 12px 4px;
+    border-bottom: 1px solid var(--color-border-parchment);
+    font-size: 1rem;
+}
+
+.chapter-row a {
+    color: var(--color-ink-primary);
+    text-decoration: none;
+}
+
+.chapter-row a:hover {
+    color: var(--color-accent-terracotta);
+}
+
+.chapter-row span {
+    font-size: 0.85rem;
+    color: var(--color-ink-faint);
+    white-space: nowrap;
+}

@@ -17,7 +17,8 @@ async fn fetch_catalog(cursor: Option<String>) -> Result<Vec<BookSummaryDto>, St
 }
 
 #[component]
-pub fn HomePage(lang: ReadSignal<String>, set_lang: WriteSignal<String>) -> impl IntoView {
+pub fn HomePage() -> impl IntoView {
+    let (lang, set_lang) = signal("EN".to_string());
     let (books, set_books) = signal(Vec::<BookSummaryDto>::new());
     let (cursor, set_cursor) = signal(None::<String>);
     let (loading, set_loading) = signal(false);

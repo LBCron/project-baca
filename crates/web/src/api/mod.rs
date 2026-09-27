@@ -13,7 +13,7 @@ use shared::{
 use wasm_bindgen::JsCast;
 use web_sys::window;
 
-const API_BASE: &str = "/api/v1";
+const API_BASE: &str = "http://localhost:8080/api/v1";
 const TOKEN_KEY: &str = "baca_access_token";
 
 fn storage() -> Option<web_sys::Storage> {
