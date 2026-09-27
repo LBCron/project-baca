@@ -90,6 +90,19 @@ impl StorageService {
         self.get_object(&self.bucket_epubs.clone(), key).await
     }
 
+    /// Best-effort delete from the EPUB bucket (orphan compensation when a
+    /// later upload step fails; failures only surface as logs).
+    pub async fn delete_epub(&self, key: &str) -> Result<(), AppError> {
+        self.client
+            .delete_object()
+            .bucket(self.bucket_epubs.clone())
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("Storage delete failed: {e:?}")))?;
+        Ok(())
+    }
+
     async fn put_object(
         &self,
         bucket: &str,

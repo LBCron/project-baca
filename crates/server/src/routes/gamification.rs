@@ -8,11 +8,16 @@ use axum::{
     Json, Router,
 };
 use shared::{
-    ApiResponse, BadgeDto, ErrorPayload, ReadingHeartbeatRequest, ReadingHeartbeatResponse,
-    UserBadgeDto,
+    ApiResponse, AppError, BadgeDto, ErrorPayload, ReadingHeartbeatRequest,
+    ReadingHeartbeatResponse, UserBadgeDto,
 };
 use std::sync::Arc;
 use validator::Validate;
+
+/// Minimum seconds between two rewarded heartbeats for the same user+book.
+/// Replay bursts inside the window are rejected so scripts cannot inflate
+/// XP, streaks, or badges with cheap 1-second heartbeats.
+pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
 
 /// Logs reading seconds, evaluates the streak, and awards XP.
 #[utoipa::path(
@@ -33,6 +38,24 @@ pub async fn record_heartbeat(
     Json(req): Json<ReadingHeartbeatRequest>,
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
+
+    // Anti-XP-farm gate lives here (route owns Redis; the repository owns
+    // Postgres). Redis down fails open to availability: abuse still costs a
+    // valid session per hit and the streak math caps daily gains.
+    if let Ok(mut redis_conn) = state.get_redis_conn().await {
+        use redis::AsyncCommands;
+        let farm_key = format!("heartbeat:min_interval:{}:{}", auth.id, req.book_id);
+        let fresh: bool = redis_conn.set_nx(&farm_key, "1").await.unwrap_or(true);
+        if fresh {
+            let _: Result<(), _> = redis_conn
+                .expire(&farm_key, HEARTBEAT_MIN_INTERVAL_SECS as i64)
+                .await;
+        } else {
+            let ttl: i64 = redis_conn.ttl(&farm_key).await.unwrap_or(60);
+            let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
+            return Err(HttpError(AppError::RateLimited { retry_after }));
+        }
+    }
 
     let result = infra::record_heartbeat(&state.db, auth.id, &req)
         .await

@@ -17,7 +17,7 @@ use infra::{AppConfig, EmbeddingProvider, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -282,9 +282,19 @@ pub async fn not_found_handler() -> impl IntoResponse {
     )
 }
 
+/// Swagger UI and OpenAPI JSON. Disabled in production: the spec
+/// fingerprinting surface stays available in dev/staging only.
+fn swagger_routes(state: &Arc<AppState>) -> SwaggerUi {
+    if state.config.is_production() {
+        SwaggerUi::new("/swagger-ui-disabled")
+    } else {
+        SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
+    }
+}
+
 /// Assembles Axum Router with Swagger UI, sub-routers, and middleware pipeline
 pub fn create_app(state: Arc<AppState>) -> Router {
-    // Browsers only: origins restricted to the configured allowlist. Any other
+    // Browsers only: origins, methods, and headers restricted. Any other
     // origin gets no ACAO header, so credentialed cross-site reads fail closed.
     let allowed_origins = state.config.server.cors_allowed_origins.clone();
     let cors = CorsLayer::new()
@@ -294,8 +304,19 @@ pub fn create_app(state: Arc<AppState>) -> Router {
                 .map(|s| allowed_origins.iter().any(|o| o == s))
                 .unwrap_or(false)
         }))
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            REQUEST_ID_HEADER.clone(),
+        ]);
 
     let auth_router = routes::auth_routes().layer(axum_mw::from_fn_with_state(
         state.clone(),
@@ -309,7 +330,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
     ));
 
     Router::new()
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        .merge(swagger_routes(&state))
         .route("/health", get(health_check))
         .route("/api/v1/health", get(api_health_check))
         // Versioned API routes (/api/v1/...)

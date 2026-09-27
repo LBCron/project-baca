@@ -352,6 +352,11 @@ impl AppConfig {
         self.server.port
     }
 
+    /// Whether the server runs in production (Swagger disabled, secrets strict).
+    pub fn is_production(&self) -> bool {
+        self.server.env.eq_ignore_ascii_case("production")
+    }
+
     /// Accessor for database connection URL
     pub fn database_url(&self) -> &str {
         &self.database.url

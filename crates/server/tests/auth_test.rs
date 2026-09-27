@@ -47,7 +47,6 @@ async fn test_auth_full_lifecycle() {
         .method("POST")
         .uri("/api/v1/auth/signup")
         .header("cf-connecting-ip", &lifecycle_ip)
-        .header("cf-connecting-ip", &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -215,6 +214,60 @@ async fn test_auth_full_lifecycle() {
         .unwrap();
     let (resp, _) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Replaying the rotated token again triggers theft handling: the family
+    // is revoked, so even the freshly rotated token dies.
+    let replay_req = RefreshTokenRequest {
+        refresh_token: refresh_req.refresh_token.clone(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/refresh")
+        .header("cf-connecting-ip", &lifecycle_ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&replay_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/refresh")
+        .header("cf-connecting-ip", &lifecycle_ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&RefreshTokenRequest {
+                refresh_token: rotated_refresh_token.clone(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // The theft killed the family: re-login for the logout + delete steps.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header("cf-connecting-ip", &lifecycle_ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&LoginRequest {
+                email: test_email.clone(),
+                password: new_password.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, relogin_body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rotated_refresh_token = relogin_body["data"]["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let active_access_token = relogin_body["data"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Logout with rotated token
     let logout_req = RefreshTokenRequest {

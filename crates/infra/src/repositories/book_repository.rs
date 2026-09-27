@@ -103,9 +103,31 @@ pub async fn list_books(
         .await
         .map_err(|e| AppError::Database(format!("Failed to query catalog: {e}")))?;
 
+    // One batched tag lookup for the whole page (no N+1): a single join over
+    // book_tags+tags filtered to the page's book ids.
+    let page_ids: Vec<Uuid> = book_models.iter().map(|b| b.id).collect();
+    let tag_map: std::collections::HashMap<Uuid, Vec<String>> = if page_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let tag_rows = book_tags::Entity::find()
+            .filter(book_tags::Column::BookId.is_in(page_ids))
+            .find_also_related(tags::Entity)
+            .all(db)
+            .await
+            .map_err(|e| AppError::Database(format!("Failed to query catalog tags: {e}")))?;
+        let mut map: std::collections::HashMap<Uuid, Vec<String>> =
+            std::collections::HashMap::new();
+        for (bt, maybe_tag) in tag_rows {
+            if let Some(t) = maybe_tag {
+                map.entry(bt.book_id).or_default().push(t.name);
+            }
+        }
+        map
+    };
+
     let mut result = Vec::with_capacity(book_models.len());
     for b in book_models {
-        let tag_names = get_tags_for_book(db, b.id).await?;
+        let tag_names = tag_map.get(&b.id).cloned().unwrap_or_default();
         result.push(BookSummaryDto {
             id: b.id,
             title: b.title,
@@ -147,8 +169,8 @@ pub async fn search_books(
         WHERE status = 'published'
           AND ($2::text IS NULL OR language = $2)
           AND (
-              title %> $1 
-              OR author %> $1 
+              title %> $1
+              OR author %> $1
               OR title % $1
               OR author % $1
               OR to_tsvector('simple', title || ' ' || author || ' ' || description) @@ plainto_tsquery($1)

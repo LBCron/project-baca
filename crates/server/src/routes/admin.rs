@@ -183,13 +183,25 @@ pub async fn upload_book(
         created_at: Set(now.into()),
         updated_at: Set(now.into()),
     };
-    book.insert(&state.db)
-        .await
-        .map_err(|e| HttpError(AppError::Database(format!("Failed to record book: {e}"))))?;
+    if let Err(e) = book.insert(&state.db).await {
+        // The EPUB bytes are already in S3: remove them so a DB failure does
+        // not leave an orphan object with no catalog row.
+        if let Err(del_err) = storage.delete_epub(&storage_path).await {
+            tracing::warn!(target: "server::admin", "Orphan EPUB cleanup failed: {del_err}");
+        }
+        return Err(HttpError(AppError::Database(format!(
+            "Failed to record book: {e}"
+        ))));
+    }
 
     let job_id = publish_ingestion_job(&state.redis, book_id, &storage_path)
         .await
-        .map_err(HttpError)?;
+        .map_err(|e| {
+            // The book row stays as `draft` (visible to admins, invisible to
+            // readers) so a retry or reaper can pick it up later.
+            tracing::warn!(target: "server::admin", "Queue publish failed; book left as draft: {e}");
+            HttpError::from(e)
+        })?;
 
     Ok((
         StatusCode::ACCEPTED,

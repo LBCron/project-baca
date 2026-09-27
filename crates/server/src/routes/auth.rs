@@ -12,10 +12,11 @@ use chrono::Utc;
 use infra::{
     activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
     entities::users, find_user_by_email, find_user_by_id, generate_access_token,
-    generate_and_store_otp, generate_refresh_token, hash_password_async, revoke_all_user_sessions,
-    revoke_refresh_token, send_otp_email, store_refresh_token, update_inactive_credentials,
-    update_user_password, update_user_profile, validate_and_rotate_refresh_token,
-    verify_access_token, verify_and_consume_otp, verify_password_async, DUMMY_ARGON2_HASH,
+    generate_and_store_otp, generate_refresh_token, hash_password_async, is_known_rotated_token,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_refresh_token, send_otp_email,
+    store_refresh_token, update_inactive_credentials, update_user_password, update_user_profile,
+    user_id_of_rotated_token, validate_and_rotate_refresh_token, verify_access_token,
+    verify_and_consume_otp, verify_password_async, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use shared::{
@@ -306,6 +307,18 @@ pub async fn refresh(
     req.validate().map_err(HttpError::from)?;
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
+
+    // A rotated (dead) token presented again signals theft: the family may
+    // already be gone, but if the user set still holds sibling hashes the
+    // whole family dies with this request.
+    if is_known_rotated_token(&mut redis_conn, &req.refresh_token).await {
+        if let Some(uid) = user_id_of_rotated_token(&mut redis_conn, &req.refresh_token).await {
+            let _ = revoke_family_on_reuse(&mut redis_conn, uid).await;
+        }
+        return Err(HttpError(AppError::Unauthorized(
+            "Invalid or expired refresh token".to_string(),
+        )));
+    }
 
     let (user_id, new_refresh_token) = validate_and_rotate_refresh_token(
         &mut redis_conn,

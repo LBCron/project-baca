@@ -534,6 +534,19 @@ async fn test_gamification_heartbeat_and_badges() {
     );
     assert!(json_hb["data"]["total_xp"].as_i64().unwrap_or(0) > 0);
 
+    // A second heartbeat inside the 60 s min-interval is rejected so XP
+    // cannot be farmed by replaying cheap heartbeats.
+    let req_farm = Request::builder()
+        .uri("/api/v1/activity/heartbeat")
+        .method("POST")
+        .header("Authorization", format!("Bearer {}", seeded.token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(heartbeat_payload.to_string()))
+        .unwrap();
+    let (resp_farm, json_farm) = harness.send_json_request(req_farm).await;
+    assert_eq!(resp_farm.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json_farm["error"]["code"], "RATE_LIMITED");
+
     // Verify user unlocked first_step badge
     let req_user_badges = Request::builder()
         .uri("/api/v1/me/badges")
