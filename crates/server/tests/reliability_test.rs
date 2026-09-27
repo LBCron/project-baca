@@ -1,4 +1,4 @@
-//! Reliability, fault injection, and invariant test suite validating graceful degradation and zero-panics.
+//! Fault injection and graceful degradation.
 
 mod common;
 

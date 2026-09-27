@@ -1,11 +1,4 @@
-//! Per-user and per-IP AI rate limit middleware for semantic search endpoints.
-//!
-//! Enforces a sliding-window limit of 10 requests per minute:
-//! - For authenticated users: keyed by user UUID (`rate_limit:ai:user:<user_id>`).
-//! - For guest readers: keyed by client IP (`rate_limit:ai:guest:<client_ip>`), allowing
-//!   unregistered users to freely use the Quote Finder while defending against token depletion.
-//!
-//! Enforces RFC standard `X-RateLimit-*` and `Retry-After` headers.
+//! Sliding-window AI rate limit (10 req/min): users by UUID, guests by IP.
 
 use crate::AppState;
 use axum::{
@@ -26,7 +19,7 @@ const AI_MAX_REQUESTS: i64 = 10;
 const AI_WINDOW_SECONDS: i64 = 60;
 
 fn get_client_ip(req: &Request<Body>) -> String {
-    // 1. Cloudflare connecting IP
+    // Cloudflare connecting IP
     if let Some(cf_ip) = req
         .headers()
         .get("cf-connecting-ip")
@@ -38,7 +31,7 @@ fn get_client_ip(req: &Request<Body>) -> String {
         }
     }
 
-    // 2. Standard X-Real-IP reverse proxy header
+    // Standard X-Real-IP reverse proxy header
     if let Some(real_ip) = req
         .headers()
         .get("x-real-ip")
@@ -50,7 +43,7 @@ fn get_client_ip(req: &Request<Body>) -> String {
         }
     }
 
-    // 3. X-Forwarded-For header
+    // X-Forwarded-For header
     if let Some(forwarded) = req
         .headers()
         .get("x-forwarded-for")
@@ -67,7 +60,7 @@ fn get_client_ip(req: &Request<Body>) -> String {
     "127.0.0.1".to_string()
 }
 
-/// Sliding-window rate limiter scoped to user ID (if authenticated) or client IP (if guest).
+/// Sliding-window limiter: users by ID, guests by IP.
 pub async fn ai_rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,

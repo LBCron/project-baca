@@ -1,5 +1,4 @@
-//! Authentication & User REST API Handlers
-//! High-performance async endpoints with connection reuse and repository queries.
+//! Auth and user endpoints.
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
 use axum::{
@@ -194,7 +193,7 @@ pub async fn login(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    // Anti-Credential-Stuffing: Lockout check (15 minutes after 5 failed attempts)
+    // Lockout check: 15 minutes after 5 failed attempts.
     let lockout_key = format!("auth:login:lockout:{}", req.email);
     let is_locked: bool = redis_conn.exists(&lockout_key).await.unwrap_or(false);
     if is_locked {
@@ -210,7 +209,7 @@ pub async fn login(
     let user = match user {
         Some(u) => u,
         None => {
-            // OWASP ASVS V2.1.1: Dummy verification to prevent timing attack enumeration
+            // Dummy verification defeats timing-based user enumeration.
             let _ =
                 verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
 
@@ -368,7 +367,7 @@ pub async fn logout(
 
     let _ = revoke_refresh_token(&mut redis_conn, &req.refresh_token).await;
 
-    // OWASP token blacklisting: If Authorization header is provided, blacklist the access token until its expiry
+    // Blacklist the access token until its expiry when a header is present.
     if let Some(auth_val) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
             if let Ok(claims) = verify_access_token(token, state.config.jwt_secret()) {

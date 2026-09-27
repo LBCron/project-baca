@@ -1,5 +1,4 @@
-//! Project Baca — HTTP REST API Server
-//! Built with Axum 0.8, SeaORM, Redis, and OpenAPI (utoipa).
+//! HTTP REST API server.
 
 use infra::{build_embedding_provider, init_db_pool, init_redis_client, AppConfig};
 use sea_orm::DatabaseConnection;

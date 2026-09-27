@@ -1,4 +1,4 @@
-//! Book catalog discovery, FTS search, chapter delivery, and offline bundle endpoints.
+//! Catalog, search, chapter, and offline bundle endpoints.
 
 use axum::{
     extract::{Path, Query, State},
@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{error::HttpError, AppState};
 
-/// List books in catalog with optional cursor pagination, language, theme, and tag filters
+/// Catalog listing with cursor pagination and filters.
 #[utoipa::path(
     get,
     path = "/api/v1/books",
@@ -102,7 +102,7 @@ pub async fn get_chapter(
     Ok(Json(ApiResponse::success(chapter)).into_response())
 }
 
-/// Retrieve full book metadata and all chapters for client-side IndexedDB caching
+/// Full book metadata plus chapters for offline caching.
 #[utoipa::path(
     get,
     path = "/api/v1/books/{id}/offline-bundle",

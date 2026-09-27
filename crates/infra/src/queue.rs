@@ -1,8 +1,7 @@
 //! Redis Streams ingestion queue and per-job status hashes.
 //!
-//! Uploads publish one message per EPUB; the Python worker consumes via the
-//! `ingestion-workers` group. Message fields: `book_id`, `storage_path`,
-//! `job_id`, `timestamp`. Job hashes expire after 7 days.
+//! Message fields: `book_id`, `storage_path`, `job_id`, `timestamp`.
+//! Job hashes expire after 7 days.
 
 use redis::AsyncCommands;
 use shared::{AppError, JobStatusDto};

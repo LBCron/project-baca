@@ -65,7 +65,7 @@ pub async fn search_book_quotes(
         .await
         .map_err(HttpError)?;
 
-    // Optional user authentication inspection (for future search telemetry / reading progress)
+    // Inspect the token for future search telemetry.
     let _maybe_user_id: Option<Uuid> = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())

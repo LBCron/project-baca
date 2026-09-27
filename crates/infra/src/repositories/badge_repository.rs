@@ -1,4 +1,4 @@
-//! Badge repository for master badges list, user unlocked badges, and default seeder.
+//! Master badges, unlocks, and default seeder.
 
 use chrono::Utc;
 use sea_orm::{

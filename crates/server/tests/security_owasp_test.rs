@@ -1,5 +1,4 @@
-//! Comprehensive OWASP ASVS & API Security integration test suite.
-//! Tests Error Handling (CWE-209), Throttling / Rate Limiting (API4), and Revocation (API2).
+//! OWASP ASVS: error handling, throttling, and revocation.
 
 mod common;
 
@@ -20,7 +19,7 @@ fn unique_test_ip() -> String {
 async fn test_owasp_security_headers_and_error_handling() {
     let harness = TestHarness::new().await;
 
-    // 1. Verify standard OWASP security headers on any public route
+    // Verify standard OWASP security headers on any public route
     let req = Request::builder()
         .method("GET")
         .uri("/health")
@@ -39,7 +38,7 @@ async fn test_owasp_security_headers_and_error_handling() {
         "strict-origin-when-cross-origin"
     );
 
-    // 2. Structured validation errors on bad signup payload (CWE-209 prevention)
+    // Structured validation errors on bad signup payload (CWE-209 prevention)
     let invalid_signup = serde_json::json!({
         "email": "invalid-email-format",
         "password": "short",
@@ -200,7 +199,7 @@ async fn test_owasp_login_brute_force_lockout() {
 async fn test_owasp_password_change_identical_rejection() {
     let harness = TestHarness::new().await;
 
-    // Direct check: changing password where new_password == current_password returns 400 BAD_REQUEST
+    // Same-value password change must return 400.
     let change_pwd_req = ChangePasswordRequest {
         current_password: "CurrentPassword123!".to_string(),
         new_password: "CurrentPassword123!".to_string(),
@@ -260,7 +259,7 @@ async fn test_owasp_token_revocation_on_logout() {
         .await
         .unwrap();
 
-    // 1. Verify access token works initially (get profile might 404 on DB, but NOT 401)
+    // Verify access token works initially (get profile might 404 on DB, but NOT 401)
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/me")
@@ -270,7 +269,7 @@ async fn test_owasp_token_revocation_on_logout() {
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 2. Logout providing both refresh token and Bearer access token
+    // Logout providing both refresh token and Bearer access token
     let logout_req = RefreshTokenRequest {
         refresh_token: refresh_token.clone(),
     };
@@ -286,7 +285,7 @@ async fn test_owasp_token_revocation_on_logout() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body["success"], true);
 
-    // 3. Subsequent request with blacklisted access token MUST return 401 UNAUTHORIZED
+    // Subsequent request with blacklisted access token MUST return 401 UNAUTHORIZED
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/me")

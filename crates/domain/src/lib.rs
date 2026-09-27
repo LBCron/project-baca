@@ -1,16 +1,6 @@
-//! Project Baca domain core: pure business rules with zero I/O.
+//! Pure business rules with zero I/O: completion, lifecycle, streaks, badges, merge.
 //!
-//! This crate owns cross-context invariants shared by the reader, engagement,
-//! and curation bounded contexts:
-//! - [`Percentage`]: validated reading completion (0.0-100.0).
-//! - [`BookStatus`]: legal publication lifecycle transitions.
-//! - [`advance_streak`]: daily streak transition rules.
-//! - [`eligible_badges`]: milestone badge eligibility matrix.
-//! - [`merge_percentage`]: guest-to-cloud progress resolution.
-//!
-//! Dependencies are limited to `shared` (error contract), `chrono`, and
-//! `thiserror`. Database, HTTP, Redis, and embedding clients are forbidden
-//! here; persistence lives in `crates/infra` (adapters).
+//! Only `shared` (error contract), `chrono`, and `thiserror` are allowed here.
 
 use chrono::NaiveDate;
 use std::str::FromStr;
@@ -67,8 +57,7 @@ impl Percentage {
     }
 }
 
-/// Guest-to-cloud resolution: the highest known progress always wins,
-/// mirroring the SQL `GREATEST(...)` merge without requiring a database.
+/// Guest-to-cloud resolution: highest known progress wins.
 pub fn merge_percentage(existing: Option<f32>, incoming: f32) -> f32 {
     existing.map(|prev| prev.max(incoming)).unwrap_or(incoming)
 }
@@ -148,13 +137,8 @@ pub struct StreakOutcome {
     pub last_active: Option<NaiveDate>,
 }
 
-/// Pure streak transition, extracted from the heartbeat repository so the
-/// rules are unit-testable without a database.
-///
-/// - Below threshold: nothing changes.
-/// - Threshold met, already counted today: maintain without double increment.
-/// - Threshold met, yesterday was active: consecutive day, +1.
-/// - Threshold met, otherwise: new or restarted streak at day 1.
+/// Pure streak transition (no database): below threshold nothing changes,
+/// otherwise count today once — consecutive day extends, gap restarts at 1.
 pub fn advance_streak(
     current_days: i32,
     longest_days: i32,

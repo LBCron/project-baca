@@ -14,9 +14,9 @@ use shared::ApiResponse;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-/// Extracts and validates client IP address from trusted edge headers or peer connection
+/// Client IP from edge headers or peer connection.
 pub fn extract_client_ip(req: &Request<Body>) -> String {
-    // 1. Cloudflare CF-Connecting-IP header (highest priority behind edge WAF)
+    // Cloudflare header first (behind edge WAF).
     if let Some(cf_ip) = req
         .headers()
         .get("cf-connecting-ip")
@@ -28,7 +28,7 @@ pub fn extract_client_ip(req: &Request<Body>) -> String {
         }
     }
 
-    // 2. Standard X-Real-IP reverse proxy header
+    // Standard X-Real-IP reverse proxy header
     if let Some(real_ip) = req
         .headers()
         .get("x-real-ip")
@@ -40,7 +40,7 @@ pub fn extract_client_ip(req: &Request<Body>) -> String {
         }
     }
 
-    // 3. X-Forwarded-For header (validate each entry, take first valid IP address)
+    // X-Forwarded-For: first valid entry.
     if let Some(forwarded) = req
         .headers()
         .get("x-forwarded-for")
@@ -57,7 +57,7 @@ pub fn extract_client_ip(req: &Request<Body>) -> String {
     "127.0.0.1".to_string()
 }
 
-/// Limits requests on public authentication endpoints (maximum 20 requests per minute per IP)
+/// Caps public auth endpoints at 20 req/min per IP.
 pub async fn rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,

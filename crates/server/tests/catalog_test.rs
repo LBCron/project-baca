@@ -1,4 +1,4 @@
-//! Integration test suite for Milestone 03: Catalog, Typo-Tolerant FTS, Reader API & Gamification.
+//! Catalog, search, reader, and gamification tests.
 
 mod common;
 
@@ -29,7 +29,7 @@ struct SeededCatalog {
 async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, String> {
     let now = Utc::now();
 
-    // 1. Create a test user and obtain JWT token
+    // Create a test user and obtain JWT token
     let user_id = Uuid::new_v4();
     let email = format!("reader_{}@baca.local", Uuid::new_v4());
     let user = users::ActiveModel {
@@ -57,7 +57,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
     )
     .map_err(|e| format!("Token generation failed: {e}"))?;
 
-    // 2. Seed Tags
+    // Seed Tags
     let tag_id = Uuid::new_v4();
     let tag_slug = format!("klasik-{}", Uuid::new_v4());
     let tag = tags::ActiveModel {
@@ -68,7 +68,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
     };
     let _ = tag.insert(&harness.state.db).await;
 
-    // 3. Seed Published Books
+    // Seed Published Books
     let book1_id = Uuid::new_v4();
     let book1 = books::ActiveModel {
         id: Set(book1_id),
@@ -186,7 +186,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         .await
         .map_err(|e| format!("Failed to seed draft book: {e}"))?;
 
-    // 4. Seed Chapters for Book 1
+    // Seed Chapters for Book 1
     let chap1_id = Uuid::new_v4();
     let chap1 = chapters::ActiveModel {
         id: Set(chap1_id),
@@ -244,7 +244,7 @@ async fn test_catalog_listing_and_filtering() {
         }
     };
 
-    // 1. List all books
+    // List all books
     let req = Request::builder()
         .uri("/api/v1/books")
         .method("GET")
@@ -267,7 +267,7 @@ async fn test_catalog_listing_and_filtering() {
         );
     }
 
-    // 2. Filter by theme
+    // Filter by theme
     let req_theme = Request::builder()
         .uri("/api/v1/books?theme=Tragedi")
         .method("GET")
@@ -282,7 +282,7 @@ async fn test_catalog_listing_and_filtering() {
         assert_eq!(b["primary_theme"].as_str().unwrap_or(""), "Tragedi");
     }
 
-    // 3. Test SRS top-level alias (/api/books)
+    // Test SRS top-level alias (/api/books)
     let req_alias = Request::builder()
         .uri("/api/books?language=id")
         .method("GET")
@@ -305,7 +305,7 @@ async fn test_catalog_typo_tolerant_fts_search() {
         }
     };
 
-    // 1. Search with typo: "Siti" instead of "Sitti"
+    // Search with typo: "Siti" instead of "Sitti"
     let req = Request::builder()
         .uri("/api/v1/books/search?q=Siti")
         .method("GET")
@@ -321,7 +321,7 @@ async fn test_catalog_typo_tolerant_fts_search() {
     );
     assert!(results[0]["title"].as_str().unwrap_or("").contains("Sitti"));
 
-    // 2. Search author name: "Pramoedya"
+    // Search author name: "Pramoedya"
     let req_author = Request::builder()
         .uri("/api/v1/books/search?q=Pramoedya")
         .method("GET")
@@ -337,7 +337,7 @@ async fn test_catalog_typo_tolerant_fts_search() {
         .unwrap_or("")
         .contains("Bumi Manusia"));
 
-    // 3. Search query too short (min 2 characters)
+    // Search query too short (min 2 characters)
     let req_short = Request::builder()
         .uri("/api/v1/books/search?q=a")
         .method("GET")
@@ -359,7 +359,7 @@ async fn test_book_overview_chapter_and_offline_bundle() {
         }
     };
 
-    // 1. Get book detail
+    // Get book detail
     let req_book = Request::builder()
         .uri(format!("/api/v1/books/{}", seeded.book1_id))
         .method("GET")
@@ -374,7 +374,7 @@ async fn test_book_overview_chapter_and_offline_bundle() {
     );
     assert_eq!(json_book["data"]["chapters"].as_array().unwrap().len(), 2);
 
-    // 2. Get chapter content
+    // Get chapter content
     let req_chap = Request::builder()
         .uri(format!("/api/v1/books/{}/chapters/1", seeded.book1_id))
         .method("GET")
@@ -386,7 +386,7 @@ async fn test_book_overview_chapter_and_offline_bundle() {
     let html = json_chap["data"]["html_content"].as_str().unwrap_or("");
     assert!(html.contains("Matahari senja perlahan turun"));
 
-    // 3. Get offline bundle
+    // Get offline bundle
     let req_bundle = Request::builder()
         .uri(format!("/api/v1/books/{}/offline-bundle", seeded.book1_id))
         .method("GET")
@@ -410,7 +410,7 @@ async fn test_reading_progress_and_active_retrieval() {
         }
     };
 
-    // 1. Update progress to 45%
+    // Update progress to 45%
     let progress_payload = serde_json::json!({
         "chapter_id": seeded.chap1_id,
         "last_anchor_cfi": "/6/4[chap1]!/4/2/10",
@@ -429,7 +429,7 @@ async fn test_reading_progress_and_active_retrieval() {
     assert_eq!(resp_update.status(), StatusCode::OK);
     assert!(json_update["success"].as_bool().unwrap_or(false));
 
-    // 2. Retrieve active progress
+    // Retrieve active progress
     let req_active = Request::builder()
         .uri("/api/v1/progress/active")
         .method("GET")
@@ -454,7 +454,7 @@ async fn test_reading_progress_and_active_retrieval() {
         "/6/4[chap1]!/4/2/10"
     );
 
-    // 3. Mark finished at 100%
+    // Mark finished at 100%
     let finished_payload = serde_json::json!({
         "chapter_id": seeded.chap1_id,
         "last_anchor_cfi": "/6/4[chap1]!/4/2/99",
@@ -472,7 +472,7 @@ async fn test_reading_progress_and_active_retrieval() {
     let (resp_finish, _) = harness.send_json_request(req_finish).await;
     assert_eq!(resp_finish.status(), StatusCode::OK);
 
-    // 4. Verify active progress is now null
+    // Verify active progress is now null
     let req_active2 = Request::builder()
         .uri("/api/v1/progress/active")
         .method("GET")
@@ -496,7 +496,7 @@ async fn test_gamification_heartbeat_and_badges() {
         }
     };
 
-    // 1. List master badges
+    // List master badges
     let req_badges = Request::builder()
         .uri("/api/v1/badges")
         .method("GET")
@@ -510,7 +510,7 @@ async fn test_gamification_heartbeat_and_badges() {
         .expect("Expected badges list");
     assert!(!badges.is_empty(), "Master badges should be auto-seeded");
 
-    // 2. Record reading heartbeat of 65 seconds (exceeds first_step 60s milestone)
+    // Heartbeat of 65 seconds clears the 60s first-step threshold.
     let heartbeat_payload = serde_json::json!({
         "book_id": seeded.book1_id,
         "seconds_spent": 65
@@ -534,7 +534,7 @@ async fn test_gamification_heartbeat_and_badges() {
     );
     assert!(json_hb["data"]["total_xp"].as_i64().unwrap_or(0) > 0);
 
-    // 3. Verify user unlocked first_step badge
+    // Verify user unlocked first_step badge
     let req_user_badges = Request::builder()
         .uri("/api/v1/me/badges")
         .method("GET")

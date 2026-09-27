@@ -168,7 +168,7 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Loads configuration from environment variables with `.env` file support via `dotenvy`
+    /// Loads config from env with `.env` support.
     pub fn from_env() -> Result<Self, AppError> {
         let _ = dotenvy::dotenv();
 

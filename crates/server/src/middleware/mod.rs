@@ -1,4 +1,4 @@
-//! HTTP Middleware modules for authentication, authorization, and rate limiting.
+//! Auth, RBAC, and rate-limit middleware.
 
 pub mod ai_rate_limit;
 pub mod auth;

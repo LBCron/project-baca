@@ -1,4 +1,4 @@
-//! Reading progress, CFI position synchronization, reading heartbeats, and streaks.
+//! Progress, CFI anchors, heartbeats, and streaks.
 
 use chrono::Utc;
 use sea_orm::entity::prelude::Decimal;
@@ -145,7 +145,7 @@ pub async fn record_heartbeat(
     let now = Utc::now();
     let today = now.date_naive();
 
-    // 1. Log activity in reading_activity_logs
+    // Log activity in reading_activity_logs
     let log_entry = reading_activity_logs::ActiveModel {
         user_id: Set(user_id),
         book_id: Set(req.book_id),
@@ -160,7 +160,7 @@ pub async fn record_heartbeat(
         .await
         .map_err(|e| AppError::Database(format!("Failed to record activity log: {e}")))?;
 
-    // 2. Fetch total reading seconds for user today
+    // Fetch total reading seconds for user today
     let daily_sum_sql = r#"
         SELECT COALESCE(SUM(seconds_spent), 0)::bigint AS total_today
         FROM reading_activity_logs
@@ -183,7 +183,7 @@ pub async fn record_heartbeat(
         .try_get_by_index(0)
         .map_err(|e| AppError::Database(format!("Failed to parse daily reading sum: {e}")))?;
 
-    // 3. Fetch or initialize user_reading_streaks
+    // Fetch or initialize user_reading_streaks
     let streak_record = user_reading_streaks::Entity::find_by_id(user_id)
         .one(db)
         .await
@@ -255,7 +255,7 @@ pub async fn record_heartbeat(
         }
     }
 
-    // 4. Milestone badge evaluation
+    // Milestone badge evaluation
     check_and_award_badges(db, user_id, current_streak, total_reading_seconds).await?;
 
     Ok(ReadingHeartbeatResponse {

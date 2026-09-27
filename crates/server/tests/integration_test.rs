@@ -1,4 +1,4 @@
-//! Integration test suite verifying request-response cycles, request ID correlation, CORS, and OpenAPI DTO schemas.
+//! Request cycles, request IDs, CORS, and OpenAPI schemas.
 
 mod common;
 

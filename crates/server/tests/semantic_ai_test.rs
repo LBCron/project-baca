@@ -1,4 +1,4 @@
-//! Integration tests for Milestone 04: Semantic AI Subsystem, HNSW Quote Search, Vintage Cards & Recaps.
+//! Quote search, saved quotes, cards, and recap tests.
 
 mod common;
 
@@ -35,7 +35,7 @@ fn one_hot(hot_index: usize) -> Vec<f32> {
 async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, String> {
     let now = Utc::now();
 
-    // 1. Create a test user and obtain JWT token
+    // Create a test user and obtain JWT token
     let user_id = Uuid::new_v4();
     let email = format!("ai_connoisseur_{}@baca.local", Uuid::new_v4());
     let user = users::ActiveModel {
@@ -63,7 +63,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
     )
     .map_err(|e| format!("Token generation failed: {e}"))?;
 
-    // 2. Create a test book
+    // Create a test book
     let book_id = Uuid::new_v4();
     let book = books::ActiveModel {
         id: Set(book_id),
@@ -90,7 +90,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed book: {e}"))?;
 
-    // 3. Create chapter 1
+    // Create chapter 1
     let chapter1_id = Uuid::new_v4();
     let chapter1 = chapters::ActiveModel {
         id: Set(chapter1_id),
@@ -109,7 +109,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chapter 1: {e}"))?;
 
-    // 4. Create chapter 2
+    // Create chapter 2
     let chapter2_id = Uuid::new_v4();
     let chapter2 = chapters::ActiveModel {
         id: Set(chapter2_id),
@@ -128,7 +128,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chapter 2: {e}"))?;
 
-    // 5. Chunks with known vectors: ch1 matches the mock query (sim 1.0),
+    // Chunks with known vectors: ch1 matches the mock query (sim 1.0),
     // ch2 is orthogonal (sim 0.0).
     let chunk_a = book_chunks::ActiveModel {
         id: Set(Uuid::new_v4()),
@@ -166,7 +166,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chunk B: {e}"))?;
 
-    // 6. Second book proving per-book scope isolation.
+    // Second book proving per-book scope isolation.
     let other_book_id = Uuid::new_v4();
     let other_book = books::ActiveModel {
         id: Set(other_book_id),
@@ -266,7 +266,7 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
         "guest search must return seeded chunks, got {guest_data:?}"
     );
 
-    // 2. Empty query string must fail validation (min length 3)
+    // Empty query string must fail validation (min length 3)
     let invalid_empty_req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
@@ -277,7 +277,7 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
     let resp = harness.send_request(invalid_empty_req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // 3. Query shorter than 3 chars must fail validation
+    // Query shorter than 3 chars must fail validation
     let invalid_short_req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
@@ -288,7 +288,7 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
     let resp = harness.send_request(invalid_short_req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // 4. Query with limit > 20 must fail validation
+    // Query with limit > 20 must fail validation
     let invalid_limit_req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
@@ -495,7 +495,7 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
         .await
         .expect("Seeding must succeed");
 
-    // 1. Unknown book_id must yield 404, not a 500 FK violation.
+    // Unknown book_id must yield 404, not a 500 FK violation.
     let bogus_book_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -514,7 +514,7 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
     let resp = harness.send_request(bogus_book_req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 2. Unknown chapter_id must yield 404.
+    // Unknown chapter_id must yield 404.
     let bogus_chapter_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -533,7 +533,7 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
     let resp = harness.send_request(bogus_chapter_req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 3. Cross-book mismatch (real chapter of another book) must yield 400.
+    // Cross-book mismatch (real chapter of another book) must yield 400.
     let mismatch_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -555,7 +555,7 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"]["code"], "VALIDATION_FAILED");
 
-    // 4. Control: correct pair still saves (uses the other book's own chapter).
+    // Control: correct pair still saves (uses the other book's own chapter).
     let ok_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -582,7 +582,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
         .await
         .expect("Seeding must succeed");
 
-    // 1. Guest save (no Authorization header) returns 201 with guest_mode
+    // Guest save (no Authorization header) returns 201 with guest_mode
     let guest_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -605,7 +605,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
     assert_eq!(json["data"]["saved"], false);
     assert_eq!(json["data"]["reason"], "guest_mode");
 
-    // 2. Authenticated save persists quote and creates image_card_url
+    // Authenticated save persists quote and creates image_card_url
     let auth_save_req = Request::builder()
         .method("POST")
         .uri("/api/v1/quotes/save")
@@ -631,7 +631,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
     let card_url = json["data"]["image_card_url"].as_str().expect("Card URL");
     assert!(card_url.contains("/card"));
 
-    // 3. Vintage SVG quote card export endpoint returns valid SVG
+    // Vintage SVG quote card export endpoint returns valid SVG
     let card_req = Request::builder()
         .method("GET")
         .uri(format!("/api/v1/quotes/{quote_id}/card"))
@@ -650,7 +650,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
     assert!(svg_str.contains("PROJECT BACA"));
     assert!(svg_str.contains("The oldest and strongest emotion"));
 
-    // 4. Authenticated list retrieves saved quotes with image_card_url
+    // Authenticated list retrieves saved quotes with image_card_url
     let list_req = Request::builder()
         .method("GET")
         .uri("/api/v1/quotes")
@@ -675,7 +675,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
         .await
         .expect("Seeding must succeed");
 
-    // 1. Cache miss returns 404 (by chapter number or UUID)
+    // Cache miss returns 404 (by chapter number or UUID)
     let miss_req = Request::builder()
         .method("GET")
         .uri(format!(
@@ -688,7 +688,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
     let resp = harness.send_request(miss_req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 2. Seed atomic cards into tldr_cache for chapter 1
+    // Seed atomic cards into tldr_cache for chapter 1
     let now = Utc::now();
     let cards_content = serde_json::json!({
         "key_concepts": ["Ancient cosmic terror", "Innsmouth degeneration"],
@@ -711,7 +711,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
         .await
         .expect("Insert tldr_cache entry");
 
-    // 3. Cache hit returns 200 via chapter_number (/chapters/1/atomic-cards)
+    // Cache hit returns 200 via chapter_number (/chapters/1/atomic-cards)
     let hit_num_req = Request::builder()
         .method("GET")
         .uri(format!(
@@ -730,7 +730,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
     assert_eq!(json["data"]["chapter_id"], seeded.chapter1_id.to_string());
     assert!(json["data"]["cards"]["key_concepts"].is_array());
 
-    // 4. Cache hit also returns 200 via UUID (/chapters/{uuid}/atomic-cards)
+    // Cache hit also returns 200 via UUID (/chapters/{uuid}/atomic-cards)
     let hit_uuid_req = Request::builder()
         .method("GET")
         .uri(format!(
@@ -761,7 +761,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
     let resp = harness.send_request(chap1_req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 2. Chapter 2 without cache entry returns 404
+    // Chapter 2 without cache entry returns 404
     let miss_req = Request::builder()
         .method("GET")
         .uri(format!("/api/v1/books/{}/chapters/2/recap", seeded.book_id))
@@ -771,7 +771,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
     let resp = harness.send_request(miss_req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 3. Seed recap for chapter 2
+    // Seed recap for chapter 2
     let now = Utc::now();
     let recap_content = serde_json::json!({
         "summary": "In previous chapters, the narrator arrived in Newburyport and heard sinister rumors about Innsmouth.",
@@ -794,7 +794,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
         .await
         .expect("Insert tldr_cache entry");
 
-    // 4. Cache hit returns 200 when querying by chapter number: /chapters/2/recap
+    // Cache hit returns 200 when querying by chapter number: /chapters/2/recap
     let hit_num_req = Request::builder()
         .method("GET")
         .uri(format!("/api/v1/books/{}/chapters/2/recap", seeded.book_id))
@@ -810,7 +810,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
     assert_eq!(json["data"]["chapter_id"], seeded.chapter2_id.to_string());
     assert!(json["data"]["recap"]["summary"].is_string());
 
-    // 5. Cache hit returns 200 when querying by chapter UUID
+    // Cache hit returns 200 when querying by chapter UUID
     let hit_uuid_req = Request::builder()
         .method("GET")
         .uri(format!(

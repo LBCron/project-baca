@@ -1,5 +1,4 @@
-//! Project Baca — Server Library
-//! Exposes Axum Router, AppState, Middleware, OpenAPI specs, and HTTP Handlers.
+//! Axum router, state, middleware, and OpenAPI spec.
 
 pub mod error;
 pub mod middleware;

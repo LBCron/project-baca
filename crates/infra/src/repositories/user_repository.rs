@@ -1,4 +1,4 @@
-//! User repository for database querying, credential updates, profile changes, and lifecycle management.
+//! User accounts, credentials, and lifecycle queries.
 
 use chrono::Utc;
 use sea_orm::{
@@ -57,7 +57,7 @@ pub async fn create_inactive_user(
         .map_err(|e| AppError::Database(format!("Failed to insert inactive user: {e}")))
 }
 
-/// Updates credentials and display name for an existing inactive user re-requesting registration.
+/// Updates credentials of an inactive user re-requesting registration.
 pub async fn update_inactive_credentials(
     db: &DatabaseConnection,
     user: users::Model,

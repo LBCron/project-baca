@@ -1,5 +1,4 @@
-//! AI subsystem module for Project Baca.
-//! Exports the dual-mode embedding provider trait and factory.
+//! Embedding provider trait and factory.
 
 pub mod embedding;
 

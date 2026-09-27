@@ -1,4 +1,4 @@
-//! Comprehensive integration test suite for Milestone 02: Authentication & User Lifecycle.
+//! Auth lifecycle tests: signup, OTP, login, rotation, logout.
 
 mod common;
 
@@ -28,7 +28,7 @@ async fn test_auth_full_lifecycle() {
     let test_email = format!("reader_{}@example.com", Uuid::new_v4());
     let test_password = "Password1234!";
 
-    // 1. Signup
+    // Signup
     let signup_req = SignupRequest {
         display_name: "VintageReader".to_string(),
         email: test_email.clone(),
@@ -46,7 +46,7 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::CREATED);
     assert_eq!(body["success"], true);
 
-    // 2. Fetch OTP from Redis
+    // Fetch OTP from Redis
     let redis_key = format!("otp:{test_email}");
     let record_str: Option<String> = redis_conn.get(&redis_key).await.unwrap();
     assert!(record_str.is_some(), "OTP record should exist in Redis");
@@ -74,7 +74,7 @@ async fn test_auth_full_lifecycle() {
         .await
         .unwrap();
 
-    // 3. Verify OTP with known valid OTP
+    // Verify OTP with known valid OTP
     let verify_req = VerifyOtpRequest {
         email: test_email.clone(),
         otp: known_otp.to_string(),
@@ -100,7 +100,7 @@ async fn test_auth_full_lifecycle() {
     assert!(!access_token.is_empty());
     assert!(!refresh_token.is_empty());
 
-    // 4. Login with credentials
+    // Login with credentials
     let login_req = LoginRequest {
         email: test_email.clone(),
         password: test_password.to_string(),
@@ -122,7 +122,7 @@ async fn test_auth_full_lifecycle() {
         .unwrap()
         .to_string();
 
-    // 5. Get Profile (/api/v1/me)
+    // Get Profile (/api/v1/me)
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/me")
@@ -134,7 +134,7 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(me_body["data"]["display_name"], "VintageReader");
     assert_eq!(me_body["data"]["email"], test_email);
 
-    // 6. Update Profile (/api/v1/me)
+    // Update Profile (/api/v1/me)
     let update_req = UpdateProfileRequest {
         display_name: Some("MasterBibliophile".to_string()),
         avatar_url: Some("https://example.com/avatar.jpg".to_string()),
@@ -150,7 +150,7 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(updated_body["data"]["display_name"], "MasterBibliophile");
 
-    // 7. Change Password (/api/v1/me/password)
+    // Change Password (/api/v1/me/password)
     let new_password = "BrandNewSecurePassword123!";
     let change_pwd_req = ChangePasswordRequest {
         current_password: test_password.to_string(),
@@ -168,7 +168,7 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(pwd_body["success"], true);
 
-    // 8. Refresh Token Rotation
+    // Refresh Token Rotation
     let refresh_req = RefreshTokenRequest {
         refresh_token: active_refresh_token.clone(),
     };
@@ -199,7 +199,7 @@ async fn test_auth_full_lifecycle() {
     let (resp, _) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 9. Logout with rotated token
+    // Logout with rotated token
     let logout_req = RefreshTokenRequest {
         refresh_token: rotated_refresh_token,
     };
@@ -213,7 +213,7 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(logout_body["success"], true);
 
-    // 10. Delete Account
+    // Delete Account
     let req = Request::builder()
         .method("DELETE")
         .uri("/api/v1/me")
@@ -293,7 +293,7 @@ async fn test_auth_guest_progress_merge() {
     )
     .unwrap();
 
-    // 1. Initial merge at 35%
+    // Initial merge at 35%
     let merge_req = GuestMergeRequest {
         records: vec![GuestProgressRecord {
             book_id,
@@ -317,7 +317,7 @@ async fn test_auth_guest_progress_merge() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body["data"]["merged_count"], 1);
 
-    // 2. Subsequent merge at 75% — verify GREATEST progression
+    // Subsequent merge at 75% — verify GREATEST progression
     let merge_req_2 = GuestMergeRequest {
         records: vec![GuestProgressRecord {
             book_id,

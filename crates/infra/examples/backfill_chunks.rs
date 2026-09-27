@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chapters = infra::entities::chapters::Entity::find().all(&db).await?;
     println!("chapters scanned: {}", chapters.len());
 
-    // Collect (book_id, chapter_id, chunk_index, text) for chapters lacking chunks.
+    // Chapters lacking chunks.
     let mut pending: Vec<(Uuid, Uuid, i32, String)> = Vec::new();
     let mut skipped = 0u64;
     for ch in &chapters {

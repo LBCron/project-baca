@@ -1,4 +1,4 @@
-//! Performance and SLA benchmark test suite validating p95 latency and concurrent task execution.
+//! p95 latency and concurrency benchmarks.
 
 mod common;
 

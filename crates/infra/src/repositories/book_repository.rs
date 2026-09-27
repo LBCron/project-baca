@@ -1,4 +1,4 @@
-//! Book repository providing catalog listing, typo-tolerant FTS search, and chapter access.
+//! Catalog, search, chapter, and bundle queries.
 
 use sea_orm::{
     ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter,

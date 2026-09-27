@@ -1,5 +1,4 @@
-//! Database Integration & Integrity Test Suite
-//! Validates relational constraints, foreign key cascades, transaction atomicity, and query plans.
+//! Constraint, cascade, rollback, and query-plan tests.
 
 mod common;
 
@@ -137,7 +136,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
     let now = Utc::now();
     let user_id = Uuid::new_v4();
 
-    // 1. Create User
+    // Create User
     let user = users::ActiveModel {
         id: Set(user_id),
         email: Set(format!("cascade_u_{}@example.com", user_id)),
@@ -153,7 +152,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .await
         .expect("User insert failed");
 
-    // 2. Create Book & Chapter
+    // Create Book & Chapter
     let book_id = Uuid::new_v4();
     let book = books::ActiveModel {
         id: Set(book_id),
@@ -194,7 +193,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .await
         .expect("Chapter insert failed");
 
-    // 3. Create Reading Progress for User
+    // Create Reading Progress for User
     let progress_id = Uuid::new_v4();
     let progress = user_reading_progress::ActiveModel {
         id: Set(progress_id),
@@ -212,7 +211,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .await
         .expect("Progress insert failed");
 
-    // 4. Create User Badge
+    // Create User Badge
     infra::seed_default_badges_if_empty(&harness.state.db)
         .await
         .expect("Badge seed failed");
@@ -236,7 +235,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .len();
     assert_eq!(progress_count_before, 1);
 
-    // 5. Delete User (Triggers PostgreSQL Foreign Key CASCADE)
+    // Delete User (Triggers PostgreSQL Foreign Key CASCADE)
     users::Entity::delete_by_id(user_id)
         .exec(&harness.state.db)
         .await
@@ -277,7 +276,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
     let now = Utc::now();
     let book_id = Uuid::new_v4();
 
-    // 1. Insert Book
+    // Insert Book
     let book = books::ActiveModel {
         id: Set(book_id),
         title: Set("Book For Cascade Test".to_string()),
@@ -302,7 +301,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         .await
         .expect("Book insert failed");
 
-    // 2. Insert Chapter
+    // Insert Chapter
     let chapter = chapters::ActiveModel {
         id: Set(Uuid::new_v4()),
         book_id: Set(book_id),
@@ -317,7 +316,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         .await
         .expect("Chapter insert failed");
 
-    // 3. Insert Tag and BookTag
+    // Insert Tag and BookTag
     let tag_id = Uuid::new_v4();
     let tag = tags::ActiveModel {
         id: Set(tag_id),
@@ -338,13 +337,13 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         .await
         .expect("BookTag insert failed");
 
-    // 4. Delete Book
+    // Delete Book
     books::Entity::delete_by_id(book_id)
         .exec(&harness.state.db)
         .await
         .expect("Book deletion failed");
 
-    // 5. Verify chapters and book_tags are cascaded
+    // Verify chapters and book_tags are cascaded
     let chapters_after = chapters::Entity::find()
         .filter(chapters::Column::BookId.eq(book_id))
         .all(&harness.state.db)
@@ -429,7 +428,7 @@ async fn test_db_index_query_plan_verification() {
         return;
     }
 
-    // 1. Verify index registration in PostgreSQL system catalog
+    // Verify index registration in PostgreSQL system catalog
     let catalog_check = Statement::from_string(
         harness.state.db.get_database_backend(),
         "SELECT indexname FROM pg_indexes WHERE tablename = 'users' AND indexname = 'idx_users_email';",
@@ -445,7 +444,7 @@ async fn test_db_index_query_plan_verification() {
         "Index 'idx_users_email' must exist in PostgreSQL catalog"
     );
 
-    // 2. Begin transaction and disable seqscan to verify index path usability
+    // Begin transaction and disable seqscan to verify index path usability
     let txn = harness.state.db.begin().await.expect("Begin txn failed");
     txn.execute(Statement::from_string(
         harness.state.db.get_database_backend(),

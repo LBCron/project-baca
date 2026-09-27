@@ -1,4 +1,4 @@
-//! Smoke test suite verifying server boot, health checks, Swagger UI, and infrastructure reachability.
+//! Boot, health, Swagger UI, and infrastructure reachability.
 
 mod common;
 

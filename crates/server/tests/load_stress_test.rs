@@ -1,5 +1,4 @@
-//! Load & Stress Testing Suite
-//! Validates sustained concurrent throughput, connection pool resilience, rate-limit shedding, and burst recovery.
+//! Concurrent throughput, pool resilience, and rate-limit shedding.
 
 mod common;
 
@@ -70,7 +69,7 @@ async fn test_load_concurrent_authenticated_profile_reads() {
     let test_email = format!("load_auth_{}@example.com", user_id);
     let now = Utc::now();
 
-    // 1. Seed active user in database
+    // Seed active user in database
     let user = users::ActiveModel {
         id: Set(user_id),
         email: Set(test_email.clone()),
@@ -84,7 +83,7 @@ async fn test_load_concurrent_authenticated_profile_reads() {
     };
     let _ = user.insert(&harness.state.db).await;
 
-    // 2. Issue valid access token
+    // Issue valid access token
     let token = infra::generate_access_token(
         user_id,
         &test_email,
@@ -94,7 +93,7 @@ async fn test_load_concurrent_authenticated_profile_reads() {
     )
     .expect("Token generation failed");
 
-    // 3. Fire 100 concurrent authenticated requests
+    // Fire 100 concurrent authenticated requests
     let task_count = 100;
     let mut handles = Vec::with_capacity(task_count);
     let start = Instant::now();

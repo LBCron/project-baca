@@ -1,5 +1,4 @@
-//! Integration tests: admin EPUB upload, job monitoring,
-//! and drop-off analytics. Requires live MinIO + Redis.
+//! Admin upload, job, and analytics tests (needs live MinIO + Redis).
 
 mod common;
 
@@ -114,13 +113,13 @@ async fn test_upload_requires_admin_role() {
     let ctx = seed_users(&harness).await;
     let (ctype, body) = multipart_body("book.epub", "application/epub+zip", b"PKfake", &[]);
 
-    // 1. Guest (no token) is rejected with 401.
+    // Guest (no token) is rejected with 401.
     let resp = harness
         .send_request(upload_request(None, ctype.clone(), body.clone()))
         .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 2. Reader role is rejected with 403.
+    // Reader role is rejected with 403.
     let resp = harness
         .send_request(upload_request(Some(&ctx.reader_token), ctype, body))
         .await;
@@ -132,14 +131,14 @@ async fn test_upload_rejects_non_epub_and_missing_file() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;
 
-    // 1. Plain-text file is rejected with 400.
+    // Plain-text file is rejected with 400.
     let (ctype, body) = multipart_body("notes.txt", "text/plain", b"hello", &[]);
     let resp = harness
         .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // 2. Multipart without a file part is rejected with 400.
+    // Multipart without a file part is rejected with 400.
     let body = format!(
         "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nSome Title\r\n--{BOUNDARY}--\r\n"
     )

@@ -671,7 +671,7 @@ def run(once: bool = False) -> int:
             continue
         entries = [entry for _, batch in (messages or []) for entry in batch]
         if not entries:
-            # Dead-worker recovery (DISTRIBUTED §4): reclaim entries idle > 5 min.
+            # Reclaim entries idle over 5 min (dead-worker recovery).
             try:
                 _, entries = (
                     redis_client.xautoclaim(

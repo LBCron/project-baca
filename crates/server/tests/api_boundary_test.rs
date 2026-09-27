@@ -1,5 +1,4 @@
-//! API Edge-Case, Boundary & Contract Conformance Test Suite
-//! Validates HTTP method handling, 404 envelopes, malformed payloads, pagination bounds, and authorization headers.
+//! HTTP edge cases, error envelopes, and pagination bounds.
 
 mod common;
 
@@ -28,7 +27,7 @@ async fn test_api_boundary_route_not_found_returns_standard_envelope() {
 async fn test_api_boundary_method_not_allowed() {
     let harness = TestHarness::new().await;
 
-    // 1. Send POST to /health (which only permits GET)
+    // Send POST to /health (which only permits GET)
     let req = Request::builder()
         .method("POST")
         .uri("/health")
@@ -42,7 +41,7 @@ async fn test_api_boundary_method_not_allowed() {
         "POST on /health should return 405 Method Not Allowed"
     );
 
-    // 2. Send PUT to /api/v1/books (which only permits GET)
+    // Send PUT to /api/v1/books (which only permits GET)
     let req2 = Request::builder()
         .method("PUT")
         .uri("/api/v1/books")
@@ -106,7 +105,7 @@ async fn test_api_boundary_empty_body_on_json_endpoint() {
 async fn test_api_boundary_pagination_extremes() {
     let harness = TestHarness::new().await;
 
-    // 1. Limit zero: should clamp to min or return valid response
+    // Limit zero: should clamp to min or return valid response
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/books?limit=0")
@@ -117,7 +116,7 @@ async fn test_api_boundary_pagination_extremes() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body["success"], true);
 
-    // 2. Limit 1000: should clamp to max (50) and return valid response
+    // Limit 1000: should clamp to max (50) and return valid response
     let req2 = Request::builder()
         .method("GET")
         .uri("/api/v1/books?limit=1000")
@@ -128,7 +127,7 @@ async fn test_api_boundary_pagination_extremes() {
     assert_eq!(resp2.status(), StatusCode::OK);
     assert_eq!(body2["success"], true);
 
-    // 3. Invalid cursor: should not panic
+    // Invalid cursor: should not panic
     let req3 = Request::builder()
         .method("GET")
         .uri("/api/v1/books?cursor=not-a-valid-uuid-here")
@@ -203,7 +202,7 @@ async fn test_api_boundary_password_min_length_validation() {
 async fn test_api_boundary_authorization_header_schemes() {
     let harness = TestHarness::new().await;
 
-    // 1. Completely missing Authorization header
+    // Completely missing Authorization header
     let req1 = Request::builder()
         .method("GET")
         .uri("/api/v1/me")
@@ -214,7 +213,7 @@ async fn test_api_boundary_authorization_header_schemes() {
     assert_eq!(resp1.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(body1["error"]["code"], "UNAUTHORIZED");
 
-    // 2. Basic auth scheme instead of Bearer
+    // Basic auth scheme instead of Bearer
     let req2 = Request::builder()
         .method("GET")
         .uri("/api/v1/me")

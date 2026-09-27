@@ -1,4 +1,4 @@
-//! Infrastructure configuration, connection pools, and database integrations for Project Baca.
+//! Pools, config, entities, and repositories.
 
 pub mod ai;
 pub mod config;
