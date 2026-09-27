@@ -18,13 +18,9 @@ pub const STORE_PENDING_SYNC: &str = "pending_sync_queue";
 async fn db() -> Result<Rexie, String> {
     Rexie::builder(DB_NAME)
         .version(DB_VERSION)
-        .add_object_store(
-            ObjectStore::new(STORE_GUEST_PROGRESS).key_path("book_id"),
-        )
+        .add_object_store(ObjectStore::new(STORE_GUEST_PROGRESS).key_path("book_id"))
         .add_object_store(ObjectStore::new(STORE_OFFLINE_BOOKS).key_path("book_id"))
-        .add_object_store(
-            ObjectStore::new(STORE_OFFLINE_CHAPTERS).key_path("chapter_id"),
-        )
+        .add_object_store(ObjectStore::new(STORE_OFFLINE_CHAPTERS).key_path("chapter_id"))
         .add_object_store(ObjectStore::new(STORE_PENDING_SYNC).auto_increment(true))
         .build()
         .await

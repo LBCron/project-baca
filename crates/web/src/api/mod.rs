@@ -99,7 +99,9 @@ pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, St
         .json::<ApiResponse<Vec<BookSummaryDto>>>()
         .await
         .map_err(|e| e.to_string())?;
-    envelope.data.ok_or_else(|| "empty catalog response".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "empty catalog response".to_string())
 }
 
 pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>, String> {
@@ -115,7 +117,9 @@ pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>,
         .json::<ApiResponse<Vec<BookSearchResultDto>>>()
         .await
         .map_err(|e| e.to_string())?;
-    envelope.data.ok_or_else(|| "empty search response".to_string())
+    envelope
+        .data
+        .ok_or_else(|| "empty search response".to_string())
 }
 
 pub async fn book_detail(id: &str) -> Result<BookDetailDto, String> {
