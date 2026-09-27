@@ -30,9 +30,9 @@
     "semantic_hash": ""
   },
   "knowledge/index.md": {
-    "mtime": 1790471757.693023,
-    "seen": 1790494701.8293712,
-    "ast_hash": "5defdb255792027605b749ed421e6377",
+    "mtime": 1790504957.70124,
+    "seen": 1790505136.1505775,
+    "ast_hash": "cfbe82df97aa680065b39d86a7c89cb2",
     "semantic_hash": ""
   },
   "knowledge/prd.md": {
@@ -114,9 +114,9 @@
     "semantic_hash": "1a26c370e32e83a41844535fa92252bf"
   },
   "knowledge/log.md": {
-    "mtime": 1790503080.038681,
-    "seen": 1790504063.0589054,
-    "ast_hash": "36b255fe409fa524dcf09cdddd43502c",
+    "mtime": 1790504968.4810522,
+    "seen": 1790505136.15058,
+    "ast_hash": "27e4073ef3d11ec33d4038cf5b18f5ab",
     "semantic_hash": ""
   },
   "crates/domain/Cargo.toml": {
@@ -252,9 +252,9 @@
     "semantic_hash": ""
   },
   "crates/server/src/lib.rs": {
-    "mtime": 1790500010.99031,
-    "seen": 1790504063.0553033,
-    "ast_hash": "cd4762e0e18dbeec939e58a9b5df4afe",
+    "mtime": 1790504237.697739,
+    "seen": 1790505136.1467216,
+    "ast_hash": "537f0dcb8e008775b92f2d9adef20003",
     "semantic_hash": ""
   },
   "crates/server/tests/common/mod.rs": {
@@ -636,9 +636,9 @@
     "semantic_hash": ""
   },
   "crates/server/tests/security_owasp_test.rs": {
-    "mtime": 1790498035.3411994,
-    "seen": 1790504063.0571492,
-    "ast_hash": "d35075e9cf15f65b7cc975131861842e",
+    "mtime": 1790504258.305384,
+    "seen": 1790505136.147913,
+    "ast_hash": "5a792312acaf71550555b9c3b2bd8259",
     "semantic_hash": ""
   },
   "crates/infra/src/ai/embedding.rs": {
@@ -813,6 +813,30 @@
     "mtime": 1790501260.5093446,
     "seen": 1790504063.0589168,
     "ast_hash": "8467bebacb55cd303e118a1bf3d096d5",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/README.md": {
+    "mtime": 1790504910.182069,
+    "seen": 1790505136.1509955,
+    "ast_hash": "70516b9acc64dcba53e80dcac094982d",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/backlog.md": {
+    "mtime": 1790504920.6708863,
+    "seen": 1790505136.150998,
+    "ast_hash": "cbf03b32210284985d7b110d78a09295",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/ideas.md": {
+    "mtime": 1790504939.485558,
+    "seen": 1790505136.1509998,
+    "ast_hash": "d5ac0271b8a0c6b652242be70209d4a4",
+    "semantic_hash": ""
+  },
+  "knowledge/planning/tech-debt.md": {
+    "mtime": 1790504930.8487086,
+    "seen": 1790505136.1510017,
+    "ast_hash": "509ec6999d2640af7ffb73e86c99cc1a",
     "semantic_hash": ""
   }
 }
