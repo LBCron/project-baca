@@ -105,6 +105,33 @@ body::before {
     font-size: 1.2rem;
 }
 
+.brand-mark {
+    width: 40px;
+    height: 40px;
+}
+
+.lang-toggle {
+    display: inline-flex;
+    border: 1px solid var(--color-border-parchment);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.lang-opt {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    padding: 4px 12px;
+    border: none;
+    background: transparent;
+    color: var(--color-ink-muted);
+    cursor: pointer;
+}
+
+.lang-opt.active {
+    background: var(--color-accent-terracotta);
+    color: #FFF;
+}
+
 .nav-links {
     display: flex;
     gap: 24px;
@@ -160,6 +187,46 @@ body::before {
     max-width: 100%;
     max-height: 380px;
     border-radius: var(--radius-md);
+}
+
+.hero-heading {
+    font-size: clamp(2.4rem, 5vw, 3.6rem);
+}
+
+.hero-slide {
+    animation: hero-fade 0.6s ease;
+}
+
+@keyframes hero-fade {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+}
+
+.hero-dots {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 12px;
+}
+
+.hero-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--color-accent-terracotta);
+    background: transparent;
+    cursor: pointer;
+    padding: 0;
+}
+
+.hero-dot.active {
+    background: var(--color-accent-terracotta);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hero-slide {
+        animation: none;
+    }
 }
 
 .hero-subtitle {
@@ -481,6 +548,21 @@ body.theme-dark-roast {
     font-size: 0.85rem;
     color: var(--color-ink-faint);
     cursor: pointer;
+}
+
+.streak-toast {
+    position: fixed;
+    bottom: 56px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--color-accent-terracotta);
+    color: #FFF;
+    font-family: var(--font-serif-display);
+    padding: 10px 22px;
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-hover);
+    z-index: 40;
+    animation: hero-fade 0.4s ease;
 }
 
 /* Modals */

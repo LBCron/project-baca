@@ -1,4 +1,4 @@
-"""M6 web realtime E2E (Playwright, black-box).
+"""M6 web realtime E2E (Playwright, black-box) + Rotaria P1-P7.
 
 Requires: `make db-up`, Axum on :8080 (`make dev-server`),
 Trunk on :3000 (`make dev-web`).
@@ -47,6 +47,22 @@ async def main():
         check("home-renders-catalog", len(cards) > 0, f"{len(cards)} cards")
         check("home-hero-art", await page.query_selector(".hero-art img") is not None)
         check("home-search-bar", await page.query_selector(".search-bar") is not None)
+        brand = await page.inner_text(".brand-title")
+        check("brand-rotaria", "Rotaria" in brand, brand.strip()[:20])
+        check("brand-mark", await page.query_selector(".brand-mark") is not None)
+        slide1 = await page.get_attribute(".hero-slide", "src")
+        await page.wait_for_timeout(8000)
+        slide2 = await page.get_attribute(".hero-slide", "src")
+        check("hero-carousel-rotates", slide1 != slide2)
+        check("hero-dots", len(await page.query_selector_all(".hero-dot")) == 5)
+        await page.click('.lang-opt:has-text("EN")')
+        await page.wait_for_timeout(800)
+        heading_en = await page.inner_text(".hero-heading")
+        check("i18n-toggle-en", "Sirkulasi" not in heading_en, heading_en[:50])
+        persisted = await page.evaluate("localStorage.getItem('rotaria_lang')")
+        check("i18n-persist", persisted == "EN", str(persisted))
+        await page.click('.lang-opt:has-text("ID")')
+        await page.wait_for_timeout(800)
 
         await page.fill(".hero-copy .search-bar", "a")
         await page.wait_for_timeout(1200)
@@ -94,9 +110,16 @@ async def main():
 
         await page.goto(f"{WEB}/", wait_until="networkidle")
         await page.wait_for_timeout(2000)
-        await page.click("text=Sign In")
+        await page.click("text=Masuk" if await page.query_selector("text=Masuk") else "text=Sign In")
         await page.wait_for_timeout(500)
         check("auth-modal", await page.query_selector(".modal-vintage") is not None)
+
+        await page.goto(f"{WEB}/me", wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        check("profile-guest", "Sign in" in await page.inner_text("body"))
+        await page.goto(f"{WEB}/admin", wait_until="networkidle")
+        await page.wait_for_timeout(1500)
+        check("admin-form", await page.query_selector('input[type="file"]') is not None)
 
         check("zero-page-errors", len(errors) == 0, f"{len(errors)} errors")
         for e in errors[:5]:

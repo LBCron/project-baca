@@ -49,25 +49,23 @@ pub fn AuthModal(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                     password: p,
                 })
                 .await
-                .map(|_| None)
+                .map(|_| None::<(String, String)>)
             } else if m == "otp" {
                 api::verify_otp(&VerifyOtpRequest { email: e, otp: o })
                     .await
-                    .map(|t| Some(t.access_token))
-                    .map_err(|e| e)
+                    .map(|t| Some((t.access_token, t.refresh_token)))
             } else {
                 api::login(&LoginRequest {
                     email: e,
                     password: p,
                 })
                 .await
-                .map(|t| Some(t.access_token))
-                .map_err(|e| e)
+                .map(|t| Some((t.access_token, t.refresh_token)))
             };
             match result {
-                Ok(token) => {
-                    if let Some(t) = token {
-                        api::set_token(&t);
+                Ok(tokens) => {
+                    if let Some((access, refresh)) = tokens {
+                        api::set_tokens(&access, &refresh);
                         show.set(false);
                         merge_guest();
                     } else {

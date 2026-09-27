@@ -36,6 +36,7 @@ pub fn ReaderPage() -> impl IntoView {
     let (font_size, set_font_size) = signal(18);
     let (line_height, set_line_height) = signal(17);
     let (anchor, set_anchor) = signal(String::from("top"));
+    let (streak, set_streak) = signal(None::<i32>);
     let recap_open = RwSignal::new(false);
 
     let load = move |book: String, number: i32| {
@@ -136,6 +137,18 @@ pub fn ReaderPage() -> impl IntoView {
                     completion_percentage: 0.0,
                 };
                 let _ = api::save_progress(&id, &update).await;
+                if let Ok(uuid) = id.parse::<uuid::Uuid>() {
+                    if let Ok(resp) = api::heartbeat(&shared::ReadingHeartbeatRequest {
+                        book_id: uuid,
+                        seconds_spent: 300,
+                    })
+                    .await
+                    {
+                        if resp.streak_incremented {
+                            set_streak.set(Some(resp.current_streak_days));
+                        }
+                    }
+                }
             }
         });
     };
@@ -192,6 +205,9 @@ pub fn ReaderPage() -> impl IntoView {
             <footer class="reader-status" on:click=persist_progress>
                 {move || format!("Anchor: {} (tap to save position)", anchor.get())}
             </footer>
+            {move || streak.get().map(|days| view! {
+                <div class="streak-toast" role="status">{format!("❖ {days}-day streak")}</div>
+            })}
         </div>
     }
 }

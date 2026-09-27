@@ -119,7 +119,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                         prop:value=move || query.get()
                         on:input=move |ev| set_query.set(event_target_value(&ev))/>
                     <div class="book-actions">
-                        <button class="btn-read" on:click=move |ev| run(ev) disabled=move || busy.get()>
+                        <button class="btn-read" on:click=run disabled=move || busy.get()>
                             {move || if busy.get() { "Searching…" } else { "Search" }}
                         </button>
                         <button class="lang-switch" on:click=move |_| show.set(false)>"Close"</button>
@@ -130,12 +130,29 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                             let jump = format!("/read/{book}?chapter={}", r.chapter_number);
                             let text = r.content.clone();
                             let label = format!("Ch. {} — {:.0}%", r.chapter_number, r.similarity_score * 100.0);
+                            let save_text = r.content.clone();
+                            let save_book = book.clone();
+                            let save_chapter = r.chapter_number;
                             view! {
                                 <li class="quote-row">
                                     <div class="book-tag">{label.clone()}</div>
                                     <p>{r.content.clone()}</p>
                                     <div class="book-actions">
                                         <a href=jump class="btn-read"><span>"Jump to Reader"</span></a>
+                                        <button class="lang-switch" on:click=move |_| {
+                                            let text = save_text.clone();
+                                            let book = save_book.clone();
+                                            spawn_local(async move {
+                                                let chapter_id = api::chapter(&book, save_chapter).await.map(|c| c.id);
+                                                if let (Ok(book_id), Ok(chapter_id)) = (book.parse::<uuid::Uuid>(), chapter_id) {
+                                                    let _ = api::save_quote(&shared::SaveQuoteRequest {
+                                                        book_id,
+                                                        chapter_id,
+                                                        quote_text: text,
+                                                    }).await;
+                                                }
+                                            });
+                                        }>"Save"</button>
                                         <button class="lang-switch" on:click=move |_| export_quote_png(&text, &label)>"Export PNG"</button>
                                     </div>
                                 </li>

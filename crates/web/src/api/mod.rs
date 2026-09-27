@@ -7,20 +7,22 @@ use serde::Serialize;
 use shared::{
     ActiveProgressDto, ApiResponse, BookCatalogQuery, BookDetailDto, BookSearchQuery,
     BookSearchResultDto, BookSummaryDto, ChapterDetailDto, GuestMergeRequest, LoginRequest,
-    OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto, ReadingProgressUpdateDto,
-    SignupRequest, TokenResponse, VerifyOtpRequest,
+    OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto, ReadingHeartbeatRequest,
+    ReadingHeartbeatResponse, ReadingProgressUpdateDto, RefreshTokenRequest, SignupRequest,
+    TokenResponse, UserProfileDto, VerifyOtpRequest,
 };
 use wasm_bindgen::JsCast;
 use web_sys::window;
 
 const API_BASE: &str = "http://localhost:8080/api/v1";
 const TOKEN_KEY: &str = "baca_access_token";
+const REFRESH_KEY: &str = "baca_refresh_token";
 
 fn storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok()?
 }
 
-fn token() -> Option<String> {
+pub fn token() -> Option<String> {
     storage()?.get_item(TOKEN_KEY).ok()?
 }
 
@@ -33,7 +35,23 @@ pub fn set_token(token: &str) {
 pub fn clear_token() {
     if let Some(storage) = storage() {
         let _ = storage.remove_item(TOKEN_KEY);
+        let _ = storage.remove_item(REFRESH_KEY);
     }
+}
+
+pub fn set_tokens(access: &str, refresh: &str) {
+    if let Some(storage) = storage() {
+        let _ = storage.set_item(TOKEN_KEY, access);
+        let _ = storage.set_item(REFRESH_KEY, refresh);
+    }
+}
+
+pub fn refresh_token() -> Option<String> {
+    storage()?.get_item(REFRESH_KEY).ok()?
+}
+
+pub fn is_authed() -> bool {
+    token().is_some()
 }
 
 fn authed(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
@@ -198,6 +216,52 @@ pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String>
 
 pub async fn login(req: &LoginRequest) -> Result<TokenResponse, String> {
     post("/auth/login", req).await
+}
+
+pub async fn refresh() -> Result<TokenResponse, String> {
+    let rt = refresh_token().ok_or_else(|| "no refresh token".to_string())?;
+    post("/auth/refresh", &RefreshTokenRequest { refresh_token: rt }).await
+}
+
+pub async fn logout() -> Result<(), String> {
+    let url = format!("{API_BASE}/auth/logout");
+    let rt = refresh_token().unwrap_or_default();
+    let req = authed(Request::post(&url))
+        .header("Content-Type", "application/json")
+        .body(
+            serde_json::to_string(&RefreshTokenRequest { refresh_token: rt })
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    req.send().await.map_err(|e| e.to_string())?;
+    clear_token();
+    Ok(())
+}
+
+pub async fn me() -> Result<UserProfileDto, String> {
+    get("/me").await
+}
+
+pub async fn my_badges() -> Result<Vec<shared::UserBadgeDto>, String> {
+    get("/me/badges").await
+}
+
+pub async fn all_badges() -> Result<Vec<shared::BadgeDto>, String> {
+    get("/badges").await
+}
+
+pub async fn heartbeat(req: &ReadingHeartbeatRequest) -> Result<ReadingHeartbeatResponse, String> {
+    post("/activity/heartbeat", req).await
+}
+
+pub async fn save_quote(
+    req: &shared::SaveQuoteRequest,
+) -> Result<shared::SavedQuoteResponseDto, String> {
+    post("/quotes/save", req).await
+}
+
+pub async fn my_quotes() -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
+    get("/quotes").await
 }
 
 pub fn window_document() -> Option<web_sys::Document> {

@@ -1,11 +1,36 @@
-//! Live catalog, debounced search, cursor pagination, continue reading.
+//! Rotaria home: brand hero with art carousel, live catalog,
+//! continue reading. All strings via i18n dictionary.
 
 use crate::api;
 use crate::components::auth::AuthModal;
+use crate::i18n::{apply_lang, lang_signal};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{ActiveProgressDto, BookCatalogQuery, BookSearchQuery, BookSummaryDto};
 use std::time::Duration;
+
+const HERO_ART: [(&str, &str); 5] = [
+    (
+        "/assets/library-bookshelf-ladder.png",
+        "Reader climbing a library ladder",
+    ),
+    (
+        "/assets/cozy-reader-armchair-owl.png",
+        "Reader in an armchair with tea and an owl",
+    ),
+    (
+        "/assets/manuscript-inspection-clothesline.png",
+        "Writer drying manuscript pages on a line",
+    ),
+    (
+        "/assets/admin-sorting-pigeonholes.png",
+        "Archivist sorting mail into pigeonholes",
+    ),
+    (
+        "/assets/retro-rocket-discovery.png",
+        "Victorian explorers in a retro rocket",
+    ),
+];
 
 async fn fetch_catalog(cursor: Option<String>) -> Result<Vec<BookSummaryDto>, String> {
     api::catalog(&BookCatalogQuery {
@@ -18,12 +43,14 @@ async fn fetch_catalog(cursor: Option<String>) -> Result<Vec<BookSummaryDto>, St
 
 #[component]
 pub fn HomePage() -> impl IntoView {
-    let (lang, set_lang) = signal("EN".to_string());
+    let (lang, set_lang) = lang_signal();
     let (books, set_books) = signal(Vec::<BookSummaryDto>::new());
     let (cursor, set_cursor) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (query, set_query) = signal(String::new());
     let (progress, set_progress) = signal(Vec::<ActiveProgressDto>::new());
+    let (slide, set_slide) = signal(0usize);
+    let (paused, set_paused) = signal(false);
 
     let load_more = move || {
         if loading.get_untracked() {
@@ -48,6 +75,29 @@ pub fn HomePage() -> impl IntoView {
         }
     });
     load_more();
+
+    Effect::new(move || {
+        let reduced = web_sys::window()
+            .and_then(|w| {
+                w.match_media("(prefers-reduced-motion: reduce)")
+                    .ok()
+                    .flatten()
+            })
+            .map(|m| m.matches())
+            .unwrap_or(false);
+        if reduced {
+            set_paused.set(true);
+            return;
+        }
+        set_interval(
+            move || {
+                if !paused.get_untracked() {
+                    set_slide.update(|s| *s = (*s + 1) % HERO_ART.len());
+                }
+            },
+            Duration::from_millis(7000),
+        );
+    });
 
     let on_search = move |ev| {
         let value = event_target_value(&ev);
@@ -96,15 +146,6 @@ pub fn HomePage() -> impl IntoView {
         );
     };
 
-    let toggle_lang = move |_| {
-        set_lang.update(|l| {
-            if l == "EN" {
-                *l = "ID".to_string();
-            } else {
-                *l = "EN".to_string();
-            }
-        });
-    };
     let auth_open = RwSignal::new(false);
     let authed = Callback::new(move |_| {});
 
@@ -112,38 +153,71 @@ pub fn HomePage() -> impl IntoView {
         <div class="app-container">
             <header class="header-vintage">
                 <a href="/" class="brand-title">
-                    <span class="brand-ornament">"❖"</span>
-                    <span>"Project Baca"</span>
+                    <img src="/assets/rotaria-windmill.svg" alt="Rotaria" class="brand-mark"/>
+                    <span>"Rotaria"</span>
                 </a>
                 <nav class="nav-links">
-                    <a href="/" class="nav-link">"Catalog"</a>
-                    <button class="nav-link" on:click=move |_| auth_open.set(true)>"Sign In"</button>
-                    <button class="lang-switch" on:click=toggle_lang>
-                        {move || format!("[ {} ]", lang.get())}
+                    <a href="/" class="nav-link">{move || lang.get().text("catalog")}</a>
+                    <button class="nav-link" on:click=move |_| auth_open.set(true)>
+                        {move || lang.get().text("sign_in")}
                     </button>
+                    <div class="lang-toggle" role="group" aria-label="Language">
+                        <button
+                            class="lang-opt"
+                            class:active=move || lang.get() == crate::i18n::Lang::Id
+                            on:click=move |_| apply_lang(set_lang, crate::i18n::Lang::Id)
+                        >"ID"</button>
+                        <button
+                            class="lang-opt"
+                            class:active=move || lang.get() == crate::i18n::Lang::En
+                            on:click=move |_| apply_lang(set_lang, crate::i18n::Lang::En)
+                        >"EN"</button>
+                    </div>
                 </nav>
             </header>
             <AuthModal show=auth_open on_authed=authed/>
 
             <section class="hero-vintage">
                 <div class="hero-copy">
-                    <div class="hero-subtitle">"Public Domain Classical Literature"</div>
+                    <div class="hero-subtitle">{move || lang.get().text("hero_sub")}</div>
                     <h1 class="hero-heading">
-                        "Timeless words, " <em>"bound anew"</em>
+                        "Rotaria — " <em>{move || lang.get().text("tagline")}</em>
                     </h1>
-                    <p class="hero-desc">
-                        "Read world literary masterpieces with elegant typography, a reflowable reader layout, and semantic quote discovery."
-                    </p>
                     <input
                         type="search"
                         class="search-bar"
-                        placeholder="Search title or author…"
+                        placeholder=move || lang.get().text("search_ph")
                         prop:value=move || query.get()
                         on:input=on_search
                     />
                 </div>
-                <div class="hero-art">
-                    <img src="/assets/library-bookshelf-ladder.png" alt="Reader climbing a library ladder"/>
+                <div
+                    class="hero-art"
+                    on:mouseenter=move |_| set_paused.set(true)
+                    on:mouseleave=move |_| set_paused.set(false)
+                    on:focusin=move |_| set_paused.set(true)
+                    on:focusout=move |_| set_paused.set(false)
+                >
+                    {move || {
+                        let (src, alt) = HERO_ART[slide.get()];
+                        view! {
+                            <img src=src alt=alt class="hero-slide"/>
+                        }
+                    }}
+                    <div class="hero-dots" role="tablist" aria-label="Hero art">
+                        {HERO_ART.iter().enumerate().map(|(i, _)| {
+                            let active = move || slide.get() == i;
+                            view! {
+                                <button
+                                    role="tab"
+                                    aria-selected=active
+                                    class="hero-dot"
+                                    class:active=active
+                                    on:click=move |_| set_slide.set(i)
+                                />
+                            }
+                        }).collect::<Vec<_>>()}
+                    </div>
                 </div>
             </section>
 
@@ -151,7 +225,7 @@ pub fn HomePage() -> impl IntoView {
                 let items = progress.get();
                 (!items.is_empty()).then(|| view! {
                     <section class="continue-reading">
-                        <div class="catalog-section-title"><span>"Continue Reading"</span></div>
+                        <div class="catalog-section-title"><span>{lang.get().text("continue_reading")}</span></div>
                         <div class="book-grid">
                             {items.into_iter().map(|p| view! {
                                 <div class="book-card">
@@ -163,7 +237,7 @@ pub fn HomePage() -> impl IntoView {
                                     <div class="book-card-footer">
                                         <span>{p.chapter_title.clone()}</span>
                                         <a href=format!("/book/{}", p.book_id) class="btn-read">
-                                            <span>"Resume"</span>
+                                            <span>{lang.get().text("resume")}</span>
                                             <span>"→"</span>
                                         </a>
                                     </div>
@@ -176,7 +250,8 @@ pub fn HomePage() -> impl IntoView {
 
             <main>
                 <div class="catalog-section-title">
-                    <span>"Catalog"</span>
+                    <span>"I"</span>
+                    <span>{move || lang.get().text("catalog")}</span>
                 </div>
                 <div class="book-grid">
                     {move || books.get().into_iter().map(|b| view! {
@@ -190,7 +265,7 @@ pub fn HomePage() -> impl IntoView {
                             <div class="book-card-footer">
                                 <span>{format!("~{} min", b.estimated_reading_minutes)}</span>
                                 <a href=format!("/book/{}", b.id) class="btn-read">
-                                    <span>"Read"</span>
+                                    <span>{lang.get().text("read")}</span>
                                     <span>"→"</span>
                                 </a>
                             </div>
@@ -199,14 +274,18 @@ pub fn HomePage() -> impl IntoView {
                 </div>
                 <div class="load-more">
                     <button class="btn-read" on:click=move |_| load_more() disabled=move || loading.get()>
-                        {move || if loading.get() { "Loading…" } else { "Load More" }}
+                        {move || if loading.get() { lang.get().text("loading") } else { lang.get().text("load_more") }}
                     </button>
                 </div>
             </main>
 
             <footer class="footer-vintage">
                 <div class="footer-fleuron">"❖"</div>
-                <p>"Project Baca — Literary manuscripts are in the public domain. Source code licensed under MIT / Apache-2.0."</p>
+                <p>{move || if lang.get() == crate::i18n::Lang::Id {
+                    "Rotaria — sirkulasi buku domain publik. Kode sumber MIT / Apache-2.0.".to_string()
+                } else {
+                    "Rotaria — public domain books in circulation. Source MIT / Apache-2.0.".to_string()
+                }}</p>
             </footer>
         </div>
     }
