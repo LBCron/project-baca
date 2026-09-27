@@ -129,6 +129,10 @@ test-domain:
 	@echo "Running domain-core pure unit tests (no database)..."
 	@cargo test -p domain
 
+test-web-e2e:
+	@echo "Running M6 web realtime E2E (requires db-up, dev-server :8080, dev-web :3000)..."
+	@~/.venvs/webapp-testing/bin/python crates/web/tests_e2e/m6_reader.py
+
 test-all:
 	@echo "Running complete test suite..."
 	@cargo test --workspace
