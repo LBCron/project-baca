@@ -11,6 +11,7 @@ Visual assets and illustrations following the **Vintage Literary / Mid-Century W
 | `manuscript-inspection-clothesline.png` | Writer drying manuscript pages on a line | **Atomic Cards** (chapter summaries & ingestion monitor) |
 | `admin-sorting-pigeonholes.png` | Archivist sorting mail into wooden pigeonholes | **Admin Dashboard (`/admin/books`)** (EPUB management) |
 | `retro-rocket-discovery.png` | Victorian explorers launching in a retro rocket | **AI Quote Finder & Onboarding** (semantic search hero) |
+| `rotaria-windmill.svg` | Watermill barn by the river (pen-and-ink line, terracotta hub) | **Rotaria brand mark** (header, favicon, onboarding — BL-07 P1) |
 
 ## 2. Design References (`assets/references/`)
 
