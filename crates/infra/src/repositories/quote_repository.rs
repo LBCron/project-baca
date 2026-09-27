@@ -1,21 +1,13 @@
-//! Repository for semantic quote search and user saved-quote management.
+//! HNSW cosine-distance quote search over `book_chunks.embedding`.
 //!
-//! Semantic search uses raw SQL to execute pgvector cosine-distance operator `<=>` via
-//! the HNSW index on `book_chunks.embedding`. SeaORM does not natively support this
-//! operator, so `sea_orm::Statement` with positional bind parameters is used instead.
-//!
-//! All query latency targets:
-//! - Scoped HNSW traversal: < 10 ms (PostgreSQL 17 with pgvector HNSW index).
-//! - Saved-quotes write: < 5 ms (B-Tree indexed insert).
+//! Raw SQL is used because SeaORM has no `<=>` operator support.
 
 use sea_orm::{ConnectionTrait, DatabaseConnection, FromQueryResult, JsonValue, Statement};
 use serde::{Deserialize, Serialize};
 use shared::AppError;
 use uuid::Uuid;
 
-// ---------------------------------------------------------------------------
 // Intermediate query result types (not exposed outside repository)
-// ---------------------------------------------------------------------------
 
 /// Raw row returned by the HNSW cosine-distance query.
 #[derive(Debug, FromQueryResult)]
@@ -38,9 +30,7 @@ struct SavedQuoteRow {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
-// ---------------------------------------------------------------------------
 // Public DTOs for this repository layer (also re-exported from server routes)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuoteSearchRow {
@@ -62,9 +52,7 @@ pub struct SavedQuoteDto {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-// ---------------------------------------------------------------------------
 // Scoped HNSW Semantic Quote Search
-// ---------------------------------------------------------------------------
 
 /// Execute a cosine-distance query against `book_chunks` scoped to a single book.
 pub async fn search_quotes_by_embedding(
@@ -127,9 +115,7 @@ pub async fn search_quotes_by_embedding(
         .collect())
 }
 
-// ---------------------------------------------------------------------------
 // Atomic Cards & Recap from tldr_cache
-// ---------------------------------------------------------------------------
 
 /// Retrieve precomputed atomic insight cards from `tldr_cache`.
 pub async fn get_tldr_cache(
@@ -179,9 +165,7 @@ pub async fn get_chapter_recap(
     get_tldr_cache(db, book_id, chapter_id, "chapter_recap").await
 }
 
-// ---------------------------------------------------------------------------
 // Saved Quotes Management & Vintage Quote Card
-// ---------------------------------------------------------------------------
 
 /// Persist a user-selected quote to `saved_quotes`.
 pub async fn save_quote(

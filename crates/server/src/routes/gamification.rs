@@ -1,4 +1,4 @@
-//! Reading activity heartbeat, streaks, and badges gamification REST API handlers.
+//! Heartbeat, streak, and badge endpoints.
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
 use axum::{
@@ -14,7 +14,7 @@ use shared::{
 use std::sync::Arc;
 use validator::Validate;
 
-/// Records reading heartbeat, updates reading seconds, computes streaks, and awards XP (SRS 17)
+/// Logs reading seconds, evaluates the streak, and awards XP.
 #[utoipa::path(
     post,
     path = "/api/v1/activity/heartbeat",
@@ -41,7 +41,7 @@ pub async fn record_heartbeat(
     Ok(Json(ApiResponse::success(result)).into_response())
 }
 
-/// Retrieves list of all master achievement badges
+/// All master achievement badges.
 #[utoipa::path(
     get,
     path = "/api/v1/badges",
@@ -57,7 +57,7 @@ pub async fn list_badges(State(state): State<Arc<AppState>>) -> Result<Response,
     Ok(Json(ApiResponse::success(badges)).into_response())
 }
 
-/// Retrieves list of badges unlocked by the authenticated user
+/// Badges unlocked by the authenticated user.
 #[utoipa::path(
     get,
     path = "/api/v1/me/badges",
@@ -78,7 +78,6 @@ pub async fn list_user_badges(
     Ok(Json(ApiResponse::success(user_badges)).into_response())
 }
 
-/// Assembles activity and gamification routes
 pub fn gamification_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/activity/heartbeat", post(record_heartbeat))

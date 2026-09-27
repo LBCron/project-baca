@@ -30,9 +30,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from xml.etree import ElementTree as ET
 
-# ---------------------------------------------------------------------------
 # Configuration
-# ---------------------------------------------------------------------------
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -67,9 +65,7 @@ class Settings:
     group: str = "ingestion-workers"
 
 
-# ---------------------------------------------------------------------------
 # Pure helpers (import-safe: stdlib only)
-# ---------------------------------------------------------------------------
 
 ALLOWED_TAGS = {"p", "em", "strong", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li", "br"}
 
@@ -306,9 +302,7 @@ def parse_epub(data: bytes) -> ParsedEpub:
     )
 
 
-# ---------------------------------------------------------------------------
 # Service clients (lazy imports keep unit tests dependency-free)
-# ---------------------------------------------------------------------------
 
 def make_redis(settings: Settings):
     import redis
@@ -346,9 +340,7 @@ def make_db(settings: Settings):
     )
 
 
-# ---------------------------------------------------------------------------
 # Gemini REST helpers (stdlib urllib, no extra dependency)
-# ---------------------------------------------------------------------------
 
 def _gemini_post(url: str, payload: dict, timeout: int = 60) -> dict:
     import urllib.error
@@ -439,9 +431,7 @@ def generate_json(prompt: str, settings: Settings) -> dict:
     return json.loads(_strip_fences(text))
 
 
-# ---------------------------------------------------------------------------
 # Pipeline
-# ---------------------------------------------------------------------------
 
 LOG = logging.getLogger("ingestion")
 
@@ -605,7 +595,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                     settings.llm_model,
                 ),
             )
-            if number > 1:  # SRS 19: recaps only exist past chapter 1
+            if number > 1:  # recaps start at chapter 2
                 recap = generate_json(RECAP_PROMPT + chapter.text[:12000], settings)
                 cur.execute(
                     """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
@@ -647,9 +637,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             pass
 
 
-# ---------------------------------------------------------------------------
 # Consumer loop
-# ---------------------------------------------------------------------------
 
 def ensure_group(redis_client, settings: Settings) -> None:
     try:

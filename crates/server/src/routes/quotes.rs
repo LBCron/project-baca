@@ -1,10 +1,4 @@
-//! Semantic quote search, saved-quotes management, and vintage quote card handlers.
-//!
-//! Endpoints:
-//! - POST /api/v1/books/{book_id}/quotes/search  — Scoped HNSW cosine-distance search
-//! - POST /api/v1/quotes/save                    — Save a favorite quote
-//! - GET  /api/v1/quotes                         — List user saved quotes
-//! - GET  /api/v1/quotes/{quote_id}/card         — Vintage quote card SVG export
+//! Quote search, saved quotes, and vintage card endpoints.
 
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
@@ -27,17 +21,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-// ---------------------------------------------------------------------------
-// Router builders (called from server/src/lib.rs create_app)
-// ---------------------------------------------------------------------------
-
-/// Sub-router for scoped quote search, mounted at /api/v1/books and /api/books.
-/// Rate limiting is applied externally via `ai_rate_limit_middleware` (per-user or per-IP).
 pub fn quotes_routes() -> Router<Arc<AppState>> {
     Router::new().route("/{book_id}/quotes/search", post(search_book_quotes))
 }
 
-/// Sub-router for saved quotes and cards, mounted at /api/v1/quotes and /api/quotes.
 pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/save", post(handle_save_quote))
@@ -45,20 +32,7 @@ pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
         .route("/", get(handle_list_saved_quotes))
 }
 
-// ---------------------------------------------------------------------------
-// Scoped Semantic Quote Finder (Open to Guests & Users)
-// ---------------------------------------------------------------------------
-
-/// Search for semantically relevant quotes within a specific book using HNSW cosine distance.
-///
-/// Open to all readers (guests and registered users). Unauthenticated calls are
-/// protected by sliding-window IP rate limiting (10 req/min), while registered
-/// users are rate-limited by user ID.
-///
-/// The query text is embedded via the configured `EmbeddingProvider` (Gemini or FastEmbed),
-/// and the resulting 768-dimensional vector is matched against `book_chunks.embedding` using
-/// the pgvector `<=>` operator scoped to `book_id`. Returns up to 5 results by default
-/// (max 20), ordered by descending cosine similarity.
+/// Relevant quotes within one book, ranked by cosine similarity. Open to guests.
 #[utoipa::path(
     post,
     path = "/api/v1/books/{book_id}/quotes/search",
@@ -129,15 +103,9 @@ pub async fn search_book_quotes(
     Ok((StatusCode::OK, Json(ApiResponse::success(results))))
 }
 
-// ---------------------------------------------------------------------------
 // Saved Quotes Management & Vintage Quote Card
-// ---------------------------------------------------------------------------
 
-/// Save a favorite quote to the authenticated user's collection.
-///
-/// If the user is not authenticated, the request is accepted with guest_mode semantics
-/// (the client stores it in localStorage/IndexedDB). When authenticated, the quote is
-/// persisted and a vintage quote card URL is automatically generated.
+/// Saves a quote; guests get guest_mode, members persist with a card URL.
 #[utoipa::path(
     post,
     path = "/api/v1/quotes/save",
@@ -220,7 +188,7 @@ pub async fn handle_save_quote(
     ))
 }
 
-/// List all saved quotes for the authenticated user, ordered by most recent first.
+/// Saved quotes of the authenticated user, most recent first.
 #[utoipa::path(
     get,
     path = "/api/v1/quotes",
@@ -255,9 +223,7 @@ pub async fn handle_list_saved_quotes(
     Ok((StatusCode::OK, Json(ApiResponse::success(dtos))))
 }
 
-// ---------------------------------------------------------------------------
 // Vintage Quote Card Export (SVG)
-// ---------------------------------------------------------------------------
 
 fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) -> String {
     let escaped_quote = quote_text
@@ -302,10 +268,7 @@ fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) ->
     )
 }
 
-/// Render a shareable vintage quote card in SVG format.
-///
-/// Follows the 1900–1950 Vintage Literary Aesthetic: aged parchment background,
-/// fleuron ornaments, and classic serif typography for social media export.
+/// Vintage SVG quote card for social sharing.
 #[utoipa::path(
     get,
     path = "/api/v1/quotes/{quote_id}/card",

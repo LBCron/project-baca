@@ -1,14 +1,8 @@
-//! Redis Streams ingestion queue and job-status tracking.
+//! Redis Streams ingestion queue and per-job status hashes.
 //!
-//! The Axum admin upload path publishes one message per EPUB to
-//! [`INGESTION_STREAM`]; the Python worker (`python_worker/`) consumes via the
-//! [`INGESTION_GROUP`] consumer group. Per-job progress lives in a Redis hash
-//! (`job:{job_id}`) with a 7-day TTL so the admin monitor never reads stale
-//! state forever.
-//!
-//! Stream message fields: `book_id`, `storage_path`, `job_id`, `timestamp`.
-//! Job hash fields: `status`, `progress`, `book_id`, `storage_path`,
-//! `created_at`, `updated_at`, optionally `error`.
+//! Uploads publish one message per EPUB; the Python worker consumes via the
+//! `ingestion-workers` group. Message fields: `book_id`, `storage_path`,
+//! `job_id`, `timestamp`. Job hashes expire after 7 days.
 
 use redis::AsyncCommands;
 use shared::{AppError, JobStatusDto};

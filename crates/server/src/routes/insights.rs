@@ -1,11 +1,4 @@
-//! Atomic insight cards and spoiler-free chapter recap handlers.
-//!
-//! Endpoints:
-//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/atomic-cards  — Chapter atomic insight cards
-//! - GET /api/v1/books/{book_id}/chapters/{chapter_ref}/recap         — Spoiler-free catch-up recap
-//!
-//! `{chapter_ref}` supports both chapter numbers (e.g. `2`) and chapter UUIDs for maximum client flexibility.
-//! Both endpoints read from the `tldr_cache` table with sub-5ms latency on cache hit.
+//! Atomic insight cards and spoiler-free recap endpoints.
 
 use crate::{error::HttpError, AppState};
 use axum::{
@@ -19,10 +12,6 @@ use infra::{get_chapter_by_number, get_chapter_recap as query_chapter_recap, get
 use shared::{ApiResponse, AppError, AtomicCardsDto, ChapterRecapDto};
 use std::sync::Arc;
 use uuid::Uuid;
-
-// ---------------------------------------------------------------------------
-// Helper: Resolve chapter number or UUID to chapter UUID
-// ---------------------------------------------------------------------------
 
 async fn resolve_chapter(
     state: &Arc<AppState>,
@@ -41,12 +30,6 @@ async fn resolve_chapter(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Router builder
-// ---------------------------------------------------------------------------
-
-/// Sub-router for AI insight endpoints, mounted at /api/v1/books and /api/books.
-/// These endpoints are public-read (no auth required for cache-hit reads).
 pub fn insights_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route(
@@ -59,15 +42,9 @@ pub fn insights_routes() -> Router<Arc<AppState>> {
         )
 }
 
-// ---------------------------------------------------------------------------
 // Chapter Atomic Insight Cards
-// ---------------------------------------------------------------------------
 
-/// Retrieve precomputed atomic insight cards for a chapter from `tldr_cache`.
-///
-/// Accepts either chapter UUID or chapter number in the path (e.g. `/chapters/1/atomic-cards`).
-/// Returns structured JSON with categories: `key_concept`, `notable_quote`,
-/// `historical_context`. Zero token cost on cache hit (sub-5ms).
+/// Precomputed atomic cards for a chapter (number or UUID). 404 on cache miss.
 #[utoipa::path(
     get,
     path = "/api/v1/books/{book_id}/chapters/{chapter_ref}/atomic-cards",
@@ -109,15 +86,9 @@ pub async fn get_atomic_cards(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Spoiler-Free Catch-up Recap
-// ---------------------------------------------------------------------------
 
-/// Retrieve a spoiler-free catch-up summary for a chapter from `tldr_cache`.
-///
-/// Accepts either chapter number (e.g. `/chapters/2/recap`) or chapter UUID.
-/// Summarizes key events from prior chapters. Only active for chapters > 1;
-/// for chapter 1 the recap is unavailable and a 404 is returned.
+/// Spoiler-free recap of prior chapters. Chapters > 1 only; 404 otherwise.
 #[utoipa::path(
     get,
     path = "/api/v1/books/{book_id}/chapters/{chapter_ref}/recap",

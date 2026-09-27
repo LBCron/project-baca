@@ -24,12 +24,6 @@ use validator::Validate;
 
 pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 
-// ---------------------------------------------------------------------------
-// Router builder (called from server/src/lib.rs create_app)
-// ---------------------------------------------------------------------------
-
-/// Sub-router for admin ingestion endpoints, mounted at `/api/v1/admin` and
-/// `/api/admin`. Every handler enforces the admin role explicitly.
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/books/upload", post(upload_book))
@@ -37,9 +31,6 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/analytics/drop-off", get(dropoff_analytics))
 }
 
-// ---------------------------------------------------------------------------
-// Admin EPUB Upload
-// ---------------------------------------------------------------------------
 #[utoipa::path(
     post,
     path = "/api/v1/admin/books/upload",
@@ -54,6 +45,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
     security(("BearerAuth" = [])),
     tag = "Administration"
 )]
+/// Accepts an EPUB via multipart, stores it, and queues ingestion. 202 on accept.
 pub async fn upload_book(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
@@ -181,11 +173,7 @@ pub async fn upload_book(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Ingestion Status
-// ---------------------------------------------------------------------------
-
-/// Returns the ingestion job snapshot from Redis (`job:{job_id}`).
+/// Ingestion job snapshot from Redis. 404 for unknown or expired ids.
 #[utoipa::path(
     get,
     path = "/api/v1/admin/jobs/{job_id}",
@@ -221,18 +209,13 @@ pub async fn ingestion_status(
     Ok((StatusCode::OK, Json(ApiResponse::success(status))))
 }
 
-// ---------------------------------------------------------------------------
-// Drop-off Analytics
-// ---------------------------------------------------------------------------
-
 /// Query parameters for the drop-off funnel (book under analysis).
 #[derive(Debug, Deserialize, Validate)]
 pub struct DropoffQuery {
     book_id: Uuid,
 }
 
-/// Chapter drop-off funnel for one book: per-chapter reader reach and loss
-/// relative to chapter 1, sourced from `user_reading_progress`.
+/// Chapter drop-off funnel for one book, ordered by chapter number.
 #[utoipa::path(
     get,
     path = "/api/v1/admin/analytics/drop-off",

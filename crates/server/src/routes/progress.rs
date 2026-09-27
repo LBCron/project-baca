@@ -1,4 +1,4 @@
-//! Reading Progress & Guest Reconciliation REST API Handlers (SRS 13–16)
+//! Reading progress and guest reconciliation endpoints.
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
 use axum::{
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-/// Retrieve the active unfinished reading progress for the authenticated user (SRS 14)
+/// Latest unfinished reading position for the authenticated user.
 #[utoipa::path(
     get,
     path = "/api/v1/progress/active",
@@ -38,7 +38,7 @@ pub async fn get_active_progress(
     Ok(Json(ApiResponse::success(progress)).into_response())
 }
 
-/// Updates user reading progress with CFI position and percentage (SRS 15)
+/// Persists reading position (chapter, CFI anchor, percentage).
 #[utoipa::path(
     put,
     path = "/api/v1/progress/{book_id}",
@@ -73,7 +73,7 @@ pub async fn update_progress(
     .into_response())
 }
 
-/// Merges guest reading progress records into the authenticated user's account (SRS 16)
+/// Merges guest progress into the account, keeping the highest completion.
 #[utoipa::path(
     post,
     path = "/api/v1/progress/merge",
@@ -143,7 +143,6 @@ pub async fn merge_guest_progress(
         .into_response())
 }
 
-/// Assembles reading progress routes
 pub fn progress_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/active", get(get_active_progress))

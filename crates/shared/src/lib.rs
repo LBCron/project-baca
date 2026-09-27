@@ -89,9 +89,7 @@ pub enum AppError {
     ExternalService(String),
 }
 
-// -----------------------------------------------------------------------------
 // Authentication & User DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -210,9 +208,7 @@ pub struct GuestMergeRequest {
     pub records: Vec<GuestProgressRecord>,
 }
 
-// -----------------------------------------------------------------------------
 // Catalog & Book DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -312,9 +308,7 @@ pub struct BookSearchResultDto {
     pub score: f32,
 }
 
-// -----------------------------------------------------------------------------
 // Reading Progress & CFI DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -354,9 +348,7 @@ pub struct ActiveProgressDto {
     pub last_read_at: DateTime<Utc>,
 }
 
-// -----------------------------------------------------------------------------
 // Gamification, Streaks & Badges DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -402,9 +394,7 @@ pub struct UserBadgeDto {
     pub badge: BadgeDto,
 }
 
-// -----------------------------------------------------------------------------
 // Semantic & Quote DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -430,9 +420,7 @@ pub struct QuoteSearchResultDto {
     pub similarity_score: f32,
 }
 
-// -----------------------------------------------------------------------------
 // Atomic Insight Cards DTOs
-// -----------------------------------------------------------------------------
 
 /// Structured content returned from tldr_cache for recap_type = 'chapter_atomic_cards'.
 /// The `cards` field is the raw JSON blob from the cache as returned by the AI pipeline.
@@ -454,9 +442,7 @@ pub struct ChapterRecapDto {
     pub recap: serde_json::Value,
 }
 
-// -----------------------------------------------------------------------------
 // Saved Quotes DTOs
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -482,9 +468,7 @@ pub struct SavedQuoteResponseDto {
     pub created_at: DateTime<Utc>,
 }
 
-// -----------------------------------------------------------------------------
 // Ingestion & Admin DTOs
-// -----------------------------------------------------------------------------
 
 /// Ingestion job status snapshot, backed by the Redis `job:{id}` hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,17 +5,16 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Added
-- **Milestone 05 (Ingestion Pipeline & Admin):** MinIO `StorageService`; admin upload with EPUB/50MB validation (202 + Streams dispatch); Python worker (parse, sanitize, chunk, batch embeddings, atomic cards/recaps, WebP covers, DLQ + reclaim); job monitor and drop-off funnel endpoints with OpenAPI docs.
-
-### Added
-- **Milestone 04 (Semantic AI & Insights):** Dual-mode embedding provider (Gemini `text-embedding-004` REST + FastEmbed CPU stub); scoped HNSW quote search (`POST /api/v1/books/{id}/quotes/search`, SRS 17); atomic cards + spoiler-free recap from `tldr_cache` (SRS 18/19); saved quotes + vintage SVG card export (SRS 20b/20c/20d); per-user AI rate limiting (10 req/min).
-- **Domain Core (ADR-18):** Restored `crates/domain` as pure business rules (`Percentage`, `BookStatus`, `advance_streak`, `eligible_badges`, `merge_percentage`), wired into `progress_repository.rs`; 13 DB-free unit tests.
-- **Dev Backfill Tool:** `crates/infra/examples/backfill_chunks.rs` (idempotent chapter chunking + batched embeddings; replaced by the Task 05 worker later).
+- **Milestone 04 (Semantic AI & Insights):** Dual-mode embedding provider (Gemini REST + FastEmbed CPU stub); scoped HNSW quote search (`POST /api/v1/books/{id}/quotes/search`); atomic cards + spoiler-free recap from `tldr_cache`; saved quotes + vintage SVG card export; per-user AI rate limiting (10 req/min).
+- **Milestone 05 (Ingestion Pipeline & Admin):** MinIO `StorageService`; admin EPUB upload with EPUB/50MB validation (202 + Redis Streams dispatch); Python worker (EPUB parse, HTML sanitization, scene chunking, batch embeddings, atomic cards/recaps, WebP covers, DLQ + reclaim); job monitor and drop-off funnel endpoints with OpenAPI docs.
+- **Domain Core (ADR-18):** `crates/domain` owns cross-context invariants (`Percentage`, `BookStatus`, streak rules, badge matrix, progress merge) with DB-free unit tests; repositories call domain functions for rule evaluation.
+- **Dev Backfill Tool:** `crates/infra/examples/backfill_chunks.rs` for one-shot chapter embedding ahead of the streaming worker.
+- **Admin & Worker Test Suites:** 6 admin integration tests against live MinIO (RBAC, validation, job lifecycle, funnel math); 8 worker unit tests with zero service dependencies.
 
 ### Fixed
-- **Quote API contracts:** Unknown-book search now returns contracted 404 (was 200 `[]`); quote save validates the (book, chapter) pair (404 unknown, 400 cross-book mismatch; was 500 FK violation).
-- **Test honesty:** Semantic tests seed embedded chunks and assert ranked, scoped, non-empty results; added per-book isolation, 404, and pair-validation tests (95 green workspace-wide).
-- **Docs SSOT:** SRS token lifetimes/Argon2 params, ERD migration 07, 13-table counts, canonical Redis Stream name, dual route-mount note, admin Screens 6–7 in UX flow.
+- **Quote API contracts:** Unknown-book search returns 404 (was 200 `[]`); quote save validates the (book, chapter) pair (was 500 on foreign-key violation).
+- **Comment hygiene:** Module headers reduced to single purpose lines; spec tracers (task/SRS/FR/US tags) removed from code comments; OpenAPI descriptions kept concise.
+- **Docs SSOT:** SRS token lifetimes and Argon2 params, ERD migration 07, 13-table counts, canonical Redis Stream name, dual route-mount note, admin Screens 6–7 in UX flow.
 
 ## [0.2.1] — 2026-09-26
 
@@ -37,7 +36,6 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - **Account Abuse Controls:** 60-second OTP email cooldown; 15-minute brute-force lockout after 5 failed login attempts; JWT `jti` blacklisting on logout; multi-session revocation (`/api/v1/auth/revoke-all`); and constant-time dummy password verification preventing user email timing enumeration.
 
 ## [0.2.0] — 2026-09-25
-
 
 ### Added
 - **Open Knowledge Format (OKF v0.2):** Full SSOT specification vault in `knowledge/` (`prd.md`, `erd.md`, `ux-flow.md`, `frd.md`, `srs.md`, `index.md`, `log.md`).

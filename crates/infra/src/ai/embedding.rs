@@ -1,10 +1,4 @@
-//! Dual-mode embedding provider for Project Baca.
-//!
-//! Implements the `EmbeddingProvider` trait for two backends:
-//! - `GeminiEmbeddingProvider`: calls Google GenAI REST API (text-embedding-004, 768-dim). Zero GPU.
-//! - `FastEmbedProvider`: CPU ONNX runtime via the `fastembed` crate.
-//!
-//! Factory function `build_embedding_provider` selects the correct backend based on `AiConfig.provider`.
+//! Dual-mode embeddings (Gemini REST + FastEmbed stub) behind one trait.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -14,9 +8,7 @@ use tracing::{debug, info, warn};
 
 use crate::AiConfig;
 
-// ---------------------------------------------------------------------------
 // Core Trait
-// ---------------------------------------------------------------------------
 
 /// Async embedding provider contract. All implementations must be `Send + Sync`
 /// so they can be wrapped in `Arc` and shared across Axum handlers.
@@ -34,9 +26,7 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dimension(&self) -> usize;
 }
 
-// ---------------------------------------------------------------------------
 // Gemini REST API Provider
-// ---------------------------------------------------------------------------
 
 /// Request body for the Gemini Embeddings REST endpoint.
 #[derive(Debug, Serialize)]
@@ -223,9 +213,7 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // FastEmbed CPU Provider (ONNX Runtime)
-// ---------------------------------------------------------------------------
 
 /// CPU ONNX-backed embedding provider using the `fastembed` crate.
 pub struct FastEmbedProvider {
@@ -234,11 +222,7 @@ pub struct FastEmbedProvider {
 
 impl FastEmbedProvider {
     pub fn new(config: &AiConfig) -> Self {
-        warn!(
-            "FastEmbedProvider initialized in stub mode. \
-             Activate by adding the `fastembed` crate and implementing embed_text. \
-             Task 05 (ingestion pipeline) will complete this implementation."
-        );
+        warn!("FastEmbedProvider initialized in stub mode; local ONNX embedding is not bundled.");
         Self {
             dimension: config.dimension,
         }
@@ -249,16 +233,13 @@ impl FastEmbedProvider {
 impl EmbeddingProvider for FastEmbedProvider {
     async fn embed_text(&self, _text: &str) -> Result<Vec<f32>, AppError> {
         Err(AppError::Internal(
-            "FastEmbedProvider is not yet activated. \
-             Configure AI_PROVIDER=gemini or complete Task 05 integration."
-                .to_string(),
+            "FastEmbedProvider is not bundled; configure EMBEDDING_PROVIDER=gemini.".to_string(),
         ))
     }
 
     async fn embed_batch(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, AppError> {
         Err(AppError::Internal(
-            "FastEmbedProvider batch embedding is not yet activated. \
-             Configure AI_PROVIDER=gemini or complete Task 05 integration."
+            "FastEmbedProvider batch embedding is not bundled; configure EMBEDDING_PROVIDER=gemini."
                 .to_string(),
         ))
     }
@@ -268,9 +249,7 @@ impl EmbeddingProvider for FastEmbedProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Mock Provider (for CI & Integration Tests)
-// ---------------------------------------------------------------------------
 
 /// Deterministic mock embedding provider for tests and CI.
 /// Returns a one-hot unit vector (index 0 = 1.0, rest 0.0) without outbound
@@ -312,9 +291,7 @@ impl EmbeddingProvider for MockEmbeddingProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Factory
-// ---------------------------------------------------------------------------
 
 /// Constructs the correct `EmbeddingProvider` based on `AiConfig.provider`.
 pub fn build_embedding_provider(config: &AiConfig) -> Result<Arc<dyn EmbeddingProvider>, AppError> {

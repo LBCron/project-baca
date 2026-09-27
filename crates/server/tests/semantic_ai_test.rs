@@ -128,9 +128,8 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chapter 2: {e}"))?;
 
-    // 5. Seed embedded chunks with known vectors so relevance assertions are
-    // honest: chapter-1 chunk matches the mock query vector exactly
-    // (similarity 1.0); chapter-2 chunk is orthogonal (similarity 0.0).
+    // 5. Chunks with known vectors: ch1 matches the mock query (sim 1.0),
+    // ch2 is orthogonal (sim 0.0).
     let chunk_a = book_chunks::ActiveModel {
         id: Set(Uuid::new_v4()),
         book_id: Set(book_id),
@@ -167,8 +166,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chunk B: {e}"))?;
 
-    // 6. Second book with one chunk (same exact-match embedding) to prove
-    // per-book scope isolation (`WHERE book_id = $1`).
+    // 6. Second book proving per-book scope isolation.
     let other_book_id = Uuid::new_v4();
     let other_book = books::ActiveModel {
         id: Set(other_book_id),
@@ -245,7 +243,7 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
         .await
         .expect("Seeding must succeed");
 
-    // 1. Unauthenticated (Guest) request succeeds! (US-08: open to all readers)
+    // Guest requests succeed without a token.
     let guest_req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
@@ -345,9 +343,8 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
         2,
         "seeded book must return its 2 chunks, got {data:?}"
     );
-    // The mock query vector is one-hot index 0, so the chapter-1 chunk
-    // (embedded identically) must rank first with similarity ~1.0 (> 0.65
-    // per Task 04 success criteria), and the orthogonal chapter-2 chunk last.
+    // The mock query vector matches the chapter-1 chunk exactly (similarity
+    // ~1.0); the orthogonal chapter-2 chunk ranks last.
     let top = &data[0];
     assert_eq!(top["chapter_number"], 1);
     let top_sim = top["similarity_score"]
@@ -472,7 +469,7 @@ async fn test_quote_search_unknown_book_returns_404() {
         .await
         .expect("Seeding must succeed");
 
-    // Contracted 404 (OpenAPI + SRS 17): unknown book must not return 200 [].
+    // Unknown books must 404, never return an empty 200.
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/v1/books/{}/quotes/search", Uuid::new_v4()))
@@ -754,7 +751,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
         .await
         .expect("Seeding must succeed");
 
-    // 1. Chapter 1 recap must ALWAYS return 404 (SRS 19: only active for chapters > 1)
+    // Chapter 1 never has a recap (nothing prior to summarize).
     let chap1_req = Request::builder()
         .method("GET")
         .uri(format!("/api/v1/books/{}/chapters/1/recap", seeded.book_id))

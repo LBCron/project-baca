@@ -16,9 +16,7 @@ use chrono::NaiveDate;
 use std::str::FromStr;
 use thiserror::Error;
 
-// ---------------------------------------------------------------------------
 // Error contract
-// ---------------------------------------------------------------------------
 
 /// Domain rule violation. Mapped to [`shared::AppError`] for transport.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -35,9 +33,7 @@ impl From<DomainError> for shared::AppError {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Reading completion percentage
-// ---------------------------------------------------------------------------
 
 pub const COMPLETION_MIN: f32 = 0.0;
 pub const COMPLETION_MAX: f32 = 100.0;
@@ -77,9 +73,7 @@ pub fn merge_percentage(existing: Option<f32>, incoming: f32) -> f32 {
     existing.map(|prev| prev.max(incoming)).unwrap_or(incoming)
 }
 
-// ---------------------------------------------------------------------------
 // Publication lifecycle
-// ---------------------------------------------------------------------------
 
 /// Legal book publication states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,9 +126,7 @@ impl BookStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Daily streaks and XP
-// ---------------------------------------------------------------------------
 
 /// A day counts toward the streak after this many reading seconds.
 pub const DAILY_THRESHOLD_SECONDS: i64 = 300;
