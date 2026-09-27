@@ -55,15 +55,15 @@ project-baca/
 │   ├── server/                      # HTTP API gateway (Axum REST, OpenAPI, Auth)
 │   └── web/                         # Client frontend (Leptos 0.7 WASM PWA)
 │
-└── services/
-    └── worker/                      # Python AI ingestion and NLP worker
+├── python_worker/                   # Python AI ingestion and NLP worker (Task 05)
 ```
 
 ## 3. Rust-Friendly Domain-Driven Design (DDD)
 
-* **Pure Domain Models:** Structs and enums using the Newtype pattern (e.g., `BookId(Uuid)`). Free of database or HTTP dependencies.
-* **Ports and Adapters:** Idiomatic traits defining storage and repository boundaries:
+* **Current state (honest):** `crates/domain` holds plain serializable models (`User`, `Book`, `Chapter`, …) mirroring the SeaORM entities. It is not yet consumed by `infra`/`server` — there is no enforced boundary today.
+* **Deferred per YAGNI:** Newtype IDs (e.g., `BookId(Uuid)`) and repository port traits (e.g., `trait BookRepository`) stay out until real business logic needs them. Repositories currently live directly in `crates/infra/src/repositories/`:
   ```rust
+  // Target shape when the boundary earns its keep:
   pub trait BookRepository: Send + Sync {
       async fn find_by_id(&self, id: &BookId) -> Result<Option<Book>, DomainError>;
       async fn list_books(&self, filter: &BookFilter) -> Result<Vec<BookSummary>, DomainError>;

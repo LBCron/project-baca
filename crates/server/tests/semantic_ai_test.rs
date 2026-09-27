@@ -6,7 +6,8 @@ use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use chrono::Utc;
 use common::TestHarness;
-use infra::entities::{books, chapters, tldr_cache, users};
+use infra::entities::{book_chunks, books, chapters, tldr_cache, users};
+use sea_orm::entity::prelude::PgVector;
 use sea_orm::{ActiveModelTrait, Set};
 use serde_json::Value;
 use uuid::Uuid;
@@ -18,6 +19,16 @@ struct SeededAiContext {
     #[allow(dead_code)]
     pub user_id: Uuid,
     pub token: String,
+    pub other_book_id: Uuid,
+}
+
+/// Deterministic 768-dim one-hot vector. Index 0 reproduces the
+/// `MockEmbeddingProvider` query vector exactly (cosine similarity 1.0);
+/// any other index is orthogonal to it (similarity 0.0).
+fn one_hot(hot_index: usize) -> Vec<f32> {
+    let mut v = vec![0.0f32; 768];
+    v[hot_index] = 1.0;
+    v
 }
 
 async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, String> {
@@ -112,12 +123,115 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .await
         .map_err(|e| format!("Failed to seed chapter 2: {e}"))?;
 
+    // 5. Seed embedded chunks with known vectors so relevance assertions are
+    // honest: chapter-1 chunk matches the mock query vector exactly
+    // (similarity 1.0); chapter-2 chunk is orthogonal (similarity 0.0).
+    let chunk_a = book_chunks::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(book_id),
+        chapter_id: Set(chapter1_id),
+        chunk_index: Set(0),
+        chunk_text: Set(
+            "The oldest and strongest emotion of mankind is fear, and the oldest and strongest kind of fear is fear of the unknown."
+                .to_string(),
+        ),
+        embedding: Set(PgVector::from(one_hot(0))),
+        created_at: Set(now.into()),
+    };
+
+    chunk_a
+        .insert(&harness.state.db)
+        .await
+        .map_err(|e| format!("Failed to seed chunk A: {e}"))?;
+
+    let chunk_b = book_chunks::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(book_id),
+        chapter_id: Set(chapter2_id),
+        chunk_index: Set(0),
+        chunk_text: Set(
+            "The crumbling roofs of Innsmouth hung over the dark bay as fog swallowed the harbor lights."
+                .to_string(),
+        ),
+        embedding: Set(PgVector::from(one_hot(1))),
+        created_at: Set(now.into()),
+    };
+
+    chunk_b
+        .insert(&harness.state.db)
+        .await
+        .map_err(|e| format!("Failed to seed chunk B: {e}"))?;
+
+    // 6. Second book with one chunk (same exact-match embedding) to prove
+    // per-book scope isolation (`WHERE book_id = $1`).
+    let other_book_id = Uuid::new_v4();
+    let other_book = books::ActiveModel {
+        id: Set(other_book_id),
+        title: Set("The Call of Cthulhu".to_string()),
+        author: Set("H. P. Lovecraft".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Horror".to_string()),
+        sub_theme: Set(Some("Weird Fiction".to_string())),
+        description: Set("A cult stirs beneath the Pacific ocean.".to_string()),
+        cover_url: Set("https://example.com/cthulhu.jpg".to_string()),
+        epub_storage_path: Set("/storage/books/test/cthulhu.epub".to_string()),
+        total_words: Set(12000),
+        estimated_reading_minutes: Set(50),
+        source_name: Set("Standard Ebooks".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(Some(1928)),
+        status: Set("published".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    };
+
+    other_book
+        .insert(&harness.state.db)
+        .await
+        .map_err(|e| format!("Failed to seed other book: {e}"))?;
+
+    let other_chapter_id = Uuid::new_v4();
+    let other_chapter = chapters::ActiveModel {
+        id: Set(other_chapter_id),
+        book_id: Set(other_book_id),
+        chapter_number: Set(1),
+        title: Set("Chapter I: The Horror in Clay".to_string()),
+        word_count: Set(3000),
+        html_content: Set("<p>Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.</p>".to_string()),
+        created_at: Set(now.into()),
+    };
+
+    other_chapter
+        .insert(&harness.state.db)
+        .await
+        .map_err(|e| format!("Failed to seed other chapter: {e}"))?;
+
+    let other_chunk = book_chunks::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(other_book_id),
+        chapter_id: Set(other_chapter_id),
+        chunk_index: Set(0),
+        chunk_text: Set(
+            "Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn."
+                .to_string(),
+        ),
+        embedding: Set(PgVector::from(one_hot(0))),
+        created_at: Set(now.into()),
+    };
+
+    other_chunk
+        .insert(&harness.state.db)
+        .await
+        .map_err(|e| format!("Failed to seed other chunk: {e}"))?;
+
     Ok(SeededAiContext {
         book_id,
         chapter1_id,
         chapter2_id,
         user_id,
         token,
+        other_book_id,
     })
 }
 
@@ -139,6 +253,13 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
+    // Honest relevance: the seeded book holds embedded chunks, so guests
+    // must get real results back — not an empty array.
+    let guest_data = json["data"].as_array().expect("data must be an array");
+    assert!(
+        !guest_data.is_empty(),
+        "guest search must return seeded chunks, got {guest_data:?}"
+    );
 
     // 2. Empty query string must fail validation (min length 3)
     let invalid_empty_req = Request::builder()
@@ -206,7 +327,70 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
-    assert!(json["data"].is_array());
+    let data = json["data"].as_array().expect("data must be an array");
+    // Honest relevance: the seeded book holds exactly 2 embedded chunks.
+    assert_eq!(data.len(), 2, "seeded book must return its 2 chunks, got {data:?}");
+    // The mock query vector is one-hot index 0, so the chapter-1 chunk
+    // (embedded identically) must rank first with similarity ~1.0 (> 0.65
+    // per Task 04 success criteria), and the orthogonal chapter-2 chunk last.
+    let top = &data[0];
+    assert_eq!(top["chapter_number"], 1);
+    let top_sim = top["similarity_score"]
+        .as_f64()
+        .expect("similarity_score must be a number");
+    assert!(
+        (top_sim - 1.0).abs() < 1e-5,
+        "exact-match chunk must score ~1.0, got {top_sim}"
+    );
+    assert!(top_sim > 0.65);
+    let second_sim = data[1]["similarity_score"]
+        .as_f64()
+        .expect("similarity_score must be a number");
+    assert!(
+        second_sim < top_sim,
+        "orthogonal chunk must rank below the exact match"
+    );
+    // Scope isolation: the other book's chunk must not leak in.
+    for item in data {
+        let content = item["content"].as_str().expect("content must be a string");
+        assert!(
+            !content.contains("Cthulhu"),
+            "search leaked another book's chunk: {content}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_scoped_quote_search_isolated_per_book() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness).await.expect("Seeding must succeed");
+
+    // Search scoped to the second book returns only its own chunk.
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/books/{}/quotes/search", seeded.other_book_id))
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "query": "ancient cult beneath the ocean",
+                "limit": 5
+            })
+            .to_string(),
+        ))
+        .expect("Valid request");
+
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    let data = json["data"].as_array().expect("data must be an array");
+    assert_eq!(data.len(), 1, "other book holds exactly 1 chunk, got {data:?}");
+    assert!(data[0]["content"]
+        .as_str()
+        .expect("content must be a string")
+        .contains("Cthulhu"));
 }
 
 #[tokio::test]

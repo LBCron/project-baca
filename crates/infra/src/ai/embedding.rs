@@ -277,7 +277,9 @@ impl EmbeddingProvider for FastEmbedProvider {
 // ---------------------------------------------------------------------------
 
 /// Deterministic mock embedding provider for tests and CI.
-/// Returns a zero-vector of the configured dimension without outbound network calls.
+/// Returns a one-hot unit vector (index 0 = 1.0, rest 0.0) without outbound
+/// network calls, so seeded test chunks with known embeddings produce stable,
+/// rank-meaningful cosine similarities (exact match = 1.0, orthogonal = 0.0).
 pub struct MockEmbeddingProvider {
     dimension: usize,
 }
@@ -286,16 +288,27 @@ impl MockEmbeddingProvider {
     pub fn new(dimension: usize) -> Self {
         Self { dimension }
     }
+
+    /// Deterministic one-hot unit vector: index 0 is 1.0, everything else 0.0.
+    /// A zero query vector would make pgvector cosine distance degenerate
+    /// (zero norm), so tests seed chunks against this exact vector instead.
+    fn one_hot(&self) -> Vec<f32> {
+        let mut v = vec![0.0f32; self.dimension];
+        if !v.is_empty() {
+            v[0] = 1.0;
+        }
+        v
+    }
 }
 
 #[async_trait]
 impl EmbeddingProvider for MockEmbeddingProvider {
     async fn embed_text(&self, _text: &str) -> Result<Vec<f32>, AppError> {
-        Ok(vec![0.0f32; self.dimension])
+        Ok(self.one_hot())
     }
 
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, AppError> {
-        Ok(vec![vec![0.0f32; self.dimension]; texts.len()])
+        Ok((0..texts.len()).map(|_| self.one_hot()).collect())
     }
 
     fn dimension(&self) -> usize {
@@ -311,7 +324,7 @@ impl EmbeddingProvider for MockEmbeddingProvider {
 ///
 /// - `"gemini"` (default): Uses `GeminiEmbeddingProvider` calling the cloud REST API.
 /// - `"fastembed"`: Uses `FastEmbedProvider` (CPU ONNX stub; requires Task 05 activation).
-/// - `"mock"`: Uses `MockEmbeddingProvider` (deterministic zero-vectors for CI/testing).
+/// - `"mock"`: Uses `MockEmbeddingProvider` (deterministic one-hot unit vectors for CI/testing).
 /// - Any other value: Returns an `AppError::Internal` to fail fast at startup.
 pub fn build_embedding_provider(config: &AiConfig) -> Result<Arc<dyn EmbeddingProvider>, AppError> {
     match config.provider.to_lowercase().as_str() {
@@ -380,6 +393,9 @@ mod tests {
         assert!(res.is_ok());
         if let Ok(vec) = res {
             assert_eq!(vec.len(), 768);
+            // One-hot contract: exact-match anchor for seeded test chunks.
+            assert_eq!(vec[0], 1.0);
+            assert!(vec[1..].iter().all(|&x| x == 0.0));
         }
         let batch = provider.embed_batch(&["a".into(), "b".into()]).await;
         assert!(batch.is_ok());
