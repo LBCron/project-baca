@@ -190,6 +190,16 @@ pub async fn security_headers_middleware(
     req: Request<Body>,
     next: axum_mw::Next,
 ) -> Response<Body> {
+    // Swagger UI ships inline scripts and styles, so its document-only CSP
+    // allows 'unsafe-inline' + same-origin assets. Everywhere else keeps the
+    // strict default ('none') so API/JSON/SVG responses cannot run scripts.
+    let is_swagger =
+        req.uri().path().starts_with("/swagger-ui") || req.uri().path().starts_with("/api-docs");
+    let csp = if is_swagger {
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'"
+    } else {
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    };
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -208,10 +218,9 @@ pub async fn security_headers_middleware(
         HeaderName::from_static("x-xss-protection"),
         HeaderValue::from_static("0"),
     );
-    headers.insert(
-        HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"),
-    );
+    if let Ok(v) = HeaderValue::from_str(csp) {
+        headers.insert(HeaderName::from_static("content-security-policy"), v);
+    }
     headers.insert(
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),

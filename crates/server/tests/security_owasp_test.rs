@@ -50,6 +50,26 @@ async fn test_owasp_security_headers_and_error_handling() {
         "same-origin"
     );
 
+    // Swagger UI needs inline scripts/styles, so its document CSP is relaxed
+    // to same-origin + unsafe-inline while every other route stays strict.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/swagger-ui/")
+        .body(Body::empty())
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let swagger_csp = resp
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        swagger_csp.contains("'unsafe-inline'"),
+        "swagger CSP must allow its bundled inline scripts, got {swagger_csp}"
+    );
+
     // Structured validation errors on bad signup payload (CWE-209 prevention)
     let invalid_signup = serde_json::json!({
         "email": "invalid-email-format",
