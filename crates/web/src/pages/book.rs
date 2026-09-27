@@ -1,6 +1,7 @@
 //! Book overview page: cover, blurb, reading-time, mood tags, chapter list
 //! with duration estimates, Start Reading + Save Offline (Sub-Task 6.4).
 
+use crate::components::insights::{AtomicCards, QuoteFinder};
 use crate::{api, storage};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -15,6 +16,8 @@ pub fn BookPage() -> impl IntoView {
     let (error, set_error) = signal(None::<String>);
     let (saving, set_saving) = signal(false);
     let (saved, set_saved) = signal(false);
+    let quotes_open = RwSignal::new(false);
+    let cards_open = RwSignal::new(false);
 
     {
         let id = book_id();
@@ -93,7 +96,13 @@ pub fn BookPage() -> impl IntoView {
                             <button class="btn-read" on:click=save_offline disabled=move || saving.get() || saved.get()>
                                 {move || if saved.get() { "Saved Offline" } else if saving.get() { "Saving…" } else { "Save Offline" }}
                             </button>
+                            <button class="lang-switch" on:click=move |_| quotes_open.set(true)>"Quote Finder"</button>
+                            <button class="lang-switch" on:click=move |_| cards_open.set(true)>"Atomic Cards"</button>
                         </div>
+                        <QuoteFinder book_id=b.id.to_string() show=quotes_open/>
+                        {b.chapters.first().map(|first| {
+                            view! { <AtomicCards book_id=b.id.to_string() chapter=first.chapter_number show=cards_open/> }
+                        })}
                         <div class="catalog-section-title"><span>"Chapters"</span></div>
                         <ol class="chapter-list">
                             {b.chapters.into_iter().map(|c| {

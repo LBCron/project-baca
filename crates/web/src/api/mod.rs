@@ -8,7 +8,7 @@ use shared::{
     ActiveProgressDto, ApiResponse, BookCatalogQuery, BookDetailDto, BookSearchQuery,
     BookSearchResultDto, BookSummaryDto, ChapterDetailDto, GuestMergeRequest, LoginRequest,
     OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto, ReadingProgressUpdateDto,
-    SignupRequest, VerifyOtpRequest,
+    SignupRequest, TokenResponse, VerifyOtpRequest,
 };
 use wasm_bindgen::JsCast;
 use web_sys::window;
@@ -165,6 +165,23 @@ pub async fn quote_search(
     post(&format!("/books/{book_id}/quotes/search"), req).await
 }
 
+pub async fn atomic_cards(
+    book_id: &str,
+    chapter_ref: &str,
+) -> Result<shared::AtomicCardsDto, String> {
+    get(&format!(
+        "/books/{book_id}/chapters/{chapter_ref}/atomic-cards"
+    ))
+    .await
+}
+
+pub async fn chapter_recap(
+    book_id: &str,
+    chapter_ref: &str,
+) -> Result<shared::ChapterRecapDto, String> {
+    get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
+}
+
 pub async fn signup(req: &SignupRequest) -> Result<(), String> {
     let url = format!("{API_BASE}/auth/signup");
     let request = Request::post(&url)
@@ -175,11 +192,11 @@ pub async fn signup(req: &SignupRequest) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<serde_json::Value, String> {
+pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String> {
     post("/auth/verify-otp", req).await
 }
 
-pub async fn login(req: &LoginRequest) -> Result<serde_json::Value, String> {
+pub async fn login(req: &LoginRequest) -> Result<TokenResponse, String> {
     post("/auth/login", req).await
 }
 

@@ -2,6 +2,7 @@
 //! Theme: Vintage Literary (1900–1950)
 
 pub mod api;
+pub mod components;
 pub mod pages;
 pub mod storage;
 
@@ -11,6 +12,7 @@ use leptos_router::path;
 
 use pages::book::BookPage;
 use pages::home::HomePage;
+use pages::reader::ReaderPage;
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -20,6 +22,7 @@ pub fn App() -> impl IntoView {
                 <ParentRoute path=path!("") view=Outlet>
                     <Route path=path!("") view=HomePage/>
                     <Route path=path!("book/:id") view=BookPage/>
+                    <Route path=path!("read/:id") view=ReaderPage/>
                 </ParentRoute>
             </Routes>
         </Router>

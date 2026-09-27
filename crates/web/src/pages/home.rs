@@ -2,6 +2,7 @@
 //! continue-reading card (Sub-Task 6.3).
 
 use crate::api;
+use crate::components::auth::AuthModal;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{ActiveProgressDto, BookCatalogQuery, BookSearchQuery, BookSummaryDto};
@@ -105,6 +106,8 @@ pub fn HomePage() -> impl IntoView {
             }
         });
     };
+    let auth_open = RwSignal::new(false);
+    let authed = Callback::new(move |_| {});
 
     view! {
         <div class="app-container">
@@ -115,16 +118,23 @@ pub fn HomePage() -> impl IntoView {
                 </a>
                 <nav class="nav-links">
                     <a href="/" class="nav-link">"Catalog"</a>
+                    <button class="nav-link" on:click=move |_| auth_open.set(true)>"Sign In"</button>
                     <button class="lang-switch" on:click=toggle_lang>
                         {move || format!("[ {} ]", lang.get())}
                     </button>
                 </nav>
             </header>
+            <AuthModal show=auth_open on_authed=authed/>
 
             <section class="hero-vintage">
-                <div class="hero-subtitle">"Public Domain Classical Literature"</div>
-                <h1 class="hero-heading">"The Timelessness of Words in Classic Print"</h1>
-                <p class="hero-desc">
+                <div class="hero-copy">
+                    <div class="hero-subtitle">"Public Domain Classical Literature"</div>
+                    <h1 class="hero-heading">
+                        "Timeless words, " <em>"bound anew"</em>
+                    </h1>
+                    <p class="hero-desc">
+                        "Read world literary masterpieces with elegant typography, a reflowable reader layout, and semantic quote discovery."
+                    </p>
                     <input
                         type="search"
                         class="search-bar"
@@ -132,7 +142,10 @@ pub fn HomePage() -> impl IntoView {
                         prop:value=move || query.get()
                         on:input=on_search
                     />
-                </p>
+                </div>
+                <div class="hero-art">
+                    <img src="/assets/library-bookshelf-ladder.png" alt="Reader climbing a library ladder"/>
+                </div>
             </section>
 
             {move || {
