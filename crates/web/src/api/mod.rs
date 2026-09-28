@@ -99,6 +99,26 @@ async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result
     })
 }
 
+async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
+    let url = format!("{API_BASE}{path}");
+    let req = authed(Request::put(&url))
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(body).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let envelope = req
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<ApiResponse<T>>()
+        .await
+        .map_err(|e| e.to_string())?;
+    envelope.data.ok_or_else(|| {
+        envelope
+            .error
+            .map(|e| format!("{}: {}", e.code, e.message))
+            .unwrap_or_else(|| "empty response".to_string())
+    })
+}
 fn encode_param(value: &str) -> String {
     js_sys::encode_uri_component(value)
         .as_string()
@@ -162,12 +182,7 @@ pub async fn offline_bundle(book_id: &str) -> Result<OfflineBundleDto, String> {
 }
 
 pub async fn save_progress(book_id: &str, update: &ReadingProgressUpdateDto) -> Result<(), String> {
-    let url = format!("{API_BASE}/progress/{book_id}");
-    let req = authed(Request::post(&url))
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(update).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    req.send().await.map_err(|e| e.to_string())?;
+    let _: String = put(&format!("/progress/{book_id}"), update).await?;
     Ok(())
 }
 
@@ -176,12 +191,7 @@ pub async fn active_progress() -> Result<Vec<ActiveProgressDto>, String> {
 }
 
 pub async fn merge_guest_progress(req: &GuestMergeRequest) -> Result<(), String> {
-    let url = format!("{API_BASE}/progress/merge");
-    let request = authed(Request::post(&url))
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(req).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    request.send().await.map_err(|e| e.to_string())?;
+    let _: serde_json::Value = post("/progress/merge", req).await?;
     Ok(())
 }
 

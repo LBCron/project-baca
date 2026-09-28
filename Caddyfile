@@ -22,8 +22,14 @@
 https://localhost {
 	tls internal
 
-	# Axum REST API + Swagger UI.
+	# Axum REST API + Swagger UI + OpenAPI JSON.
 	handle /api/* {
+		reverse_proxy host.docker.internal:8080
+	}
+	handle /swagger-ui* {
+		reverse_proxy host.docker.internal:8080
+	}
+	handle /api-docs/* {
 		reverse_proxy host.docker.internal:8080
 	}
 
