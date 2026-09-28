@@ -49,7 +49,7 @@ Whether you are revisiting timeless world literature or exploring classic Indone
 Project Baca is engineered from the ground up for speed, reliability, and security using modern systems programming:
 
 * **Stateless API Gateway:** Built with **Rust (Axum)** for predictable low-latency performance and memory safety.
-* **Client-Side WebAssembly (WASM):** Built with **Leptos 0.7**, delivering native-speed page transitions and smooth 60 FPS pagination inside any modern browser. Routes: `/` catalog + Rotaria hero, `/book/:id` overview, `/read/:id` CFI reader, `/me` profile, `/admin` upload + job monitor. Verified by `make test-web-e2e` (30 Playwright checks, 0 page-errors).
+* **Client-Side WebAssembly (WASM):** Built with **Leptos 0.7**, delivering native-speed page transitions and smooth 60 FPS pagination inside any modern browser. Routes: `/` catalog + Rotaria hero, `/book/:id` overview, `/read/:id` CFI reader, `/me` profile, `/admin` upload + job monitor. Verified by `make test-web` (pytest pyramid + visual goldens + axe a11y, 0 page-errors).
 * **Postgres for Everything:** Relational tables, sub-5ms typo-tolerant catalog search (`pg_trgm`), and sub-10ms semantic vector traversal (`pgvector` HNSW) all unified within **PostgreSQL 17**.
 * **Modern Edge Transport:** Terminated via **Caddy Reverse Proxy** supporting **HTTP/3 over QUIC** (UDP 443) with seamless fallback to HTTP/2 (TCP 443). Features 0-RTT/1-RTT handshakes and connection migration for uninterrupted reading while moving between Wi-Fi and mobile networks.
 * **Pragmatic Background Queues:** Asynchronous EPUB processing, HTML cleaning, and transactional notifications managed via **Redis 7 Streams**.

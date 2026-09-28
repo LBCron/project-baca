@@ -135,10 +135,10 @@ async fn test_load_concurrent_authenticated_profile_reads() {
 #[tokio::test]
 async fn test_stress_rate_limit_saturation_and_shedding() {
     let harness = TestHarness::new().await;
-    if harness.state.get_redis_conn().await.is_err() {
-        println!("Redis not reachable, skipping stress test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     // A single IP sends 50 requests in rapid succession to /api/v1/auth/login
     // The rate limiter limit is 20 req/minute
@@ -197,10 +197,10 @@ async fn test_stress_rate_limit_saturation_and_shedding() {
 #[tokio::test]
 async fn test_stress_burst_traffic_ip_spread() {
     let harness = Arc::new(TestHarness::new().await);
-    if harness.state.get_redis_conn().await.is_err() {
-        println!("Redis not reachable, skipping burst test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     // 50 concurrent requests from 50 distinct IPs should all be allowed without false positives
     let worker_count = 50;

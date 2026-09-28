@@ -96,11 +96,12 @@ make test-api-boundary # 404/405, malformed payloads, pagination clamps
 make test-security     # OWASP headers, lockout, revocation, error masking
 make test-reliability  # Disconnect fallback, fault injection, oversized ids
 make test-all          # Complete end-to-end test execution
-make test-web-e2e      # Leptos web regression: 30 Playwright checks vs live :8080 + :3000 (0 page-errors required)
+make test-web          # Web pyramid (unit + e2e + component + integration) vs live :8080 + :3000
+make test-web-full     # + visual goldens + axe a11y + firefox smoke
 ```
 
 ### Web Regression Gate (M6)
-`make test-web-e2e` runs `crates/web/tests_e2e/m6_reader.py` (Playwright black-box, asserts flows not debris content). Run it after any `crates/web` change; on failure, check `knowledge/output/audit-2026-09-27/REPORT.md` for the last full route-by-route audit and its 8 fixed findings (notably TD-06: always assert mutation side effects, e.g. IndexedDB counts after Save Offline).
+`make test-web` runs `crates/web/tests/` (pytest pyramid: e2e + component gallery + API contracts + unit). Run it after any `crates/web` change; on failure, check `knowledge/output/audit-2026-09-27/REPORT.md` for the last full route-by-route audit and its 8 fixed findings (notably TD-06: always assert mutation side effects, e.g. IndexedDB counts after Save Offline).
 
 ### Test Libraries
 * **Mocking:** `mockall` (declarative mock generation for trait ports).

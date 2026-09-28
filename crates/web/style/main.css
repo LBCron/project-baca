@@ -337,7 +337,7 @@ body::before {
     border-top: 1px solid var(--color-border-parchment);
     padding-top: 14px;
     font-size: 0.85rem;
-    color: var(--color-ink-faint);
+    color: var(--color-ink-muted);
 }
 
 .btn-read {
@@ -386,7 +386,7 @@ body::before {
     padding: 36px 0;
     text-align: center;
     font-size: 0.9rem;
-    color: var(--color-ink-faint);
+    color: var(--color-ink-muted);
     margin-top: 60px;
 }
 
@@ -536,7 +536,7 @@ input[type="range"] {
 
 .chapter-row span {
     font-size: 0.85rem;
-    color: var(--color-ink-faint);
+    color: var(--color-ink-muted);
     white-space: nowrap;
 }
 
@@ -594,7 +594,7 @@ input[type="range"] {
     padding: 10px;
     border-top: 1px solid var(--color-border-parchment);
     font-size: 0.85rem;
-    color: var(--color-ink-faint);
+    color: var(--color-ink-muted);
     cursor: pointer;
 }
 
@@ -670,7 +670,7 @@ input[type="range"] {
 .auth-switch {
     margin-top: 16px;
     text-align: center;
-    color: var(--color-ink-faint);
+    color: var(--color-ink-muted);
 }
 
 .quote-results {

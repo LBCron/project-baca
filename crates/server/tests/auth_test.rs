@@ -1,4 +1,7 @@
 //! Auth lifecycle tests: signup, OTP, login, rotation, logout.
+//! Adversarial tests (replay-theft, lockout, OTP abuse, revoke semantics)
+//! use the shared live-services gate in `common` — they `#[ignore]` without
+//! `BACA_LIVE_TEST=1` instead of silently passing (Task 11c policy).
 
 mod common;
 
@@ -17,13 +20,10 @@ use uuid::Uuid;
 #[tokio::test]
 async fn test_auth_full_lifecycle() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping full integration flow");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     // A unique IP per run keeps this flow out of the shared rate-limit
     // bucket (the lifecycle alone issues ~10 auth requests).
@@ -349,10 +349,9 @@ async fn test_change_password_revokes_sessions_by_default() {
         created_at: Set(chrono::Utc::now().into()),
         updated_at: Set(chrono::Utc::now().into()),
     };
-    if user.insert(&harness.state.db).await.is_err() {
-        println!("Database not reachable, skipping password-revoke test");
-        return;
-    }
+    user.insert(&harness.state.db)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let password = "OrigSecurePassword123!";
     let stored = infra::hash_password_async(password.to_string())
@@ -415,10 +414,9 @@ async fn test_auth_guest_progress_merge() {
         created_at: Set(chrono::Utc::now().into()),
         updated_at: Set(chrono::Utc::now().into()),
     };
-    if user.insert(&harness.state.db).await.is_err() {
-        println!("Database not reachable, skipping merge test");
-        return;
-    }
+    user.insert(&harness.state.db)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Seed test book & chapter
     let book_id = Uuid::new_v4();
@@ -608,6 +606,658 @@ async fn test_auth_guest_progress_merge() {
         .state
         .db
         .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "DELETE FROM books WHERE id = $1",
+            vec![book_id.into()],
+        ))
+        .await;
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial tests (Task 11a). All require live Postgres + Redis; they are
+// `#[ignore]`d by default and run with `BACA_LIVE_TEST=1` (Task 11c policy).
+// Each uses a unique email + TEST-NET IP so parallel runs never share
+// rate-limit or lockout buckets.
+// ---------------------------------------------------------------------------
+
+/// Builds a fully verified user via the real signup → OTP → verify flow and
+/// returns (access_token, refresh_token). Panics loudly when services are down.
+async fn provision_verified_user(
+    harness: &TestHarness,
+    redis_conn: &mut redis::aio::MultiplexedConnection,
+    tag: &str,
+    ip: &str,
+) -> (String, String) {
+    use redis::AsyncCommands;
+
+    let email = format!("adv_{tag}_{}@example.com", Uuid::new_v4());
+    let password = "Adversarial123!";
+    let signup_req = SignupRequest {
+        display_name: format!("Adv{tag}"),
+        email: email.clone(),
+        password: password.to_string(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/signup")
+        .header("cf-connecting-ip", ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let known_otp = "424242";
+    let record_json =
+        serde_json::json!({ "hash": infra::hash_otp(known_otp), "attempts": 0 }).to_string();
+    let _: () = redis_conn
+        .set_ex(format!("otp:{email}"), record_json, 600)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/verify-otp")
+        .header("cf-connecting-ip", ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&VerifyOtpRequest {
+                email: email.clone(),
+                otp: known_otp.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    (
+        body["data"]["access_token"].as_str().unwrap().to_string(),
+        body["data"]["refresh_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Sleeps until the wall clock crosses into the next whole second.
+/// Needed because revocation compares whole-second `iat <= revoked_before`.
+async fn wait_next_second() {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let remain = 1000 - (now_ms % 1000);
+    tokio::time::sleep(std::time::Duration::from_millis((remain + 50) as u64)).await;
+}
+
+fn login_req(email: &str, password: &str, ip: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header("cf-connecting-ip", ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&LoginRequest {
+                email: email.to_string(),
+                password: password.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap()
+}
+
+/// Refresh-token replay kills the whole family (ADR-27 theft handling):
+/// after replaying a rotated token, even the *fresh* sibling must be dead.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_replay_kills_token_family() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "replay", &ip).await;
+
+    let rotate = |token: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/refresh")
+            .header("cf-connecting-ip", &ip)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&RefreshTokenRequest {
+                    refresh_token: token.to_string(),
+                })
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+
+    let (resp, body) = harness.send_json_request(rotate(&refresh)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fresh: String = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // First reuse of the old token: 401 (rotation already consumed it).
+    let (resp, _) = harness.send_json_request(rotate(&refresh)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    // Second reuse = theft signal: the fresh sibling dies too.
+    let (resp, _) = harness.send_json_request(rotate(&refresh)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let (resp, _) = harness.send_json_request(rotate(&fresh)).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "replay must revoke the whole family including the fresh sibling"
+    );
+}
+
+/// Pair lockout after 5 failures; a different IP is unaffected.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_pair_lockout_five_failures() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let other_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (email, password) = {
+        let email = format!("lockpair_{}@example.com", Uuid::new_v4());
+        let password = "LockoutPair123!";
+        let signup_req = SignupRequest {
+            display_name: "LockPair".to_string(),
+            email: email.clone(),
+            password: password.to_string(),
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header("cf-connecting-ip", &ip)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+            .unwrap();
+        let (resp, _) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let record_json =
+            serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
+        use redis::AsyncCommands;
+        let _: () = redis_conn
+            .set_ex(format!("otp:{email}"), record_json, 600)
+            .await
+            .unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/verify-otp")
+            .header("cf-connecting-ip", &ip)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&VerifyOtpRequest {
+                    email: email.clone(),
+                    otp: "424242".to_string(),
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        let (resp, _) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        (email, password)
+    };
+
+    for _ in 0..5 {
+        let (resp, _) = harness
+            .send_json_request(login_req(&email, "WrongPassword999!", &ip))
+            .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+    // 6th attempt with the CORRECT password is shed: pair locked.
+    let (resp, body) = harness
+        .send_json_request(login_req(&email, &password, &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(body["error"]["code"] == "RATE_LIMITED" || body["success"] == false);
+
+    // Same credentials from a different IP still work (no victim lockout).
+    let (resp, _) = harness
+        .send_json_request(login_req(&email, &password, &other_ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Aggregate email lockout after 20 failures across IPs.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_email_aggregate_lockout_twenty_failures() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let base: u8 = 10 + (Uuid::new_v4().as_u128() % 150) as u8;
+    let (email, password) = {
+        let email = format!("lockagg_{}@example.com", Uuid::new_v4());
+        let password = "LockoutAgg123!";
+        let ip0 = format!("198.51.100.{base}");
+        let signup_req = SignupRequest {
+            display_name: "LockAgg".to_string(),
+            email: email.clone(),
+            password: password.to_string(),
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header("cf-connecting-ip", &ip0)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+            .unwrap();
+        let (resp, _) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let record_json =
+            serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
+        use redis::AsyncCommands;
+        let _: () = redis_conn
+            .set_ex(format!("otp:{email}"), record_json, 600)
+            .await
+            .unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/verify-otp")
+            .header("cf-connecting-ip", &ip0)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&VerifyOtpRequest {
+                    email: email.clone(),
+                    otp: "424242".to_string(),
+                })
+                .unwrap(),
+            ))
+            .unwrap();
+        let (resp, _) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        (email, password)
+    };
+
+    // 20 failures spread over 4 IPs (5 each — below the pair threshold of 5
+    // triggering on the 5th, so use 4 per IP across 5 IPs to stay under pair).
+    for i in 0..5u8 {
+        let ip = format!("198.51.100.{}", base.wrapping_add(i));
+        for _ in 0..4 {
+            let (resp, _) = harness
+                .send_json_request(login_req(&email, "WrongPassword999!", &ip))
+                .await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+    // 21st failure from a fresh IP trips the aggregate lock.
+    let fresh_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (resp, _) = harness
+        .send_json_request(login_req(&email, &password, &fresh_ip))
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "20 aggregate failures must lock the email"
+    );
+}
+
+/// Signup SMTP-abuse cap: 11 signups/hour from one IP sheds with 429.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_signup_ip_cap_eleven_per_hour() {
+    let harness = TestHarness::new().await;
+    if harness.live_only().await.is_none() {
+        panic!("live services required (BACA_LIVE_TEST=1 with db-up)");
+    }
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let mut last_status = StatusCode::CREATED;
+    for i in 0..11 {
+        let signup_req = SignupRequest {
+            display_name: format!("Cap{i}"),
+            email: format!("cap{i}_{}@example.com", Uuid::new_v4()),
+            password: "CapTest123!".to_string(),
+        };
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header("cf-connecting-ip", &ip)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+            .unwrap();
+        // Space out to dodge the 60s per-email cooldown (distinct emails
+        // anyway) — the IP cap is what we assert on the 11th.
+        let (resp, _) = harness.send_json_request(req).await;
+        last_status = resp.status();
+        if i < 10 {
+            assert_eq!(last_status, StatusCode::CREATED, "signup {i} must pass");
+        }
+        // Cooldown between signups avoids tripping unrelated limiters.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    assert_eq!(
+        last_status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "11th signup/hour from one IP must be shed"
+    );
+}
+
+/// OTP abuse: 3 wrong attempts lock the OTP for 5 minutes (even the right
+/// code 429s), and an expired OTP is 400 — never a silent accept.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_otp_attempt_lock_and_expiry() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    use redis::AsyncCommands;
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let email = format!("otplock_{}@example.com", Uuid::new_v4());
+    let signup_req = SignupRequest {
+        display_name: "OtpLock".to_string(),
+        email: email.clone(),
+        password: "OtpLock123!".to_string(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/signup")
+        .header("cf-connecting-ip", &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let record_json =
+        serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
+    let _: () = redis_conn
+        .set_ex(format!("otp:{email}"), record_json, 600)
+        .await
+        .unwrap();
+
+    let verify = |otp: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/verify-otp")
+            .header("cf-connecting-ip", &ip)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&VerifyOtpRequest {
+                    email: email.clone(),
+                    otp: otp.to_string(),
+                })
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+
+    for _ in 0..3 {
+        let (resp, _) = harness.send_json_request(verify("000000")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+    // Correct code inside the lock window is still rejected (400 with a
+    // wait-a-few-minutes message — the OTP lock surfaces as ValidationError,
+    // unlike the login lockout which is 429; see follow-up note below).
+    let (resp, body) = harness.send_json_request(verify("424242")).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("wait"),
+        "locked OTP must tell the user to wait"
+    );
+
+    // Expired OTP (TTL 1s, then wait) is 400, not 500/accept.
+    let email2 = format!("otpexp_{}@example.com", Uuid::new_v4());
+    let record_json =
+        serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
+    let _: () = redis_conn
+        .set_ex(format!("otp:{email2}"), record_json, 1)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/verify-otp")
+        .header("cf-connecting-ip", &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&VerifyOtpRequest {
+                email: email2,
+                otp: "424242".to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Password change with default flags kills the other session for real
+/// (end-to-end over HTTP, not just unit-level revocation).
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_password_change_kills_other_session_e2e() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let email = format!("pwd_{}@example.com", Uuid::new_v4());
+    let password = "SessionKill123!";
+    let signup_req = SignupRequest {
+        display_name: "SessKiller".to_string(),
+        email: email.clone(),
+        password: password.to_string(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/signup")
+        .header("cf-connecting-ip", &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let record_json =
+        serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
+    use redis::AsyncCommands;
+    let _: () = redis_conn
+        .set_ex(format!("otp:{email}"), record_json, 600)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/verify-otp")
+        .header("cf-connecting-ip", &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&VerifyOtpRequest {
+                email: email.clone(),
+                otp: "424242".to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Two sessions: A and B.
+    let login = || harness.send_json_request(login_req(&email, password, &ip));
+    let (_, body_a) = {
+        let (resp, body) = login().await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        (resp, body)
+    };
+    // Revocation compares whole-second `iat <= revoked_before`, so B must be
+    // minted in a strictly later second than any possible revoke-stamp: wait
+    // for the next wall-clock second boundary, then log B in.
+    wait_next_second().await;
+    let (resp, body_b) = login().await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let token_a: String = body_a["data"]["access_token"].as_str().unwrap().to_string();
+    let token_b: String = body_b["data"]["access_token"].as_str().unwrap().to_string();
+
+    // A changes the password with default flags (revoke_other_sessions None).
+    // Wait for the next second boundary first so the revoke-stamp strictly
+    // postdates B's iat (same-second would kill B AND A).
+    wait_next_second().await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {token_a}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&ChangePasswordRequest {
+                current_password: password.to_string(),
+                new_password: "EvenNewer123!".to_string(),
+                revoke_other_sessions: None,
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, put_body) = harness.send_json_request(req).await;
+    if resp.status() != StatusCode::OK {
+        panic!(
+            "PUT /password failed: status={} body={put_body}",
+            resp.status()
+        );
+    }
+    // B is dead. NOTE (quirk, see Task 11i): the revocation is a global
+    // whole-second timestamp (`iat <= revoked_before`), so the requester's
+    // own token A — minted before the stamp — is ALSO dead despite the flag
+    // being named `revoke_other_sessions`. The web client survives this via
+    // the 401 → refresh → clear-to-login cycle, but the UX ("Password
+    // changed." then sudden logout) is wrong. Assert actual behavior here;
+    // 11i fixes the semantics.
+    let me = |t: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/me")
+            .header("authorization", format!("Bearer {t}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (resp, _) = harness.send_json_request(me(&token_b)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let (resp, _) = harness.send_json_request(me(&token_a)).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "requester token also dies under global-timestamp revocation (11i)"
+    );
+}
+
+/// Guest merge cap: 100 records OK, 101 rejected with 400 (Task 11b).
+#[tokio::test]
+async fn test_guest_merge_enforces_hundred_record_cap() {
+    use sea_orm::{ActiveModelTrait, ActiveValue::Set};
+    let harness = TestHarness::new().await;
+    let user_id = Uuid::new_v4();
+    let email = format!("mergecap_{}@example.com", user_id);
+    let user = infra::entities::users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.clone()),
+        display_name: Set("MergeCap".to_string()),
+        password_hash: Set(Some("hash".to_string())),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(chrono::Utc::now().into()),
+        updated_at: Set(chrono::Utc::now().into()),
+    };
+    if user.insert(&harness.state.db).await.is_err() {
+        panic!("live DB required (db-up); 11c gate, no silent pass");
+    }
+    let book_id = Uuid::new_v4();
+    let chapter_id = Uuid::new_v4();
+    let book = infra::entities::books::ActiveModel {
+        id: Set(book_id),
+        title: Set("Cap Novel".to_string()),
+        author: Set("Cap".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Fiction".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set("books/cap.epub".to_string()),
+        total_words: Set(1000),
+        estimated_reading_minutes: Set(5),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set("published".to_string()),
+        created_at: Set(chrono::Utc::now().into()),
+        updated_at: Set(chrono::Utc::now().into()),
+    };
+    book.insert(&harness.state.db).await.unwrap();
+    let chapter = infra::entities::chapters::ActiveModel {
+        id: Set(chapter_id),
+        book_id: Set(book_id),
+        chapter_number: Set(1),
+        title: Set("Chapter 1".to_string()),
+        word_count: Set(1000),
+        html_content: Set("<p>x</p>".to_string()),
+        created_at: Set(chrono::Utc::now().into()),
+    };
+    chapter.insert(&harness.state.db).await.unwrap();
+
+    let access_token = infra::generate_access_token(
+        user_id,
+        &email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        15,
+    )
+    .unwrap();
+
+    let rec = || GuestProgressRecord {
+        book_id,
+        last_chapter_id: chapter_id,
+        last_anchor_cfi: "epubcfi(/6/2)".to_string(),
+        completion_percentage: 10.0,
+        is_finished: Some(false),
+        last_read_at: Some(chrono::Utc::now()),
+    };
+    let merge = |n: usize| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/progress/merge")
+            .header("authorization", format!("Bearer {access_token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&GuestMergeRequest {
+                    records: (0..n).map(|_| rec()).collect(),
+                })
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+
+    let (resp, body) = harness.send_json_request(merge(100)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"]["merged_count"], 100);
+
+    let (resp, body) = harness.send_json_request(merge(101)).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("100"));
+
+    // Cleanup.
+    use sea_orm::ConnectionTrait;
+    let _ = harness
+        .state
+        .db
+        .execute(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "DELETE FROM users WHERE id = $1",
+            vec![user_id.into()],
+        ))
+        .await;
+    let _ = harness
+        .state
+        .db
+        .execute(sea_orm::Statement::from_sql_and_values(
             sea_orm::DatabaseBackend::Postgres,
             "DELETE FROM books WHERE id = $1",
             vec![book_id.into()],

@@ -1027,3 +1027,98 @@ async fn test_chapter_recap_by_number_and_uuid() {
     let resp = harness.send_request(hit_uuid_req).await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ---------------------------------------------------------------------------
+// Task 11b: split card ownership (owner 200 / intruder 404 / anon 401) +
+// insights unknown-book 404. Live DB required (11c gate: explicit panic).
+// ---------------------------------------------------------------------------
+
+/// Quote card: owner renders 200 SVG, intruder gets 404, anonymous gets 401.
+#[tokio::test]
+async fn test_quote_card_ownership_split() {
+    let harness = TestHarness::new().await;
+    let seeded = match seed_test_context(&harness).await {
+        Ok(s) => s,
+        Err(e) => panic!("live DB required (db-up); 11c gate, no silent pass: {e}"),
+    };
+    // Save one quote as the owner.
+    let save_req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/quotes/save")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": "Ownership split probe quote."
+            }))
+            .unwrap(),
+        ))
+        .expect("Valid request");
+    let resp = harness.send_request(save_req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let raw = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let json: Value = serde_json::from_slice(&raw).unwrap();
+    let quote_id = json["data"]["id"].as_str().expect("quote id").to_string();
+
+    // Owner: 200 SVG.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("svg"));
+
+    // Intruder: 404 (existence not leaked).
+    let other = seed_reader(&harness, &format!("split_{}@baca.local", Uuid::new_v4())).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .header(header::AUTHORIZATION, format!("Bearer {}", other.token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Anonymous: 401.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/quotes/{quote_id}/card"))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Insights endpoints on an unknown book: 404 (never 404-cache-miss
+/// confusion, never 500).
+#[tokio::test]
+async fn test_insights_unknown_book_returns_404() {
+    let harness = TestHarness::new().await;
+    if matches!(harness.state.db, sea_orm::DatabaseConnection::Disconnected) {
+        panic!("live DB required (db-up); 11c gate, no silent pass");
+    }
+    let ghost = Uuid::new_v4();
+    for uri in [
+        format!("/api/v1/books/{ghost}/chapters/2/atomic-cards"),
+        format!("/api/v1/books/{ghost}/chapters/2/recap"),
+    ] {
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .expect("Valid request");
+        let resp = harness.send_request(req).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

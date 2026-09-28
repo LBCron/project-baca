@@ -74,6 +74,20 @@ impl TestHarness {
     }
 
     /// Sends an HTTP request and deserializes the response body to JSON
+    ///
+    /// Live-services gate (Task 11c): returns `None` when Postgres or Redis
+    /// is unreachable, so adversarial tests can `#[ignore]`-skip loudly
+    /// instead of passing silently. Unit tests must not depend on this.
+    /// (Built per test-binary; allow dead code for binaries not using it.)
+    #[allow(dead_code)]
+    pub async fn live_only(&self) -> Option<redis::aio::MultiplexedConnection> {
+        if matches!(self.state.db, DatabaseConnection::Disconnected) {
+            return None;
+        }
+        self.state.get_redis_conn().await.ok()
+    }
+
+    /// Sends an HTTP request and deserializes the response body to JSON
     #[allow(dead_code)]
     pub async fn send_json_request(
         &self,

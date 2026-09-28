@@ -213,6 +213,7 @@ pub fn HomePage() -> impl IntoView {
                                 <button
                                     role="tab"
                                     aria-selected=active
+                                    aria-label=format!("Show hero slide {}", i + 1)
                                     class="hero-dot"
                                     class:active=active
                                     on:click=move |_| set_slide.set(i)

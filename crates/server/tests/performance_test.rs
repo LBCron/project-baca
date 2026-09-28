@@ -105,10 +105,10 @@ async fn test_perf_concurrent_load_50_workers() {
 #[tokio::test]
 async fn test_perf_auth_login_latency() {
     let harness = TestHarness::new().await;
-    if harness.state.get_redis_conn().await.is_err() {
-        println!("Redis not reachable, skipping auth login latency test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let test_email = format!("perf_user_{}@example.com", uuid::Uuid::new_v4());
     let password = "PerfPassword123!".to_string();
@@ -167,13 +167,10 @@ async fn test_perf_auth_login_latency() {
 #[tokio::test]
 async fn test_perf_auth_otp_verify_latency() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping OTP verify latency test");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     // Warm up the shared DB pool + JWT/Argon2 code paths once so the
     // measured iterations reflect steady state, not cold-start noise.

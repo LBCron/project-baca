@@ -236,13 +236,9 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
 #[tokio::test]
 async fn test_catalog_listing_and_filtering() {
     let harness = TestHarness::new().await;
-    let _seeded = match seed_test_catalog(&harness).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("Skipping catalog test (DB not ready): {e}");
-            return;
-        }
-    };
+    let _seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // List all books
     let req = Request::builder()
@@ -297,13 +293,9 @@ async fn test_catalog_listing_and_filtering() {
 #[tokio::test]
 async fn test_catalog_typo_tolerant_fts_search() {
     let harness = TestHarness::new().await;
-    let _seeded = match seed_test_catalog(&harness).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("Skipping FTS search test: {e}");
-            return;
-        }
-    };
+    let _seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Search with typo: "Siti" instead of "Sitti"
     let req = Request::builder()
@@ -351,13 +343,9 @@ async fn test_catalog_typo_tolerant_fts_search() {
 #[tokio::test]
 async fn test_book_overview_chapter_and_offline_bundle() {
     let harness = TestHarness::new().await;
-    let seeded = match seed_test_catalog(&harness).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("Skipping book overview test: {e}");
-            return;
-        }
-    };
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Get book detail
     let req_book = Request::builder()
@@ -402,13 +390,9 @@ async fn test_book_overview_chapter_and_offline_bundle() {
 #[tokio::test]
 async fn test_reading_progress_and_active_retrieval() {
     let harness = TestHarness::new().await;
-    let seeded = match seed_test_catalog(&harness).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("Skipping progress test: {e}");
-            return;
-        }
-    };
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Update progress to 45%
     let progress_payload = serde_json::json!({
@@ -488,13 +472,9 @@ async fn test_reading_progress_and_active_retrieval() {
 #[tokio::test]
 async fn test_gamification_heartbeat_and_badges() {
     let harness = TestHarness::new().await;
-    let seeded = match seed_test_catalog(&harness).await {
-        Ok(s) => s,
-        Err(e) => {
-            println!("Skipping gamification test: {e}");
-            return;
-        }
-    };
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // List master badges
     let req_badges = Request::builder()

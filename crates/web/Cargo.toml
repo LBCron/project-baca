@@ -21,3 +21,6 @@ serde_json.workspace = true
 wasm-bindgen-futures = "0.4"
 uuid = { workspace = true, features = ["serde", "v4"] }
 js-sys = "0.3.106"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

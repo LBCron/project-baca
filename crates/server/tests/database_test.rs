@@ -16,10 +16,10 @@ use uuid::Uuid;
 #[tokio::test]
 async fn test_db_unique_email_constraint_enforcement() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping database constraint test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let shared_email = format!("dup_{}@example.com", Uuid::new_v4());
     let now = Utc::now();
@@ -69,10 +69,10 @@ async fn test_db_unique_email_constraint_enforcement() {
 #[tokio::test]
 async fn test_db_user_role_check_constraint() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping check constraint test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let now = Utc::now();
     let invalid_user = users::ActiveModel {
@@ -97,10 +97,10 @@ async fn test_db_user_role_check_constraint() {
 #[tokio::test]
 async fn test_db_unique_tag_slug_constraint() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping tag unique test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let shared_slug = format!("slug-{}", Uuid::new_v4());
     let now = Utc::now();
@@ -128,10 +128,10 @@ async fn test_db_unique_tag_slug_constraint() {
 #[tokio::test]
 async fn test_db_foreign_key_cascade_on_user_deletion() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping cascade test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let now = Utc::now();
     let user_id = Uuid::new_v4();
@@ -268,10 +268,10 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
 #[tokio::test]
 async fn test_db_foreign_key_cascade_on_book_deletion() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping book cascade test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let now = Utc::now();
     let book_id = Uuid::new_v4();
@@ -370,10 +370,10 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
 #[tokio::test]
 async fn test_db_transaction_atomicity_and_rollback() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping transaction rollback test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let user_id = Uuid::new_v4();
     let test_email = format!("rollback_{}@example.com", user_id);
@@ -423,10 +423,10 @@ async fn test_db_transaction_atomicity_and_rollback() {
 #[tokio::test]
 async fn test_db_index_query_plan_verification() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping query plan test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Verify index registration in PostgreSQL system catalog
     let catalog_check = Statement::from_string(
@@ -483,10 +483,10 @@ async fn test_db_index_query_plan_verification() {
 #[tokio::test]
 async fn test_db_catalog_default_pagination_index_plan() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping catalog index plan test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     // Begin transaction and disable seqscan to verify index path usability
     let txn = harness.state.db.begin().await.expect("Begin txn failed");
@@ -527,10 +527,10 @@ async fn test_db_catalog_default_pagination_index_plan() {
 #[tokio::test]
 async fn test_db_foreign_key_and_optimized_index_coverage() {
     let harness = TestHarness::new().await;
-    if matches!(harness.state.db, DatabaseConnection::Disconnected) {
-        println!("Database disconnected, skipping index coverage test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live DB required (db-up); 11c gate");
 
     let required_indexes = [
         "idx_book_chunks_chapter_id",

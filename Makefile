@@ -133,13 +133,23 @@ test-domain:
 	@echo "Running domain-core pure unit tests (no database)..."
 	@cargo test -p domain
 
-test-web-e2e:
-	@echo "Running M6 web realtime E2E (requires db-up, dev-server :8080, dev-web :3000)..."
-	@~/.venvs/webapp-testing/bin/python crates/web/tests_e2e/m6_reader.py
+test-web:
+	@echo "Running web test pyramid (requires db-up, dev-server :8080, dev-web :3000)..."
+	@cargo test -p web --lib
+	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/ component/ integration/ --browser chromium -q
+
+test-web-full:
+	@echo "Web pyramid + visual + a11y + firefox smoke..."
+	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest . --browser chromium -q
+	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/test_smoke.py --browser chromium --browser firefox -q
 
 test-all:
 	@echo "Running complete test suite..."
 	@cargo test --workspace
+
+test-live:
+	@echo "Running live-services tests (needs db-up)..."
+	@BACA_LIVE_TEST=1 cargo test -p server -- --ignored --test-threads=1
 
 # Check compilation across all crates (backend & WASM frontend)
 check:
@@ -212,5 +222,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all check build prod-build prod-up prod-down prod-logs clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain
+.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

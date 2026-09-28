@@ -133,10 +133,10 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
 #[tokio::test]
 async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
     let harness = TestHarness::new().await;
-    if harness.state.get_redis_conn().await.is_err() {
-        println!("Redis not reachable, skipping OTP cooldown test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let target_email = format!("victim_{}@example.com", Uuid::new_v4());
     let signup_req = SignupRequest {
@@ -177,13 +177,10 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
 #[tokio::test]
 async fn test_owasp_login_brute_force_lockout() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping brute force lockout test");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let target_email = format!("targeted_{}@example.com", Uuid::new_v4());
     let bad_login = LoginRequest {
@@ -272,13 +269,10 @@ async fn test_owasp_password_change_identical_rejection() {
 #[tokio::test]
 async fn test_owasp_token_revocation_on_logout() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping token revocation test");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -340,13 +334,10 @@ async fn test_owasp_token_revocation_on_logout() {
 #[tokio::test]
 async fn test_owasp_revoke_all_sessions() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping revoke all test");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -408,13 +399,10 @@ async fn test_owasp_revoke_all_sessions() {
 #[tokio::test]
 async fn test_owasp_account_deletion_session_cleanup() {
     let harness = TestHarness::new().await;
-    let mut redis_conn = match harness.state.get_redis_conn().await {
-        Ok(c) => c,
-        Err(_) => {
-            println!("Redis not reachable, skipping account deletion cleanup test");
-            return;
-        }
-    };
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -467,10 +455,10 @@ async fn test_owasp_account_deletion_session_cleanup() {
 #[tokio::test]
 async fn test_owasp_timing_attack_mitigation_on_login() {
     let harness = TestHarness::new().await;
-    if harness.state.get_redis_conn().await.is_err() {
-        println!("Redis not reachable, skipping timing attack test");
-        return;
-    }
+    let _ = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up); 11c gate");
 
     let non_existent_email = format!("ghost_{}@example.com", Uuid::new_v4());
     let login_req = LoginRequest {
