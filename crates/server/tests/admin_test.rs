@@ -475,10 +475,8 @@ async fn test_dropoff_rejects_non_admin_and_unknown_book() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ---------------------------------------------------------------------------
-// Task 11b: funnel math multi-user, job failed visibility, orphan compensation.
-// Live MinIO + Redis required (Task 11c gate: explicit panic, no silent pass).
-// ---------------------------------------------------------------------------
+// Multi-user funnel math, failed-job visibility, orphan compensation.
+// Needs live MinIO + Redis; panics loudly without them.
 
 /// Funnel with 3 users x 3 chapters: reaches 3/2/1, drop pct exact 0/33.3/66.7.
 #[tokio::test]
@@ -486,7 +484,7 @@ async fn test_dropoff_funnel_three_users_exact_math() {
     use sea_orm::EntityTrait;
     let harness = TestHarness::new().await;
     if harness.state.storage.is_none() {
-        panic!("live MinIO required (db-up); 11c gate, no silent pass");
+        panic!("live MinIO required (db-up), no silent pass");
     }
     let ctx = seed_users(&harness).await;
     let now = Utc::now();
@@ -612,7 +610,7 @@ async fn test_job_status_shows_failed_with_error() {
     let harness = TestHarness::new().await;
     let mut redis_conn = match harness.state.get_redis_conn().await {
         Ok(c) => c,
-        Err(_) => panic!("live Redis required (db-up); 11c gate, no silent pass"),
+        Err(_) => panic!("live Redis required (db-up), no silent pass"),
     };
     let ctx = seed_users(&harness).await;
     let job_id = Uuid::new_v4().to_string();
@@ -651,7 +649,7 @@ async fn test_upload_db_failure_compensates_orphan() {
     let harness = TestHarness::new().await;
     let storage = match harness.state.storage.as_ref() {
         Some(s) => s,
-        None => panic!("live MinIO required (db-up); 11c gate, no silent pass"),
+        None => panic!("live MinIO required (db-up), no silent pass"),
     };
     let ctx = seed_users(&harness).await;
 

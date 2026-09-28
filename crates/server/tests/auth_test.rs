@@ -1,7 +1,4 @@
-//! Auth lifecycle tests: signup, OTP, login, rotation, logout.
-//! Adversarial tests (replay-theft, lockout, OTP abuse, revoke semantics)
-//! use the shared live-services gate in `common` — they `#[ignore]` without
-//! `BACA_LIVE_TEST=1` instead of silently passing (Task 11c policy).
+//! Auth lifecycle, adversarial replay/lockout/OTP/revoke tests.
 
 mod common;
 
@@ -23,7 +20,7 @@ async fn test_auth_full_lifecycle() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     // A unique IP per run keeps this flow out of the shared rate-limit
     // bucket (the lifecycle alone issues ~10 auth requests).
@@ -299,7 +296,7 @@ async fn test_auth_full_lifecycle() {
     // Sleep past the 1-second JWT iat granularity: the theft-triggered
     // family revocation above stamps user_revoked_before at whole-second
     // precision, so a token minted in the same second would compare as
-    // revoked. Production clients transparently retry once (BL-11).
+    // revoked. Production clients transparently retry once.
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let req = Request::builder()
         .method("POST")
@@ -351,7 +348,7 @@ async fn test_change_password_revokes_sessions_by_default() {
     };
     user.insert(&harness.state.db)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     let password = "OrigSecurePassword123!";
     let stored = infra::hash_password_async(password.to_string())
@@ -416,7 +413,7 @@ async fn test_auth_guest_progress_merge() {
     };
     user.insert(&harness.state.db)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // Seed test book & chapter
     let book_id = Uuid::new_v4();
@@ -613,12 +610,9 @@ async fn test_auth_guest_progress_merge() {
         .await;
 }
 
-// ---------------------------------------------------------------------------
-// Adversarial tests (Task 11a). All require live Postgres + Redis; they are
-// `#[ignore]`d by default and run with `BACA_LIVE_TEST=1` (Task 11c policy).
-// Each uses a unique email + TEST-NET IP so parallel runs never share
-// rate-limit or lockout buckets.
-// ---------------------------------------------------------------------------
+// Adversarial tests need live Postgres + Redis (`#[ignore]` by default,
+// run with `BACA_LIVE_TEST=1`). Unique email + TEST-NET IP per test keeps
+// rate-limit and lockout buckets isolated across parallel runs.
 
 /// Builds a fully verified user via the real signup → OTP → verify flow and
 /// returns (access_token, refresh_token). Panics loudly when services are down.
@@ -700,7 +694,7 @@ fn login_req(email: &str, password: &str, ip: &str) -> Request<Body> {
         .unwrap()
 }
 
-/// Refresh-token replay kills the whole family (ADR-27 theft handling):
+/// Refresh-token replay kills the whole family (theft handling):
 /// after replaying a rotated token, even the *fresh* sibling must be dead.
 #[tokio::test]
 #[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
@@ -807,14 +801,14 @@ async fn test_auth_pair_lockout_five_failures() {
     }
     // 6th attempt with the CORRECT password is shed: pair locked.
     let (resp, body) = harness
-        .send_json_request(login_req(&email, &password, &ip))
+        .send_json_request(login_req(&email, password, &ip))
         .await;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(body["error"]["code"] == "RATE_LIMITED" || body["success"] == false);
 
     // Same credentials from a different IP still work (no victim lockout).
     let (resp, _) = harness
-        .send_json_request(login_req(&email, &password, &other_ip))
+        .send_json_request(login_req(&email, password, &other_ip))
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -886,7 +880,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
     // 21st failure from a fresh IP trips the aggregate lock.
     let fresh_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
     let (resp, _) = harness
-        .send_json_request(login_req(&email, &password, &fresh_ip))
+        .send_json_request(login_req(&email, password, &fresh_ip))
         .await;
     assert_eq!(
         resp.status(),
@@ -1120,13 +1114,10 @@ async fn test_auth_password_change_kills_other_session_e2e() {
             resp.status()
         );
     }
-    // B is dead. NOTE (quirk, see Task 11i): the revocation is a global
-    // whole-second timestamp (`iat <= revoked_before`), so the requester's
-    // own token A — minted before the stamp — is ALSO dead despite the flag
-    // being named `revoke_other_sessions`. The web client survives this via
-    // the 401 → refresh → clear-to-login cycle, but the UX ("Password
-    // changed." then sudden logout) is wrong. Assert actual behavior here;
-    // 11i fixes the semantics.
+    // Revocation is a global whole-second timestamp (`iat <= revoked_before`),
+    // so the requester's own token A — minted before the stamp — is ALSO dead
+    // despite the flag being named `revoke_other_sessions`. Asserted as-is;
+    // exempting the requester is tracked separately.
     let me = |t: &str| {
         Request::builder()
             .method("GET")
@@ -1141,11 +1132,11 @@ async fn test_auth_password_change_kills_other_session_e2e() {
     assert_eq!(
         resp.status(),
         StatusCode::UNAUTHORIZED,
-        "requester token also dies under global-timestamp revocation (11i)"
+        "requester token also dies under global-timestamp revocation"
     );
 }
 
-/// Guest merge cap: 100 records OK, 101 rejected with 400 (Task 11b).
+/// Guest merge cap: 100 records OK, 101 rejected with 400.
 #[tokio::test]
 async fn test_guest_merge_enforces_hundred_record_cap() {
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
@@ -1164,7 +1155,7 @@ async fn test_guest_merge_enforces_hundred_record_cap() {
         updated_at: Set(chrono::Utc::now().into()),
     };
     if user.insert(&harness.state.db).await.is_err() {
-        panic!("live DB required (db-up); 11c gate, no silent pass");
+        panic!("live DB required (db-up), no silent pass");
     }
     let book_id = Uuid::new_v4();
     let chapter_id = Uuid::new_v4();

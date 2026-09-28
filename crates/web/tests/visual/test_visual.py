@@ -1,9 +1,9 @@
-"""Visual regression: golden screenshots per route (Task 11f).
+"""Visual regression: golden screenshots per route.
 
 First run generates goldens into `*-snapshots/` (committed to git).
 Intentional UI change: `pytest --update-snapshots`, then REVIEW the image
 diff before committing (never blind-accept). Chromium canonical only —
-fonts/render differ per browser (see 11h).
+fonts/render differ per browser.
 """
 from playwright.sync_api import Page
 from visual.golden import assert_golden

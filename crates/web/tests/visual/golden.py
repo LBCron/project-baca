@@ -1,4 +1,4 @@
-"""Golden image helpers (Task 11f).
+"""Golden image helpers.
 
 Python Playwright here has no `to_have_screenshot`; compare manually with
 Pillow: first run writes goldens, later runs diff with tolerance. Update

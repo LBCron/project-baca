@@ -1,4 +1,4 @@
-"""API contract tests: hit SRS endpoints directly (Task 11e).
+"""API contract tests: hit endpoints directly.
 
 Locks the wire contract so docs (10f) cannot go stale silently:
 envelope shape, 401/404/429 paths, merge-cap boundary.

@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the Rotaria web suite (Task 11d).
+"""Shared pytest fixtures for the Rotaria web suite.
 
 Requires: `make db-up`, Axum on :8080 (`make dev-server`),
 Trunk on :3000 (`make dev-web`).

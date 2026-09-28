@@ -1,4 +1,4 @@
-"""Axe-core accessibility scans per route (Task 11g, kunci 10g).
+"""Axe-core accessibility scans per route.
 
 axe-core 4.10.2 vendored locally (`axe.min.js`, no CDN/network dependency).
 Tags: WCAG 2.0/2.1 A+AA. Known issues recorded as fingerprints, never blanket

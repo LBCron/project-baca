@@ -1,4 +1,4 @@
-//! Web unit tests (Task 11e): pure logic, no browser needed.
+//! Web unit tests: pure logic, no browser needed.
 //! Run natively: `cargo test -p web --lib` (no wasm target required for
 //! these — they avoid web-sys/localStorage). Browser-bound logic stays in
 //! component/integration layers.
@@ -37,7 +37,7 @@ fn test_lang_toggle_flips() {
 }
 
 /// Typed offline chapter records survive a JSON round-trip with exact
-/// keyPath fields (guards the TD-06 untyped-Value failure mode).
+/// keyPath fields.
 #[test]
 fn test_offline_chapter_record_round_trip() {
     let rec = OfflineChapterRecord {

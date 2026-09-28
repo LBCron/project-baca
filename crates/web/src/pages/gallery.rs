@@ -1,4 +1,4 @@
-//! Component story gallery (Task 11e): isolated render target for
+//! Component story gallery: isolated render target for
 //! Playwright component tests at `/__gallery?story=<name>`. Dev-only route;
 //! production builds strip it via `#[cfg(debug_assertions)]` registration
 //! (see `lib.rs`). Stories own all state; tests assert through the DOM.

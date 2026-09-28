@@ -136,7 +136,7 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
     let _ = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let target_email = format!("victim_{}@example.com", Uuid::new_v4());
     let signup_req = SignupRequest {
@@ -180,7 +180,7 @@ async fn test_owasp_login_brute_force_lockout() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let target_email = format!("targeted_{}@example.com", Uuid::new_v4());
     let bad_login = LoginRequest {
@@ -272,7 +272,7 @@ async fn test_owasp_token_revocation_on_logout() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -337,7 +337,7 @@ async fn test_owasp_revoke_all_sessions() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -402,7 +402,7 @@ async fn test_owasp_account_deletion_session_cleanup() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let test_user_id = Uuid::new_v4();
     let access_token = infra::generate_access_token(
@@ -458,7 +458,7 @@ async fn test_owasp_timing_attack_mitigation_on_login() {
     let _ = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let non_existent_email = format!("ghost_{}@example.com", Uuid::new_v4());
     let login_req = LoginRequest {

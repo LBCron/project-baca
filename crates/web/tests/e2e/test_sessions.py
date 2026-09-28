@@ -1,4 +1,4 @@
-"""Authed flow (BL-11): OTP via Mailpit, PUT tap-to-save, sessions UI, cleanup."""
+"""Authed flow: OTP via Mailpit, PUT tap-to-save, sessions UI, cleanup."""
 import asyncio
 import json
 import re

@@ -1028,10 +1028,8 @@ async fn test_chapter_recap_by_number_and_uuid() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-// ---------------------------------------------------------------------------
-// Task 11b: split card ownership (owner 200 / intruder 404 / anon 401) +
-// insights unknown-book 404. Live DB required (11c gate: explicit panic).
-// ---------------------------------------------------------------------------
+// Split card ownership (owner 200 / intruder 404 / anon 401) +
+// insights unknown-book 404. Needs live DB; panics loudly without it.
 
 /// Quote card: owner renders 200 SVG, intruder gets 404, anonymous gets 401.
 #[tokio::test]
@@ -1039,7 +1037,7 @@ async fn test_quote_card_ownership_split() {
     let harness = TestHarness::new().await;
     let seeded = match seed_test_context(&harness).await {
         Ok(s) => s,
-        Err(e) => panic!("live DB required (db-up); 11c gate, no silent pass: {e}"),
+        Err(e) => panic!("live DB required (db-up), no silent pass: {e}"),
     };
     // Save one quote as the owner.
     let save_req = Request::builder()
@@ -1106,7 +1104,7 @@ async fn test_quote_card_ownership_split() {
 async fn test_insights_unknown_book_returns_404() {
     let harness = TestHarness::new().await;
     if matches!(harness.state.db, sea_orm::DatabaseConnection::Disconnected) {
-        panic!("live DB required (db-up); 11c gate, no silent pass");
+        panic!("live DB required (db-up), no silent pass");
     }
     let ghost = Uuid::new_v4();
     for uri in [

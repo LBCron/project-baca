@@ -238,7 +238,7 @@ async fn test_catalog_listing_and_filtering() {
     let harness = TestHarness::new().await;
     let _seeded = seed_test_catalog(&harness)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // List all books
     let req = Request::builder()
@@ -295,7 +295,7 @@ async fn test_catalog_typo_tolerant_fts_search() {
     let harness = TestHarness::new().await;
     let _seeded = seed_test_catalog(&harness)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // Search with typo: "Siti" instead of "Sitti"
     let req = Request::builder()
@@ -345,7 +345,7 @@ async fn test_book_overview_chapter_and_offline_bundle() {
     let harness = TestHarness::new().await;
     let seeded = seed_test_catalog(&harness)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // Get book detail
     let req_book = Request::builder()
@@ -392,7 +392,7 @@ async fn test_reading_progress_and_active_retrieval() {
     let harness = TestHarness::new().await;
     let seeded = seed_test_catalog(&harness)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // Update progress to 45%
     let progress_payload = serde_json::json!({
@@ -474,7 +474,7 @@ async fn test_gamification_heartbeat_and_badges() {
     let harness = TestHarness::new().await;
     let seeded = seed_test_catalog(&harness)
         .await
-        .expect("live DB required (db-up); 11c gate");
+        .expect("live DB required (db-up)");
 
     // List master badges
     let req_badges = Request::builder()

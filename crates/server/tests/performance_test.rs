@@ -108,7 +108,7 @@ async fn test_perf_auth_login_latency() {
     let _ = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     let test_email = format!("perf_user_{}@example.com", uuid::Uuid::new_v4());
     let password = "PerfPassword123!".to_string();
@@ -170,7 +170,7 @@ async fn test_perf_auth_otp_verify_latency() {
     let mut redis_conn = harness
         .live_only()
         .await
-        .expect("live Redis required (db-up); 11c gate");
+        .expect("live Redis required (db-up)");
 
     // Warm up the shared DB pool + JWT/Argon2 code paths once so the
     // measured iterations reflect steady state, not cold-start noise.

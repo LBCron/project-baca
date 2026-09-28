@@ -1,4 +1,4 @@
-"""ARIA snapshots: structural accessibility-tree regression (Task 11f).
+"""ARIA snapshots: structural accessibility-tree regression.
 
 Cheap + stable: roles/hierarchy asserted, dynamic content via regex/partial.
 If 10g changes semantics intentionally, update the inline template here.

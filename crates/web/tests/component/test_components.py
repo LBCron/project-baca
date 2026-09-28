@@ -1,4 +1,4 @@
-"""Component tests via the dev gallery route `/__gallery?story=` (Task 11e).
+"""Component tests via the dev gallery route `/__gallery?story=`.
 
 Pattern: Playwright docs "component testing" — gallery owned by the app,
 stories own state, tests assert through the DOM. Error states mocked via
