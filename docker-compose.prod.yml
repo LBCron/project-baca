@@ -1,0 +1,136 @@
+# ==============================================================================
+# Project Baca — production compose (staging/prod).
+# Usage: cp .env.production.example .env.production
+#        docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d
+# Dev stack stays in docker-compose.yml (host ports 5433/6380/9005/9006).
+# ==============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: always
+    environment:
+      POSTGRES_USER: baca_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: project_baca_db
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U baca_user -d project_baca_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redisdata_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:?set S3 keys}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:?set S3 keys}
+    volumes:
+      - miniodata_prod:/data
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      APP_PORT: 8080
+      LOG_FORMAT: json
+      RUST_LOG: warn
+      CORS_ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN}
+      TRUST_PROXY_HEADERS: "true"
+      JWT_SECRET: ${JWT_SECRET:?set a 32+ char secret}
+      JWT_ACCESS_EXPIRY_MINUTES: 60
+      JWT_REFRESH_EXPIRY_DAYS: 14
+      DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3 keys}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3 keys}
+      S3_BUCKET_EPUBS: ${S3_BUCKET_EPUBS:-baca-epubs}
+      S3_BUCKET_COVERS: ${S3_BUCKET_COVERS:-baca-covers}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      SMTP_HOST: ${SMTP_HOST:?set SMTP}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?set SMTP}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Project Baca}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-gemini-embedding-2}
+      EMBEDDING_DIMENSION: 768
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health | grep -q '\"status\":\"healthy\"' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3 keys}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3 keys}
+      S3_BUCKET_EPUBS: ${S3_BUCKET_EPUBS:-baca-epubs}
+      S3_BUCKET_COVERS: ${S3_BUCKET_COVERS:-baca-covers}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
+
+  edge:
+    build:
+      context: .
+      dockerfile: Dockerfile.edge
+      args:
+        API_BASE_URL: https://${DOMAIN:?set DOMAIN}/api/v1
+    restart: always
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
+  miniodata_prod:
+  caddy_data:
+  caddy_config:

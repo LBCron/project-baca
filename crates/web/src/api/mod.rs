@@ -14,7 +14,11 @@ use shared::{
 use wasm_bindgen::JsCast;
 use web_sys::window;
 
-pub const API_BASE: &str = "http://localhost:8080/api/v1";
+/// API base URL, baked at Trunk build time via `API_BASE_URL` env
+/// (`Makefile` passes it through; dev falls back to localhost).
+pub fn api_base() -> &'static str {
+    option_env!("API_BASE_URL").unwrap_or("http://localhost:8080/api/v1")
+}
 const TOKEN_KEY: &str = "baca_access_token";
 const REFRESH_KEY: &str = "baca_refresh_token";
 
@@ -61,12 +65,48 @@ fn authed(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBui
     }
 }
 
-async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
-    let url = format!("{API_BASE}{path}");
-    let envelope = authed(Request::get(&url))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
+use std::cell::RefCell;
+
+thread_local! {
+    static REFRESHING: RefCell<bool> = const { RefCell::new(false) };
+}
+
+async fn sleep_ms(ms: i32) {
+    let Some(window) = window() else { return };
+    let promise = js_sys::Promise::new(&mut move |resolve, _reject| {
+        let func: &js_sys::Function = resolve.unchecked_ref();
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(func, ms);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+use std::future::Future;
+use std::pin::Pin;
+
+type SendFuture = Pin<Box<dyn Future<Output = Result<gloo_net::http::Response, String>>>>;
+
+/// Sends a request, transparently refreshing an expired access token once.
+/// A second 401 clears the stored tokens so the next navigation lands on the
+/// guest view instead of failing silently.
+async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Response, String> {
+    let first = make().await?;
+    if first.status() != 401 {
+        return Ok(first);
+    }
+    if refresh_token().is_none() {
+        clear_token();
+        return Ok(first);
+    }
+    refresh_once().await?;
+    let second = make().await?;
+    if second.status() == 401 {
+        clear_token();
+    }
+    Ok(second)
+}
+
+async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> Result<T, String> {
+    let envelope = resp
         .json::<ApiResponse<T>>()
         .await
         .map_err(|e| e.to_string())?;
@@ -78,8 +118,71 @@ async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
     })
 }
 
+/// Single-flight refresh: concurrent expiries share one rotation instead of
+/// racing, which would trip reuse detection and kill the whole family.
+async fn refresh_once() -> Result<(), String> {
+    let already = REFRESHING.with(|f| {
+        let busy = *f.borrow();
+        if !busy {
+            *f.borrow_mut() = true;
+        }
+        busy
+    });
+    if already {
+        let mut waited = 0;
+        while waited < 2000 {
+            sleep_ms(50).await;
+            waited += 50;
+            if !REFRESHING.with(|f| *f.borrow()) {
+                break;
+            }
+        }
+        return Ok(());
+    }
+    let result = refresh().await;
+    REFRESHING.with(|f| *f.borrow_mut() = false);
+    result?;
+    Ok(())
+}
+
+async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+    let url = format!("{}{path}", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::get(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
+}
+
 async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
-    let url = format!("{API_BASE}{path}");
+    let url = format!("{}{path}", api_base());
+    let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let resp = authed_send(&|| {
+        let (url, json) = (url.clone(), json.clone());
+        Box::pin(async move {
+            authed(Request::post(&url))
+                .header("Content-Type", "application/json")
+                .body(json)
+                .map_err(|e| format!("{e:?}"))?
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
+}
+
+/// Raw POST without the 401-refresh cycle, for the auth endpoints themselves
+/// (a 401 there means bad credentials, not an expired session).
+async fn post_once<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
+    let url = format!("{}{path}", api_base());
     let req = authed(Request::post(&url))
         .header("Content-Type", "application/json")
         .body(serde_json::to_string(body).map_err(|e| e.to_string())?)
@@ -100,25 +203,24 @@ async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result
 }
 
 async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
-    let url = format!("{API_BASE}{path}");
-    let req = authed(Request::put(&url))
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(body).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let envelope = req
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<ApiResponse<T>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    envelope.data.ok_or_else(|| {
-        envelope
-            .error
-            .map(|e| format!("{}: {}", e.code, e.message))
-            .unwrap_or_else(|| "empty response".to_string())
+    let url = format!("{}{path}", api_base());
+    let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let resp = authed_send(&|| {
+        let (url, json) = (url.clone(), json.clone());
+        Box::pin(async move {
+            authed(Request::put(&url))
+                .header("Content-Type", "application/json")
+                .body(json)
+                .map_err(|e| format!("{e:?}"))?
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
     })
+    .await?;
+    parse_envelope(resp).await
 }
+
 fn encode_param(value: &str) -> String {
     js_sys::encode_uri_component(value)
         .as_string()
@@ -126,7 +228,7 @@ fn encode_param(value: &str) -> String {
 }
 
 pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, String> {
-    let mut url = format!("{API_BASE}/books?limit={}", query.limit.unwrap_or(20));
+    let mut url = format!("{}/books?limit={}", api_base(), query.limit.unwrap_or(20));
     if let Some(cursor) = &query.cursor {
         url.push_str(&format!("&cursor={}", encode_param(&cursor.to_string())));
     }
@@ -153,7 +255,8 @@ pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, St
 
 pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>, String> {
     let url = format!(
-        "{API_BASE}/books/search?q={}&limit={}",
+        "{}/books/search?q={}&limit={}",
+        api_base(),
         encode_param(&query.q),
         query.limit.unwrap_or(10)
     );
@@ -186,7 +289,7 @@ pub async fn save_progress(book_id: &str, update: &ReadingProgressUpdateDto) -> 
     Ok(())
 }
 
-pub async fn active_progress() -> Result<Vec<ActiveProgressDto>, String> {
+pub async fn active_progress() -> Result<Option<ActiveProgressDto>, String> {
     get("/progress/active").await
 }
 
@@ -220,7 +323,7 @@ pub async fn chapter_recap(
 }
 
 pub async fn signup(req: &SignupRequest) -> Result<(), String> {
-    let url = format!("{API_BASE}/auth/signup");
+    let url = format!("{}/auth/signup", api_base());
     let request = Request::post(&url)
         .header("Content-Type", "application/json")
         .body(serde_json::to_string(req).map_err(|e| e.to_string())?)
@@ -230,20 +333,23 @@ pub async fn signup(req: &SignupRequest) -> Result<(), String> {
 }
 
 pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String> {
-    post("/auth/verify-otp", req).await
+    post_once("/auth/verify-otp", req).await
 }
 
 pub async fn login(req: &LoginRequest) -> Result<TokenResponse, String> {
-    post("/auth/login", req).await
+    post_once("/auth/login", req).await
 }
 
 pub async fn refresh() -> Result<TokenResponse, String> {
     let rt = refresh_token().ok_or_else(|| "no refresh token".to_string())?;
-    post("/auth/refresh", &RefreshTokenRequest { refresh_token: rt }).await
+    let tokens: TokenResponse =
+        post_once("/auth/refresh", &RefreshTokenRequest { refresh_token: rt }).await?;
+    set_tokens(&tokens.access_token, &tokens.refresh_token);
+    Ok(tokens)
 }
 
 pub async fn logout() -> Result<(), String> {
-    let url = format!("{API_BASE}/auth/logout");
+    let url = format!("{}/auth/logout", api_base());
     let rt = refresh_token().unwrap_or_default();
     let req = authed(Request::post(&url))
         .header("Content-Type", "application/json")
@@ -259,6 +365,27 @@ pub async fn logout() -> Result<(), String> {
 
 pub async fn me() -> Result<UserProfileDto, String> {
     get("/me").await
+}
+
+pub async fn change_password(
+    req: &shared::ChangePasswordRequest,
+) -> Result<serde_json::Value, String> {
+    put("/me/password", req).await
+}
+
+pub async fn revoke_all() -> Result<serde_json::Value, String> {
+    let url = format!("{}/auth/revoke-all", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::post(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
 }
 
 pub async fn my_badges() -> Result<Vec<shared::UserBadgeDto>, String> {
@@ -281,6 +408,56 @@ pub async fn save_quote(
 
 pub async fn my_quotes() -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
     get("/quotes").await
+}
+
+/// One unsent reading-progress write, replayed FIFO when connectivity returns.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingProgress {
+    pub book_id: String,
+    pub update: ReadingProgressUpdateDto,
+}
+
+pub async fn queue_pending_progress(
+    book_id: &str,
+    update: &ReadingProgressUpdateDto,
+) -> Result<(), String> {
+    crate::storage::put(
+        crate::storage::STORE_PENDING_SYNC,
+        &PendingProgress {
+            book_id: book_id.to_string(),
+            update: update.clone(),
+        },
+    )
+    .await
+}
+
+pub async fn pending_count() -> usize {
+    crate::storage::get_all::<PendingProgress>(crate::storage::STORE_PENDING_SYNC)
+        .await
+        .map(|ops| ops.len())
+        .unwrap_or(0)
+}
+
+/// Replays queued progress writes oldest-first; failures stay queued.
+/// Returns the number still pending.
+pub async fn drain_pending() -> usize {
+    let ops: Vec<PendingProgress> = crate::storage::get_all(crate::storage::STORE_PENDING_SYNC)
+        .await
+        .unwrap_or_default();
+    if ops.is_empty() {
+        return 0;
+    }
+    let mut failed = Vec::new();
+    for op in ops {
+        if save_progress(&op.book_id, &op.update).await.is_err() {
+            failed.push(op);
+        }
+    }
+    let _ = crate::storage::clear(crate::storage::STORE_PENDING_SYNC).await;
+    for op in &failed {
+        let _ = queue_pending_progress(&op.book_id, &op.update).await;
+    }
+    failed.len()
 }
 
 pub fn window_document() -> Option<web_sys::Document> {

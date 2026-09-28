@@ -79,6 +79,9 @@ pub enum AppError {
     #[error("Rate limit exceeded. Try again in {retry_after} seconds")]
     RateLimited { retry_after: u64 },
 
+    #[error("Service temporarily unavailable. Try again in {retry_after} seconds")]
+    ServiceUnavailable { retry_after: u64 },
+
     #[error("Database error: {0}")]
     Database(String),
 
@@ -222,6 +225,7 @@ pub struct GuestProgressRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GuestMergeRequest {
+    #[validate(length(max = 100, message = "Cannot merge more than 100 records at once"))]
     #[validate(nested)]
     pub records: Vec<GuestProgressRecord>,
 }

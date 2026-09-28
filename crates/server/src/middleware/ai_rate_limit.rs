@@ -1,6 +1,6 @@
 //! Sliding-window AI rate limit (10 req/min): users by UUID, guests by IP.
 
-use crate::AppState;
+use crate::{error::HttpError, AppState};
 use axum::{
     body::Body,
     extract::State,
@@ -11,7 +11,7 @@ use axum::{
 };
 use infra::verify_access_token;
 use redis::AsyncCommands;
-use shared::ApiResponse;
+use shared::{ApiResponse, AppError};
 use std::net::IpAddr;
 use std::sync::Arc;
 
@@ -88,61 +88,70 @@ pub async fn ai_rate_limit_middleware(
         }
     };
 
-    if let Ok(mut redis_conn) = state.get_redis_conn().await {
-        let count: Result<i64, _> = redis_conn.incr(&redis_key, 1).await;
-        if let Ok(c) = count {
-            let mut ttl: i64 = redis_conn.ttl(&redis_key).await.unwrap_or(-1);
-            if ttl <= 0 {
-                let _: Result<(), _> = redis_conn.expire(&redis_key, AI_WINDOW_SECONDS).await;
-                ttl = AI_WINDOW_SECONDS;
-            }
+    // Fail closed: each search burns embedding quota, so an unenforceable
+    // limit must shed AI traffic instead of opening unlimited spend.
+    let mut redis_conn = match state.get_redis_conn().await {
+        Ok(conn) => conn,
+        Err(_) => {
+            return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
+        }
+    };
+    let count: i64 = match redis_conn.incr(&redis_key, 1).await {
+        Ok(c) => c,
+        Err(_) => {
+            return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
+        }
+    };
+    {
+        let mut ttl: i64 = redis_conn.ttl(&redis_key).await.unwrap_or(-1);
+        if ttl <= 0 {
+            let _: Result<(), _> = redis_conn.expire(&redis_key, AI_WINDOW_SECONDS).await;
+            ttl = AI_WINDOW_SECONDS;
+        }
 
-            let reset_seconds = if ttl > 0 { ttl } else { AI_WINDOW_SECONDS };
-            let remaining = (AI_MAX_REQUESTS - c).max(0);
+        let reset_seconds = if ttl > 0 { ttl } else { AI_WINDOW_SECONDS };
+        let remaining = (AI_MAX_REQUESTS - count).max(0);
 
-            if c > AI_MAX_REQUESTS {
-                let mut resp = (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    Json(ApiResponse::<()>::error(
-                        "AI_RATE_LIMITED",
-                        &format!(
-                            "AI rate limit exceeded. Maximum {AI_MAX_REQUESTS} semantic \
+        if count > AI_MAX_REQUESTS {
+            let mut resp = (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ApiResponse::<()>::error(
+                    "AI_RATE_LIMITED",
+                    &format!(
+                        "AI rate limit exceeded. Maximum {AI_MAX_REQUESTS} semantic \
                              search requests per minute allowed."
-                        ),
-                        None,
-                    )),
-                )
-                    .into_response();
+                    ),
+                    None,
+                )),
+            )
+                .into_response();
 
-                let headers = resp.headers_mut();
-                if let Ok(v) = HeaderValue::from_str(&AI_MAX_REQUESTS.to_string()) {
-                    headers.insert(HeaderName::from_static("x-ratelimit-limit"), v);
-                }
-                headers.insert(
-                    HeaderName::from_static("x-ratelimit-remaining"),
-                    HeaderValue::from_static("0"),
-                );
-                if let Ok(v) = HeaderValue::from_str(&reset_seconds.to_string()) {
-                    headers.insert(HeaderName::from_static("x-ratelimit-reset"), v.clone());
-                    headers.insert(header::RETRY_AFTER, v);
-                }
-                return resp;
-            }
-
-            let mut response = next.run(req).await;
-            let headers = response.headers_mut();
+            let headers = resp.headers_mut();
             if let Ok(v) = HeaderValue::from_str(&AI_MAX_REQUESTS.to_string()) {
                 headers.insert(HeaderName::from_static("x-ratelimit-limit"), v);
             }
-            if let Ok(v) = HeaderValue::from_str(&remaining.to_string()) {
-                headers.insert(HeaderName::from_static("x-ratelimit-remaining"), v);
-            }
+            headers.insert(
+                HeaderName::from_static("x-ratelimit-remaining"),
+                HeaderValue::from_static("0"),
+            );
             if let Ok(v) = HeaderValue::from_str(&reset_seconds.to_string()) {
-                headers.insert(HeaderName::from_static("x-ratelimit-reset"), v);
+                headers.insert(HeaderName::from_static("x-ratelimit-reset"), v.clone());
+                headers.insert(header::RETRY_AFTER, v);
             }
-            return response;
+            return resp;
         }
-    }
 
-    next.run(req).await
+        let mut response = next.run(req).await;
+        let headers = response.headers_mut();
+        if let Ok(v) = HeaderValue::from_str(&AI_MAX_REQUESTS.to_string()) {
+            headers.insert(HeaderName::from_static("x-ratelimit-limit"), v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&remaining.to_string()) {
+            headers.insert(HeaderName::from_static("x-ratelimit-remaining"), v);
+        }
+        if let Ok(v) = HeaderValue::from_str(&reset_seconds.to_string()) {
+            headers.insert(HeaderName::from_static("x-ratelimit-reset"), v);
+        }
+        response
+    }
 }

@@ -15,7 +15,7 @@ async fn upload_epub(file: web_sys::File, title: String, author: String) -> Resu
         .map_err(|e| format!("{e:?}"))?;
     let body = wasm_bindgen::JsValue::from(form);
     let resp =
-        gloo_net::http::Request::post(&format!("{}/admin/books/upload", crate::api::API_BASE))
+        gloo_net::http::Request::post(&format!("{}/admin/books/upload", crate::api::api_base()))
             .header(
                 "Authorization",
                 &format!("Bearer {}", api::token().unwrap_or_default()),
@@ -36,7 +36,7 @@ async fn upload_epub(file: web_sys::File, title: String, author: String) -> Resu
 }
 
 async fn job_status(job_id: &str) -> Result<shared::JobStatusDto, String> {
-    let url = format!("{}/admin/jobs/{job_id}", crate::api::API_BASE);
+    let url = format!("{}/admin/jobs/{job_id}", crate::api::api_base());
     let builder = gloo_net::http::Request::get(&url);
     let authed = match api::token() {
         Some(t) => builder.header("Authorization", &format!("Bearer {t}")),

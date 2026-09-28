@@ -8,11 +8,14 @@ use shared::AppError;
 
 const OTP_TTL_SECONDS: u64 = 600; // 10 minutes
 const MAX_OTP_ATTEMPTS: u32 = 3;
+const OTP_LOCK_SECONDS: i64 = 300; // 5-minute cooldown after exhausting attempts
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OtpRecord {
     pub hash: String,
     pub attempts: u32,
+    #[serde(default)]
+    pub locked_until: Option<i64>,
 }
 
 /// Computes SHA-256 hex digest of OTP string
@@ -37,7 +40,11 @@ pub async fn generate_and_store_otp(
     let otp_str = generate_numeric_otp();
     let hash = hash_otp(&otp_str);
 
-    let record = OtpRecord { hash, attempts: 0 };
+    let record = OtpRecord {
+        hash,
+        attempts: 0,
+        locked_until: None,
+    };
     let json_val = serde_json::to_string(&record)
         .map_err(|e| AppError::Internal(format!("Failed to serialize OTP record: {e}")))?;
 
@@ -75,6 +82,16 @@ pub async fn verify_and_consume_otp(
         }
     };
 
+    let now = chrono::Utc::now().timestamp();
+    if let Some(locked_until) = record.locked_until {
+        if now < locked_until {
+            return Err(AppError::ValidationError(
+                "Too many incorrect attempts. Please wait a few minutes or request a new OTP."
+                    .to_string(),
+            ));
+        }
+    }
+
     record.attempts += 1;
 
     let computed_hash = hash_otp(otp);
@@ -84,9 +101,16 @@ pub async fn verify_and_consume_otp(
     }
 
     if record.attempts >= MAX_OTP_ATTEMPTS {
-        let _: () = redis.del(&redis_key).await.unwrap_or(());
+        record.locked_until = Some(now + OTP_LOCK_SECONDS);
+        let locked_json = serde_json::to_string(&record).unwrap_or(record_str);
+        let ttl: i64 = redis.ttl(&redis_key).await.unwrap_or(300);
+        let remaining_ttl = if ttl > 0 { ttl as u64 } else { 300 };
+        let _: () = redis
+            .set_ex(&redis_key, locked_json, remaining_ttl)
+            .await
+            .unwrap_or(());
         return Err(AppError::ValidationError(
-            "Maximum OTP verification attempts exceeded. Please request a new OTP.".to_string(),
+            "Maximum OTP verification attempts exceeded. Please wait a few minutes or request a new OTP.".to_string(),
         ));
     }
 

@@ -34,6 +34,8 @@ pub fn AuthModal(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                         }
                     }
                 }
+                // Replay progress writes queued while offline, then continue.
+                api::drain_pending().await;
             }
             on_authed.run(());
         });

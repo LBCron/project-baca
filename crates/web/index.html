@@ -6,6 +6,24 @@
     <title>Rotaria — Sirkulasi Buku-Buku Hebat</title>
     <meta name="description" content="Rotaria — the circulation of great books. Public domain classics with vintage typography, reflowable reader, and quote discovery.">
     <link rel="icon" type="image/svg+xml" href="/assets/rotaria-windmill.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#9D5A3C" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Rotaria" />
+
+    <link data-trunk rel="copy-file" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="sw.js" />
+    <link data-trunk rel="copy-dir" href="icons" data-target-path="icons" />
+    <script>
+        if ("serviceWorker" in navigator) {
+            window.addEventListener("load", () => {
+                navigator.serviceWorker.register("/sw.js").catch(() => {});
+            });
+        }
+    </script>
     
     <!-- Vintage Literary Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">

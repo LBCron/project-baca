@@ -267,13 +267,22 @@ pub async fn health_check() -> impl IntoResponse {
 )]
 pub async fn api_health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let db_connected = state.db.ping().await.is_ok();
+    let redis_connected = match state.get_redis_conn().await {
+        Ok(mut conn) => redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .map(|pong| pong == "PONG")
+            .unwrap_or(false),
+        Err(_) => false,
+    };
+    let degraded = !(db_connected && redis_connected);
 
     (
         StatusCode::OK,
         Json(ApiResponse::success(serde_json::json!({
-            "status": "ok",
+            "status": if degraded { "degraded" } else { "ok" },
             "postgres": if db_connected { "connected" } else { "disconnected" },
-            "redis": "configured",
+            "redis": if redis_connected { "connected" } else { "disconnected" },
             "port": state.config.port()
         }))),
     )

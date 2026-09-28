@@ -7,15 +7,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_params_map;
 use shared::BookDetailDto;
-
-#[derive(serde::Serialize)]
-struct OfflineChapterRecord {
-    chapter_id: uuid::Uuid,
-    book_id: uuid::Uuid,
-    chapter_number: i32,
-    title: String,
-    html_content: String,
-}
+use storage::OfflineChapterRecord;
 
 #[component]
 pub fn BookPage() -> impl IntoView {

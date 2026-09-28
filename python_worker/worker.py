@@ -193,13 +193,37 @@ class ParsedEpub:
 MAX_ARCHIVE_BYTES = 200_000_000
 # Maximum entries accepted from one archive.
 MAX_ARCHIVE_FILES = 5_000
+# Maximum uncompressed bytes accepted from a single entry.
+MAX_ENTRY_BYTES = 10_000_000
+# Maximum file_size/compress_size ratio accepted per entry.
+MAX_COMPRESSION_RATIO = 100
 
 
 def check_archive_limits(infos: list) -> None:
     """Rejects zip bombs before any entry is extracted."""
-    total = sum(info.file_size for info in infos)
+    total = 0
+    for info in infos:
+        size = info.file_size
+        if size > MAX_ENTRY_BYTES:
+            raise ValueError("Archive entry exceeds per-file limit")
+        squeezed = getattr(info, "compress_size", 0) or 0
+        if squeezed > 0 and size // squeezed > MAX_COMPRESSION_RATIO:
+            raise ValueError("Archive entry exceeds compression ratio")
+        total += size
     if len(infos) > MAX_ARCHIVE_FILES or total > MAX_ARCHIVE_BYTES:
         raise ValueError("Archive exceeds decompression limits")
+
+
+def _safe_member(prefix: str, href: str) -> str:
+    """Joins an OPF-relative href without letting `..`/absolute paths escape."""
+    import posixpath
+
+    if href.startswith("/") or href.startswith("\\"):
+        raise ValueError(f"EPUB entry escapes package: {href!r}")
+    joined = posixpath.normpath(prefix + href)
+    if joined.startswith("..") or posixpath.isabs(joined):
+        raise ValueError(f"EPUB entry escapes package: {href!r}")
+    return joined
 
 
 def _opf_path(epub: zipfile.ZipFile) -> str:
@@ -227,7 +251,7 @@ def parse_epub(data: bytes) -> ParsedEpub:
     base = opf_path.rpartition("/")[0]
     prefix = f"{base}/" if base else ""
 
-    opf = ET.fromstring(epub.read(opf_path).decode("utf-8", "replace"))
+    opf = ET.fromstring(epub.read(_safe_member("", opf_path)).decode("utf-8", "replace"))
     ns = {
         "opf": "http://www.idpf.org/2007/opf",
         "dc": "http://purl.org/dc/elements/1.1/",
@@ -258,8 +282,8 @@ def parse_epub(data: bytes) -> ParsedEpub:
         if "cover-image" in props or item_id.lower() == "cover-image":
             cover_media = media
             try:
-                cover_bytes = epub.read(prefix + href)
-            except KeyError:
+                cover_bytes = epub.read(_safe_member(prefix, href))
+            except (KeyError, ValueError):
                 cover_bytes = None
             break
     if cover_bytes is None:
@@ -267,8 +291,8 @@ def parse_epub(data: bytes) -> ParsedEpub:
             if media.startswith("image/") and "cover" in (item_id + href).lower():
                 cover_media = media
                 try:
-                    cover_bytes = epub.read(prefix + href)
-                except KeyError:
+                    cover_bytes = epub.read(_safe_member(prefix, href))
+                except (KeyError, ValueError):
                     cover_bytes = None
                 break
 
@@ -284,8 +308,8 @@ def parse_epub(data: bytes) -> ParsedEpub:
         if "html" not in media and "xhtml" not in media and "xml" not in media:
             continue
         try:
-            raw = epub.read(prefix + href).decode("utf-8", "replace")
-        except KeyError:
+            raw = epub.read(_safe_member(prefix, href)).decode("utf-8", "replace")
+        except (KeyError, ValueError):
             continue
         cleaned = sanitize_html(raw)
         text = extract_text(cleaned)
@@ -372,8 +396,9 @@ def _gemini_post(url: str, payload: dict, timeout: int = 60) -> dict:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:500]
-        raise RuntimeError(f"Gemini API {exc.code}: {detail}") from exc
+        raise RuntimeError(f"Gemini API unavailable (HTTP {exc.code})") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Gemini API unreachable") from exc
 
 
 def embed_batch(texts: list[str], settings: Settings) -> list[list[float]]:
@@ -448,7 +473,7 @@ def generate_json(prompt: str, settings: Settings) -> dict:
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"LLM response missing text: {result}") from exc
+        raise RuntimeError(f"LLM response missing text: {str(result)[:200]}") from exc
     return json.loads(_strip_fences(text))
 
 
@@ -716,7 +741,7 @@ def run(once: bool = False) -> int:
                 job_id = fields.get("job_id", msg_id)
                 attempts_key = f"job:{job_id}"
                 try:
-                    attempts = int(redis_client.hget(attempts_key, "attempts") or 0)
+                    attempts = int(redis_client.hincrby(attempts_key, "attempts", 1))
                 except (TypeError, ValueError):
                     attempts = 0
                 try:
@@ -725,8 +750,7 @@ def run(once: bool = False) -> int:
                     processed += 1
                 except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
                     LOG.exception("job %s failed: %s", job_id, exc)
-                    redis_client.hincrby(attempts_key, "attempts", 1)
-                    if attempts + 1 >= 3:
+                    if attempts >= 3:
                         redis_client.xadd(
                             settings.dlq_stream,
                             {"job_id": job_id, "error": str(exc)[:2000]},

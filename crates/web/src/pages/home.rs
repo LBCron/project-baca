@@ -48,7 +48,7 @@ pub fn HomePage() -> impl IntoView {
     let (cursor, set_cursor) = signal(None::<String>);
     let (loading, set_loading) = signal(false);
     let (query, set_query) = signal(String::new());
-    let (progress, set_progress) = signal(Vec::<ActiveProgressDto>::new());
+    let (progress, set_progress) = signal(None::<ActiveProgressDto>);
     let (slide, set_slide) = signal(0usize);
     let (paused, set_paused) = signal(false);
 
@@ -70,8 +70,8 @@ pub fn HomePage() -> impl IntoView {
     };
 
     spawn_local(async move {
-        if let Ok(items) = api::active_progress().await {
-            set_progress.set(items);
+        if let Ok(item) = api::active_progress().await {
+            set_progress.set(item);
         }
     });
     load_more();
@@ -224,27 +224,24 @@ pub fn HomePage() -> impl IntoView {
             </section>
 
             {move || {
-                let items = progress.get();
-                (!items.is_empty()).then(|| view! {
+                progress.get().map(|p| view! {
                     <section class="continue-reading">
                         <div class="catalog-section-title"><span>{lang.get().text("continue_reading")}</span></div>
                         <div class="book-grid">
-                            {items.into_iter().map(|p| view! {
-                                <div class="book-card">
-                                    <div class="book-tag">
-                                        {format!("Ch. {} — {:.1}%", p.chapter_number, p.completion_percentage)}
-                                    </div>
-                                    <h2 class="book-title">{p.book_title.clone()}</h2>
-                                    <div class="book-author">{p.book_author.clone()}</div>
-                                    <div class="book-card-footer">
-                                        <span>{p.chapter_title.clone()}</span>
-                                        <a href=format!("/book/{}", p.book_id) class="btn-read">
-                                            <span>{lang.get().text("resume")}</span>
-                                            <span>"→"</span>
-                                        </a>
-                                    </div>
+                            <div class="book-card">
+                                <div class="book-tag">
+                                    {format!("Ch. {} — {:.1}%", p.chapter_number, p.completion_percentage)}
                                 </div>
-                            }).collect::<Vec<_>>()}
+                                <h2 class="book-title">{p.book_title.clone()}</h2>
+                                <div class="book-author">{p.book_author.clone()}</div>
+                                <div class="book-card-footer">
+                                    <span>{p.chapter_title.clone()}</span>
+                                    <a href=format!("/book/{}", p.book_id) class="btn-read">
+                                        <span>{lang.get().text("resume")}</span>
+                                        <span>"→"</span>
+                                    </a>
+                                </div>
+                            </div>
                         </div>
                     </section>
                 })

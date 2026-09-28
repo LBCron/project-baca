@@ -149,6 +149,23 @@ impl IntoResponse for HttpError {
                 )
                     .into_response()
             }
+            AppError::ServiceUnavailable { retry_after } => {
+                let mut resp = (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(ApiResponse::<()>::error(
+                        "SERVICE_UNAVAILABLE",
+                        &format!(
+                            "Service temporarily unavailable. Try again in {retry_after} seconds"
+                        ),
+                        None,
+                    )),
+                )
+                    .into_response();
+                if let Ok(v) = HeaderValue::from_str(&retry_after.to_string()) {
+                    resp.headers_mut().insert(header::RETRY_AFTER, v);
+                }
+                resp
+            }
         }
     }
 }

@@ -277,8 +277,10 @@ async fn revoke_refresh_family(
 pub async fn revoke_family_on_reuse(
     redis: &mut redis::aio::MultiplexedConnection,
     user_id: Uuid,
+    access_token_max_expiry_secs: u64,
 ) -> Result<(), AppError> {
-    revoke_refresh_family(redis, user_id).await
+    revoke_refresh_family(redis, user_id).await?;
+    invalidate_user_tokens(redis, user_id, access_token_max_expiry_secs).await
 }
 
 /// Whether a refresh token was rotated out (replay = suspected theft).

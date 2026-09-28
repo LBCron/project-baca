@@ -42,9 +42,12 @@ async fn test_smoke_api_v1_health_dependencies() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body["success"], true);
-    assert_eq!(body["data"]["status"], "ok");
-    assert_eq!(body["data"]["redis"], "configured");
+    assert!(body["data"]["status"] == "ok" || body["data"]["status"] == "degraded");
+    assert!(body["data"]["redis"] == "connected" || body["data"]["redis"] == "disconnected");
     assert!(body["data"]["postgres"] == "connected" || body["data"]["postgres"] == "disconnected");
+    if body["data"]["redis"] == "disconnected" || body["data"]["postgres"] == "disconnected" {
+        assert_eq!(body["data"]["status"], "degraded");
+    }
 }
 
 #[tokio::test]

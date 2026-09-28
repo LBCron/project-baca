@@ -12,6 +12,11 @@ pub fn ProfilePage() -> impl IntoView {
     let (badges, set_badges) = signal(Vec::<UserBadgeDto>::new());
     let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
     let (error, set_error) = signal(None::<String>);
+    let (current_pw, set_current_pw) = signal(String::new());
+    let (new_pw, set_new_pw) = signal(String::new());
+    let (revoke_others, set_revoke_others) = signal(true);
+    let (session_msg, set_session_msg) = signal(None::<String>);
+    let (revoke_armed, set_revoke_armed) = signal(false);
 
     spawn_local(async move {
         match api::me().await {
@@ -31,6 +36,43 @@ pub fn ProfilePage() -> impl IntoView {
             let _ = api::logout().await;
             if let Some(window) = web_sys::window() {
                 let _ = window.location().set_href("/");
+            }
+        });
+    };
+
+    let change_password = move |_| {
+        spawn_local(async move {
+            let req = shared::ChangePasswordRequest {
+                current_password: current_pw.get_untracked(),
+                new_password: new_pw.get_untracked(),
+                revoke_other_sessions: Some(revoke_others.get_untracked()),
+            };
+            match api::change_password(&req).await {
+                Ok(_) => {
+                    set_session_msg.set(Some("Password changed.".to_string()));
+                    set_current_pw.set(String::new());
+                    set_new_pw.set(String::new());
+                }
+                Err(e) => set_session_msg.set(Some(e)),
+            }
+        });
+    };
+
+    let revoke_all = move |_| {
+        if !revoke_armed.get_untracked() {
+            set_revoke_armed.set(true);
+            return;
+        }
+        set_revoke_armed.set(false);
+        spawn_local(async move {
+            match api::revoke_all().await {
+                Ok(_) => {
+                    api::clear_token();
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().set_href("/");
+                    }
+                }
+                Err(e) => set_session_msg.set(Some(e)),
             }
         });
     };
@@ -57,6 +99,33 @@ pub fn ProfilePage() -> impl IntoView {
                         <p class="book-author">{me.email.clone()}</p>
                         <div class="book-actions">
                             <button class="btn-ghost" on:click=logout>"Log Out"</button>
+                        </div>
+                        <div class="catalog-section-title"><span>"❖ Sessions"</span></div>
+                        <div class="session-panel">
+                            <label>
+                                "Current password"
+                                <input type="password" class="search-bar" prop:value=move || current_pw.get()
+                                    on:input=move |ev| set_current_pw.set(event_target_value(&ev))/>
+                            </label>
+                            <label>
+                                "New password (min 8 chars)"
+                                <input type="password" class="search-bar" prop:value=move || new_pw.get()
+                                    on:input=move |ev| set_new_pw.set(event_target_value(&ev))/>
+                            </label>
+                            <label class="session-check">
+                                <input type="checkbox" prop:checked=move || revoke_others.get()
+                                    on:change=move |ev| set_revoke_others.set(event_target_checked(&ev))/>
+                                "Sign out other sessions"
+                            </label>
+                            <div class="book-actions">
+                                <button class="btn-read" on:click=change_password>"Change Password"</button>
+                                <button class="btn-ghost" on:click=revoke_all>
+                                    {move || if revoke_armed.get() { "Click again to confirm" } else { "Revoke All Sessions" }}
+                                </button>
+                            </div>
+                            {move || session_msg.get().map(|m| view! {
+                                <p class="hero-desc">{m}</p>
+                            })}
                         </div>
                         <div class="catalog-section-title"><span>"❖ Badges"</span></div>
                         <div class="book-grid">

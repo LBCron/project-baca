@@ -102,6 +102,11 @@ pub async fn upload_book(
                     "Uploaded EPUB file is empty".to_string(),
                 )));
             }
+            if buf.len() < 2 || buf[0] != 0x50 || buf[1] != 0x4B {
+                return Err(HttpError(AppError::BadRequest(
+                    "Uploaded file is not a ZIP-based EPUB (missing PK signature)".to_string(),
+                )));
+            }
             file_bytes = Some((filename, buf));
         } else {
             // Text fields arrive buffered by axum; cap them before the DB does

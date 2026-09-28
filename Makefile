@@ -58,7 +58,7 @@ redis-shell:
 	@docker compose exec redis redis-cli
 
 # Database migrations
-migrate-up:
+migrate-up: 
 	@echo "Applying database migrations (up)..."
 	@./scripts/migrate.sh up
 
@@ -100,6 +100,10 @@ test-semantic:
 test-performance:
 	@echo "Running performance and SLA benchmark tests..."
 	@cargo test -p server --test performance_test
+
+test-performance-release:
+	@echo "Running SLA benchmarks on release build (production claim)..."
+	@cargo test --release -p server --test performance_test
 
 test-reliability:
 	@echo "Running reliability and fault injection tests..."
@@ -170,11 +174,31 @@ worker-once:
 	@cd python_worker && .venv/bin/python worker.py --once
 
 # Production release build
+# API base baked into the WASM bundle at compile time (Trunk has no runtime
+# env); override per environment, e.g. API_BASE_URL=https://example.com/api/v1
+API_BASE_URL ?= http://localhost:8080/api/v1
 build:
 	@echo "Building production release binaries..."
 	@cargo build --workspace --release
 	@echo "Building production WASM frontend bundle..."
-	@cd crates/web && trunk build --release
+	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --public-url /
+
+# Production compose stack (see .env.production.example). Dev stack stays
+# on docker-compose.yml with host ports 5433/6380/9005/9006.
+prod-build:
+	@echo "Building production images..."
+	@docker compose --env-file .env.production -f docker-compose.prod.yml build
+
+prod-up:
+	@echo "Starting production stack..."
+	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+
+prod-down:
+	@echo "Stopping production stack..."
+	@docker compose --env-file .env.production -f docker-compose.prod.yml down
+
+prod-logs:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml logs -f
 
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
@@ -188,5 +212,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-load-stress test-api-boundary test-security test-reliability test-all check build clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain
+.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all check build prod-build prod-up prod-down prod-logs clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain
 

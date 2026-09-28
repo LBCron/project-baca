@@ -1,0 +1,18 @@
+# Project Baca — edge image (Caddy terminates TLS/HTTP-3, serves the
+# Trunk-built WASM bundle, proxies /api/* to the server service).
+# API base is baked via build arg, e.g.
+#   docker build -f Dockerfile.edge --build-arg API_BASE_URL=https://example.com/api/v1 .
+FROM rust:1.94-bookworm AS webbuild
+RUN rustup target add wasm32-unknown-unknown \
+    && cargo install trunk --locked
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+ARG API_BASE_URL=http://localhost:8080/api/v1
+ENV API_BASE_URL=$API_BASE_URL
+WORKDIR /app/crates/web
+RUN trunk build --release --public-url /
+
+FROM caddy:2-alpine
+COPY Caddyfile.prod /etc/caddy/Caddyfile
+COPY --from=webbuild /app/crates/web/dist /srv/web

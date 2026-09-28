@@ -37,6 +37,8 @@ pub fn ReaderPage() -> impl IntoView {
     let (line_height, set_line_height) = signal(17);
     let (anchor, set_anchor) = signal(String::from("top"));
     let (streak, set_streak) = signal(None::<i32>);
+    let (offline, set_offline) = signal(false);
+    let (queued, set_queued) = signal(0usize);
     let recap_open = RwSignal::new(false);
 
     let load = move |book: String, number: i32| {
@@ -45,8 +47,35 @@ pub fn ReaderPage() -> impl IntoView {
                 Ok(detail) => {
                     set_chapter.set(Some(detail));
                     set_error.set(None);
+                    set_offline.set(false);
                 }
-                Err(e) => set_error.set(Some(e)),
+                Err(e) => {
+                    // Offline fallback: serve the cached chapter bundle copy.
+                    let cached: Option<ChapterDetailDto> =
+                        crate::storage::get_all::<crate::storage::OfflineChapterRecord>(
+                            crate::storage::STORE_OFFLINE_CHAPTERS,
+                        )
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|r| r.book_id.to_string() == book && r.chapter_number == number)
+                        .map(|r| ChapterDetailDto {
+                            id: r.chapter_id,
+                            book_id: r.book_id,
+                            chapter_number: r.chapter_number,
+                            title: r.title,
+                            word_count: 0,
+                            html_content: r.html_content,
+                        });
+                    match cached {
+                        Some(detail) => {
+                            set_chapter.set(Some(detail));
+                            set_error.set(None);
+                            set_offline.set(true);
+                        }
+                        None => set_error.set(Some(e)),
+                    }
+                }
             }
         });
     };
@@ -137,7 +166,10 @@ pub fn ReaderPage() -> impl IntoView {
                         last_anchor_cfi: cfi,
                         completion_percentage: 0.0,
                     };
-                    let _ = api::save_progress(&id, &update).await;
+                    if api::save_progress(&id, &update).await.is_err() {
+                        let _ = api::queue_pending_progress(&id, &update).await;
+                    }
+                    set_queued.set(api::pending_count().await);
                 } else if let Ok(book) = id.parse::<uuid::Uuid>() {
                     let record = shared::GuestProgressRecord {
                         book_id: book,
@@ -165,6 +197,22 @@ pub fn ReaderPage() -> impl IntoView {
             }
         });
     };
+
+    {
+        let on_online = Closure::<dyn Fn()>::new(Box::new(move || {
+            spawn_local(async move {
+                api::drain_pending().await;
+            });
+        }) as Box<dyn Fn()>);
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .add_event_listener_with_callback("online", on_online.as_ref().unchecked_ref());
+        }
+        on_online.forget();
+        spawn_local(async move {
+            set_queued.set(api::pending_count().await);
+        });
+    }
 
     view! {
         <div class="reader-shell">
@@ -216,7 +264,18 @@ pub fn ReaderPage() -> impl IntoView {
             <div class="reader-zone reader-zone-next" on:click=next></div>
 
             <footer class="reader-status" on:click=persist_progress>
-                {move || format!("‹ Prev · Anchor: {} · Next › (tap to save)", anchor.get())}
+                {move || {
+                    let mut label =
+                        format!("‹ Prev · Anchor: {} · Next › (tap to save)", anchor.get());
+                    if offline.get() {
+                        label.push_str(" · offline copy");
+                    }
+                    let n = queued.get();
+                    if n > 0 {
+                        label.push_str(&format!(" · {n} queued"));
+                    }
+                    label
+                }}
             </footer>
             {move || streak.get().map(|days| view! {
                 <div class="streak-toast" role="status">{format!("❖ {days}-day streak")}</div>

@@ -45,6 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis = match init_redis_client(&config) {
         Ok(client) => client,
         Err(e) => {
+            if config.is_production() {
+                tracing::error!("Redis connection failed in production ({e}). Refusing to boot with a silent fallback.");
+                return Err(e.into());
+            }
             tracing::warn!("Redis connection failed ({e}).");
             redis::Client::open("redis://127.0.0.1:6380")?
         }

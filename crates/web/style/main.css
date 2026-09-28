@@ -486,6 +486,30 @@ input[type="range"] {
     accent-color: var(--color-accent-terracotta);
 }
 
+.session-panel {
+    display: grid;
+    gap: 12px;
+    max-width: 420px;
+    margin: 8px 0 36px;
+}
+
+.session-panel label {
+    display: grid;
+    gap: 6px;
+    font-size: 0.95rem;
+}
+
+.session-check {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 8px;
+}
+
+.session-check input[type="checkbox"] {
+    accent-color: var(--color-accent-terracotta);
+}
+
 .chapter-list {
     list-style: none;
     border-top: 1px solid var(--color-border-parchment);

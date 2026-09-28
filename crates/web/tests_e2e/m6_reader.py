@@ -45,7 +45,8 @@ async def main():
     book_id = api_book_id()
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(viewport={"width": 1280, "height": 900})
+        context = await browser.new_context(viewport={"width": 1280, "height": 900})
+        page = await context.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
 
@@ -116,6 +117,25 @@ async def main():
         else:
             check("recap-button-ch2", True, "skipped, single chapter")
 
+        # Offline (BL-12): cache via overview, then read the IDB copy offline.
+        await page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        if await page.query_selector("text=Save Offline"):
+            await page.click("text=Save Offline")
+            await page.wait_for_timeout(3000)
+            saved_label = await page.inner_text("body")
+            check("offline-saved", "Saved Offline" in saved_label)
+        else:
+            check("offline-saved", True, "already cached")
+        await context.set_offline(True)
+        await page.goto(f"{WEB}/read/{book_id}?chapter={ch_no}", wait_until="domcontentloaded")
+        await page.wait_for_timeout(2500)
+        off_body = await page.inner_text(".chapter-body") if await page.query_selector(".chapter-body") else ""
+        check("offline-reader-renders", len(off_body) > 0, f"{len(off_body)} chars")
+        footer = await page.inner_text(".reader-status") if await page.query_selector(".reader-status") else ""
+        check("offline-badge", "offline copy" in footer, footer[:60])
+        await context.set_offline(False)
+
         await page.goto(f"{WEB}/", wait_until="networkidle")
         await page.wait_for_timeout(2000)
         await page.click("text=Masuk" if await page.query_selector("text=Masuk") else "text=Sign In")
@@ -128,6 +148,80 @@ async def main():
         await page.goto(f"{WEB}/admin", wait_until="networkidle")
         await page.wait_for_timeout(1500)
         check("admin-form", await page.query_selector('input[type="file"]') is not None)
+
+        # Authed flow (BL-11): signup -> Mailpit OTP -> verify -> browser
+        # tap-to-save (PUT /progress) -> sessions UI -> account cleanup.
+        import time
+        email = f"e2e-{int(time.time())}@example.com"
+        payload = json.dumps(
+            {"display_name": "E2E", "email": email, "password": "E2EPassword123!"}
+        ).encode()
+        req = urllib.request.Request(
+            f"{API}/auth/signup", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req):
+            pass
+        otp = ""
+        for _ in range(10):
+            await asyncio.sleep(1)
+            with urllib.request.urlopen(
+                "http://localhost:8025/api/v1/messages?limit=50"
+            ) as r:
+                msgs = json.load(r)["messages"]
+            mids = [m["ID"] for m in msgs if email in json.dumps(m)]
+            if mids:
+                with urllib.request.urlopen(
+                    f"http://localhost:8025/api/v1/message/{mids[0]}"
+                ) as r:
+                    import re
+                    text = json.dumps(json.load(r))
+                    m = re.search(r"\b(\d{6})\b", text)
+                    if m:
+                        otp = m.group(1)
+                        break
+        check("authed-otp-received", bool(otp))
+        payload = json.dumps({"email": email, "otp": otp}).encode()
+        req = urllib.request.Request(
+            f"{API}/auth/verify-otp", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req) as r:
+            tokens = json.load(r)["data"]
+        await page.evaluate(
+            f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
+            f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
+        )
+        await page.goto(f"{WEB}/me", wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        body_text = await page.inner_text("body")
+        check("profile-authed", "E2E" in body_text)
+        check("sessions-ui", "Sessions" in body_text)
+        await page.goto(f"{WEB}/read/{book_id}?chapter={ch_no}", wait_until="networkidle")
+        await page.wait_for_timeout(2500)
+        await page.click(".reader-status")
+        await page.wait_for_timeout(2000)
+        req = urllib.request.Request(
+            f"{API}/progress/active",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        with urllib.request.urlopen(req) as r:
+            act = json.load(r)["data"]
+        check(
+            "authed-tap-saves-progress",
+            isinstance(act, dict) and act.get("book_id") == book_id,
+            f"{act.get('completion_percentage') if isinstance(act, dict) else act}%",
+        )
+        req = urllib.request.Request(
+            f"{API}/me", method="DELETE",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        with urllib.request.urlopen(req):
+            pass
+        await page.evaluate("localStorage.clear()")
+        await page.goto(f"{WEB}/me", wait_until="networkidle")
+        await page.wait_for_timeout(2000)
+        check("profile-guest-after-delete", "Sign in" in await page.inner_text("body"))
 
         check("zero-page-errors", len(errors) == 0, f"{len(errors)} errors")
         for e in errors[:5]:

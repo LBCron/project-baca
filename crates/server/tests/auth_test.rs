@@ -296,6 +296,11 @@ async fn test_auth_full_lifecycle() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
     // Re-login for the account-deletion step (the old token is revoked).
+    // Sleep past the 1-second JWT iat granularity: the theft-triggered
+    // family revocation above stamps user_revoked_before at whole-second
+    // precision, so a token minted in the same second would compare as
+    // revoked. Production clients transparently retry once (BL-11).
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")

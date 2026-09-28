@@ -1,0 +1,7 @@
+# Project Baca — ingestion worker image (Redis Streams consumer).
+FROM python:3.12-slim
+WORKDIR /worker
+COPY python_worker/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY python_worker/worker.py ./
+CMD ["python", "worker.py"]

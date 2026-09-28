@@ -15,6 +15,16 @@ pub const STORE_OFFLINE_BOOKS: &str = "offline_books";
 pub const STORE_OFFLINE_CHAPTERS: &str = "offline_chapters";
 pub const STORE_PENDING_SYNC: &str = "pending_sync_queue";
 
+/// Typed chapter cache record (keyPath `chapter_id`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OfflineChapterRecord {
+    pub chapter_id: uuid::Uuid,
+    pub book_id: uuid::Uuid,
+    pub chapter_number: i32,
+    pub title: String,
+    pub html_content: String,
+}
+
 async fn db() -> Result<Rexie, String> {
     Rexie::builder(DB_NAME)
         .version(DB_VERSION)

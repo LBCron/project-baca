@@ -221,10 +221,14 @@ async fn test_owasp_login_brute_force_lockout() {
     assert_eq!(body["error"]["code"], "RATE_LIMITED");
     assert!(resp.headers().contains_key(header::RETRY_AFTER));
 
-    // Cleanup lockout key in redis
+    // Cleanup lockout keys in redis (pair + aggregate, see note_login_failure)
+    let pair_fail = format!("auth:login:fail:{target_email}:{client_ip}");
+    let pair_lock = format!("auth:login:lockout:{target_email}:{client_ip}");
     let lockout_key = format!("auth:login:lockout:{target_email}");
     let fail_key = format!("auth:login:fail:{target_email}");
-    let _: Result<(), _> = redis_conn.del(&[&lockout_key, &fail_key]).await;
+    let _: Result<(), _> = redis_conn
+        .del(&[&pair_fail, &pair_lock, &lockout_key, &fail_key])
+        .await;
 }
 
 #[tokio::test]

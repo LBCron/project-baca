@@ -1,6 +1,10 @@
 //! Auth and user endpoints.
 
-use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
+use crate::{
+    error::HttpError,
+    middleware::{auth::AuthUser, rate_limit::client_ip_from_headers},
+    AppState,
+};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -25,6 +29,50 @@ use shared::{
 };
 use std::sync::Arc;
 use validator::Validate;
+
+/// Two-layer login brute-force accounting. The (email, IP) pair locks after
+/// 5 failures so hammering a victim's address cannot lock the victim out
+/// from their own network; the per-email aggregate caps distributed guessing
+/// at 20 failures per 15 minutes.
+async fn note_login_failure(redis: &mut redis::aio::MultiplexedConnection, email: &str, ip: &str) {
+    let pair_fail_key = format!("auth:login:fail:{email}:{ip}");
+    let pair_count: Result<i64, _> = redis.incr(&pair_fail_key, 1).await;
+    if let Ok(c) = pair_count {
+        let _: Result<(), _> = redis.expire(&pair_fail_key, 900).await;
+        if c >= 5 {
+            let pair_lock_key = format!("auth:login:lockout:{email}:{ip}");
+            let _: Result<(), _> = redis.set_ex(&pair_lock_key, "1", 900).await;
+        }
+    }
+    let email_fail_key = format!("auth:login:fail:{email}");
+    let email_count: Result<i64, _> = redis.incr(&email_fail_key, 1).await;
+    if let Ok(c) = email_count {
+        let _: Result<(), _> = redis.expire(&email_fail_key, 900).await;
+        if c >= 20 {
+            let email_lock_key = format!("auth:login:lockout:{email}");
+            let _: Result<(), _> = redis.set_ex(&email_lock_key, "1", 900).await;
+        }
+    }
+}
+
+/// Returns the lockout retry delay when the pair or aggregate lock is set.
+async fn login_lockout_retry_after(
+    redis: &mut redis::aio::MultiplexedConnection,
+    email: &str,
+    ip: &str,
+) -> Option<u64> {
+    for key in [
+        format!("auth:login:lockout:{email}:{ip}"),
+        format!("auth:login:lockout:{email}"),
+    ] {
+        let locked: bool = redis.exists(&key).await.unwrap_or(false);
+        if locked {
+            let ttl: i64 = redis.ttl(&key).await.unwrap_or(900);
+            return Some(if ttl > 0 { ttl as u64 } else { 900 });
+        }
+    }
+    None
+}
 
 /// Converts a database user model to a public UserProfileDto
 fn user_to_dto(user: &users::Model) -> UserProfileDto {
@@ -52,6 +100,7 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
 )]
 pub async fn signup(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<SignupRequest>,
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
@@ -65,6 +114,18 @@ pub async fn signup(
         let ttl: i64 = redis_conn.ttl(&cooldown_key).await.unwrap_or(60);
         let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
         return Err(HttpError(AppError::RateLimited { retry_after }));
+    }
+
+    // Per-IP signup cap: rotating the local part cannot bypass this, so one
+    // client cannot burn SMTP quota or sender reputation at will.
+    let client_ip = client_ip_from_headers(&headers, state.config.server.trust_proxy_headers);
+    let ip_key = format!("otp:signup:ip:{client_ip}");
+    let ip_count: Result<i64, _> = redis_conn.incr(&ip_key, 1).await;
+    if let Ok(c) = ip_count {
+        let _: Result<(), _> = redis_conn.expire(&ip_key, 3600).await;
+        if c > 10 {
+            return Err(HttpError(AppError::RateLimited { retry_after: 3600 }));
+        }
     }
 
     let existing_user = find_user_by_email(&state.db, &req.email)
@@ -188,18 +249,20 @@ pub async fn verify_otp(
 )]
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    // Lockout check: 15 minutes after 5 failed attempts.
-    let lockout_key = format!("auth:login:lockout:{}", req.email);
-    let is_locked: bool = redis_conn.exists(&lockout_key).await.unwrap_or(false);
-    if is_locked {
-        let ttl: i64 = redis_conn.ttl(&lockout_key).await.unwrap_or(900);
-        let retry_after = if ttl > 0 { ttl as u64 } else { 900 };
+    let client_ip = client_ip_from_headers(&headers, state.config.server.trust_proxy_headers);
+
+    // Lockout check: pair (email, IP) lock after 5 failures, aggregate email
+    // lock after 20 — 15 minutes each.
+    if let Some(retry_after) =
+        login_lockout_retry_after(&mut redis_conn, &req.email, &client_ip).await
+    {
         return Err(HttpError(AppError::RateLimited { retry_after }));
     }
 
@@ -214,14 +277,7 @@ pub async fn login(
             let _ =
                 verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
 
-            let fail_key = format!("auth:login:fail:{}", req.email);
-            let count: Result<i64, _> = redis_conn.incr(&fail_key, 1).await;
-            if let Ok(c) = count {
-                let _: Result<(), _> = redis_conn.expire(&fail_key, 900).await;
-                if c >= 5 {
-                    let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
-                }
-            }
+            note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
             return Err(HttpError(AppError::Unauthorized(
                 "Invalid email or password".to_string(),
             )));
@@ -242,22 +298,25 @@ pub async fn login(
     };
 
     if !is_valid {
-        let fail_key = format!("auth:login:fail:{}", req.email);
-        let count: Result<i64, _> = redis_conn.incr(&fail_key, 1).await;
-        if let Ok(c) = count {
-            let _: Result<(), _> = redis_conn.expire(&fail_key, 900).await;
-            if c >= 5 {
-                let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
-            }
-        }
+        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
         return Err(HttpError(AppError::Unauthorized(
             "Invalid email or password".to_string(),
         )));
     }
 
     // Reset login failure counters on successful authentication
-    let fail_key = format!("auth:login:fail:{}", req.email);
-    let _: Result<(), _> = redis_conn.del(&[&fail_key, &lockout_key]).await;
+    let pair_fail_key = format!("auth:login:fail:{}:{}", req.email, client_ip);
+    let pair_lock_key = format!("auth:login:lockout:{}:{}", req.email, client_ip);
+    let email_fail_key = format!("auth:login:fail:{}", req.email);
+    let email_lock_key = format!("auth:login:lockout:{}", req.email);
+    let _: Result<(), _> = redis_conn
+        .del(&[
+            &pair_fail_key,
+            &pair_lock_key,
+            &email_fail_key,
+            &email_lock_key,
+        ])
+        .await;
 
     let access_token = generate_access_token(
         user.id,
@@ -313,7 +372,8 @@ pub async fn refresh(
     // whole family dies with this request.
     if is_known_rotated_token(&mut redis_conn, &req.refresh_token).await {
         if let Some(uid) = user_id_of_rotated_token(&mut redis_conn, &req.refresh_token).await {
-            let _ = revoke_family_on_reuse(&mut redis_conn, uid).await;
+            let access_ttl = state.config.auth.access_expiry_minutes * 60;
+            let _ = revoke_family_on_reuse(&mut redis_conn, uid, access_ttl).await;
         }
         return Err(HttpError(AppError::Unauthorized(
             "Invalid or expired refresh token".to_string(),
@@ -570,19 +630,20 @@ pub async fn delete_me(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
 ) -> Result<Response, HttpError> {
+    // Revoke first, delete second: if Redis is unreachable the account must
+    // stay (fail closed) rather than leave live tokens on a deleted account.
+    let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
+    revoke_all_user_sessions(
+        &mut redis_conn,
+        auth.id,
+        state.config.auth.access_expiry_minutes * 60,
+    )
+    .await
+    .map_err(HttpError::from)?;
+
     delete_user_by_id(&state.db, auth.id)
         .await
         .map_err(HttpError::from)?;
-
-    // Revoke all active sessions and access tokens in Redis
-    if let Ok(mut redis_conn) = state.get_redis_conn().await {
-        let _ = revoke_all_user_sessions(
-            &mut redis_conn,
-            auth.id,
-            state.config.auth.access_expiry_minutes * 60,
-        )
-        .await;
-    }
 
     Ok((
         StatusCode::OK,
