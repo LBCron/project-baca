@@ -2,6 +2,14 @@
 # Graphify Ignore Overrides
 # Memastikan direktori knowledge/ tetap diindeks ke dalam Graf Pengetahuan
 # meskipun knowledge/ di-ignore pada .gitignore untuk push Git.
+# Root docs (AGENTS/CLAUDE/GEMINI/MEMORY/PROJECT_LOG) juga di-re-include:
+# mereka di-gitignore agar tidak ter-push, tetapi tetap bagian dari korpus lokal.
+# Secrets (.env, *.pem, credentials) dan artefak build TIDAK di-re-include.
 # ------------------------------------------------------------------------------
 !knowledge/
 !knowledge/**
+!AGENTS.md
+!CLAUDE.md
+!GEMINI.md
+!MEMORY.md
+!PROJECT_LOG.md

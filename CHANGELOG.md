@@ -5,6 +5,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Added
+- **Knowledge sync repair (2026-09-29):** `knowledge/` nested git repo lokal (91 files, twin `manual-test/readme.md` dihapus); `.graphifyignore` re-include root docs; full graph extract → 2327 nodes / 227 communities. `gbrain sync` masih terblokir receipt basi (lihat PROJECT_LOG §3).
 - **Task 09 planning absorption (2026-09-28):** research of 8 `planning/` files vs history + code; converted live items to micro-tasks 09b–09k (guest quote sync, batch save, sync RFC, per-device refresh, tldr index, draft audit, test isolation, launch remaining, carousel/Lighthouse, trademark); `planning/` deleted with references cut from `index.md`, Task 07/08, tasks README, manual-test 07.
 - **Twin-doc dedup (2026-09-28):** removed 5 byte-redundant files (`tasks/readme.md`, `memory.md`, `changelog.md`, `project_log.md`, `project-log-kanonis.md`); aligned `MEMORY.md` 19-key → 18-key before deleting.
 - **M7 hardening batch 1 (ADR-27):** Redis fail-fast boot in production; theft-triggered family revocation kills access tokens too; fail-closed 503 `SERVICE_UNAVAILABLE` on auth/AI rate paths; honest `/api/v1/health` (`ok`/`degraded` + live Redis PING); two-layer login lockout (pair 5x + email 20x); signup 10/h/IP SMTP cap; OTP 5-minute lock without deletion; `delete_me` revoke-first; merge-cap 100; EPUB magic `PK` check; worker zip-guard (per-file + ratio + ZipSlip), Gemini error sanitization, atomic DLQ counter; `scripts/pg_backup.sh` + verified dump.
