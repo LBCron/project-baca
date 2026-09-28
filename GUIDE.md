@@ -80,7 +80,7 @@ Test debris (pending PEL, draft probe rows, fake MinIO objects) accumulates on t
 
 ## 5. Testing & Quality Assurance
 
-Comprehensive 12-target test suite (`cargo test --workspace`: 112 passed / 0 failed; worker 9/9):
+Comprehensive workspace test suite (`cargo test --workspace`, expect 0 failures) plus worker unit tests:
 
 ```bash
 make test-smoke        # Service boot, health endpoints, Swagger UI, network reachability
@@ -96,7 +96,7 @@ make test-api-boundary # 404/405, malformed payloads, pagination clamps
 make test-security     # OWASP headers, lockout, revocation, error masking
 make test-reliability  # Disconnect fallback, fault injection, oversized ids
 make test-all          # Complete end-to-end test execution
-make test-web-e2e      # Leptos web regression: 22 Playwright checks vs live :8080 + :3000 (0 page-errors required)
+make test-web-e2e      # Leptos web regression: 30 Playwright checks vs live :8080 + :3000 (0 page-errors required)
 ```
 
 ### Web Regression Gate (M6)

@@ -55,7 +55,7 @@ project-baca/
 │   ├── server/                      # HTTP API gateway (Axum REST, OpenAPI, Auth)
 │   └── web/                         # Client frontend (Leptos 0.7 WASM PWA)
 │
-├── python_worker/                   # Python AI ingestion and NLP worker (Task 05)
+├── python_worker/                   # Python AI ingestion and NLP worker
 ```
 
 ## 3. Domain Core (`crates/domain`)
@@ -132,7 +132,7 @@ project-baca/
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
 4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Shipped as host-run local `Caddyfile` in Task 06, validated with `caddy validate`; prod compose wiring is an M7 launch item.)*
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Local `Caddyfile` host-run in Task 06; prod `Caddyfile.prod` + compose shipped in Task 07 BL-10 — real-domain `up --build` and `caddy validate` still pending, Task 09i.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
