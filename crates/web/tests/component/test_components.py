@@ -22,19 +22,20 @@ def test_site_header_toggle_no_reload(clean_page: Page):
     page = clean_page
     root = _story(page, "site-header")
     assert root is not None
-    before = page.evaluate("performance.now()")
     page.click('.lang-opt:has-text("EN")')
     page.wait_for_timeout(600)
     assert page.evaluate("localStorage.getItem('rotaria_lang')") == "EN"
     assert_no_page_errors(page)
 
 
-def test_auth_modal_modes(clean_page: Page):
+def test_auth_sheet_modes(clean_page: Page):
     page = clean_page
     root = _story(page, "auth-modal")
     assert root is not None
-    body = page.inner_text("#gallery-root")
-    assert len(body) > 0
+    assert page.query_selector(".sheet[role='dialog']") is not None
+    page.click('.segmented button:has-text("Register")')
+    page.wait_for_timeout(300)
+    assert page.query_selector('input[autocomplete="nickname"]') is not None
     assert_no_page_errors(page)
 
 
@@ -42,8 +43,8 @@ def test_quote_finder_empty_state(clean_page: Page):
     page = clean_page
     root = _story(page, "quote-finder")
     assert root is not None
-    page.fill(".modal-vintage .search-bar", "zzzqqq-no-such-quote")
-    page.click(".modal-vintage .btn-read")
+    page.fill(".sheet .search-bar input", "zzzqqq-no-such-quote")
+    page.click(".sheet .search-bar .btn-primary")
     page.wait_for_timeout(4000)
     assert page.query_selector(".quote-results") is not None
     assert_no_page_errors(page)
@@ -54,11 +55,11 @@ def test_quote_finder_error_branch(clean_page: Page):
     page = clean_page
     page.route("**/api/**/quotes/search", lambda r: r.fulfill(status=500, body='{"success":false}'))
     _story(page, "quote-finder")
-    page.fill(".modal-vintage .search-bar", "love")
-    page.click(".modal-vintage .btn-read")
+    page.fill(".sheet .search-bar input", "love")
+    page.click(".sheet .search-bar .btn-primary")
     page.wait_for_timeout(3000)
-    text = page.inner_text("#gallery-root")
-    assert "quote-results" in (page.content())  # modal still mounted
+    assert page.query_selector(".sheet .form-error") is not None, "error must be visible"
+    assert "quote-results" in page.content()
     assert_no_page_errors(page)
 
 
@@ -67,4 +68,5 @@ def test_atomic_cards_404_tolerant(clean_page: Page):
     root = _story(page, "atomic-cards")
     assert root is not None
     page.wait_for_timeout(2000)
+    assert "Not available" in page.inner_text("#gallery-root")
     assert_no_page_errors(page)

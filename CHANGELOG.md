@@ -5,6 +5,17 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Added
+- **Rotaria redesign (2026-10-07):** two-surface design system (Espresso shell, Paper/Sepia/Espresso reading themes) with EB Garamond, Newsreader, and Plus Jakarta Sans; responsive shell for phone, tablet, and desktop (bottom tab bar, sticky header, bottom sheets that become dialogs); paginated reader with viewport-wide CSS columns, tap/swipe/keyboard turns, paragraph anchoring, debounced auto-save, real-elapsed heartbeats, and a type sheet (theme, size, leading); structured insight and recap cards; sign-in sheet with login, registration, and OTP steps; shelf and profile with streak card, offline books, badges, saved quotes, and sessions; curator page with upload zone and job phase list; table-driven ID/EN dictionary (literate register, browser-language default); theme bootstrap in `boot.js`; cover fallback to a typographic plate when an image fails.
+- **`GET /api/v1/me/streak`:** streak standing for the profile (current and longest streak, XP, total seconds, today's seconds toward the daily threshold).
+- **Public read rate limit:** `PUBLIC_RATE_LIMIT_PER_MINUTE` per-IP cap for catalog and insight reads, off in dev, 600 in production compose; one shared limiter engine now backs the auth, AI, and public policies.
+- **Test layout (ADR-28):** functional server suites consolidated into `crates/server/tests/it`; lean debug profiles; regression tests for every audit fix below; web pyramid rewritten for the new DOM with fresh visual goldens.
+
+### Fixed
+- **Audit hardening (2026-10-07):** EPUB uploads above axum's 2 MB default body limit now succeed up to the 50 MB cap; refresh rotation is atomic (`GETDEL`) with a 30 s grace window so concurrent tabs share one successor and only true replays revoke the family; login treats unverified accounts exactly like a wrong password and counts the attempt; signup fails closed (502) when SMTP is unreachable and clears the OTP cooldown; password change hands back a fresh token pair when other sessions are revoked (the pair is stamped past the whole-second revocation cut); heartbeat credit is clamped to 90 s per heartbeat and gated per user instead of per book; the admin guard re-reads the user row so demotion applies immediately; HSTS on API responses; CSP and security headers for the SPA in both Caddyfiles.
+
+### Removed
+- **Unversioned `/api/*` alias mounts:** `/api/v1/*` is the only API surface; unversioned paths return 404.
+
 - **Knowledge sync repair (2026-09-29):** `knowledge/` nested git repo lokal (91 files, twin `manual-test/readme.md` dihapus); `.graphifyignore` re-include root docs; full graph extract → 2327 nodes / 227 communities. `gbrain sync` masih terblokir receipt basi (lihat PROJECT_LOG §3).
 - **Task 09 planning absorption (2026-09-28):** research of 8 `planning/` files vs history + code; converted live items to micro-tasks 09b–09k (guest quote sync, batch save, sync RFC, per-device refresh, tldr index, draft audit, test isolation, launch remaining, carousel/Lighthouse, trademark); `planning/` deleted with references cut from `index.md`, Task 07/08, tasks README, manual-test 07.
 - **Twin-doc dedup (2026-09-28):** removed 5 byte-redundant files (`tasks/readme.md`, `memory.md`, `changelog.md`, `project_log.md`, `project-log-kanonis.md`); aligned `MEMORY.md` 19-key → 18-key before deleting.

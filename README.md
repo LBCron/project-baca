@@ -25,10 +25,12 @@ Whether you are revisiting timeless world literature or exploring classic Indone
 
 ## 3. Reader Experience & Key Features
 
-* **Vintage Literary Aesthetic (1900–1950):**
-  Designed with the warmth of aged archival paper (`#F9F6F0`), dense ink (`#2B2625`), and terracotta accents (`#9D5A3C`). Uses genuine literary serif typography (*EB Garamond*, *Newsreader*) paired with Victorian fleuron chapter ornaments `❖` to provide a reading experience that treats your eyes with respect.
-* **Reflowable Tap-to-Turn E-Reader:**
-  Horizontal page pagination engineered to feel like turning the pages of a real physical book. Built-in DOM CFI anchor tracking guarantees you will never lose your reading position when rotating your phone or adjusting font sizes.
+* **Two Surfaces, One Literary Voice:**
+  The app shell wears Espresso (`#1F1916` with clay `#CE734E`), the reading surface wears Paper (`#F9F6F0`, ink `#2B2625`, terracotta `#9D5A3C`) with Sepia and Espresso reading themes a tap away. Display type is *EB Garamond*, body text *Newsreader*, interface labels *Plus Jakarta Sans*; the fleuron `❖` remains the house ornament. Pen-and-ink engravings are shown as paper plates over the dark shell.
+* **Paginated Tap-to-Turn E-Reader:**
+  Chapters flow into viewport-wide columns and turn page by page (tap zones, swipe, arrow keys), two columns on wide screens. The position is anchored to the first visible paragraph and saved after every turn, so rotating a phone or changing the type size never loses your place.
+* **Built for Phone, Tablet, and Desktop:**
+  A bottom tab bar on phones, a top navigation on larger screens, bottom sheets that become dialogs, and layouts that reflow from 360px to 1440px, ready for a Tauri shell later.
 * **100% Offline-First Freedom:**
   Download any book in the catalog to your device with one click. Powered by browser IndexedDB, your library, reading progress, and chapter contents remain fully functional on trains, flights, or off-grid retreats.
 * **Natural Language Quote Discovery:**
@@ -49,7 +51,7 @@ Whether you are revisiting timeless world literature or exploring classic Indone
 Project Baca is engineered from the ground up for speed, reliability, and security using modern systems programming:
 
 * **Stateless API Gateway:** Built with **Rust (Axum)** for predictable low-latency performance and memory safety.
-* **Client-Side WebAssembly (WASM):** Built with **Leptos 0.7**, delivering native-speed page transitions and smooth 60 FPS pagination inside any modern browser. Routes: `/` catalog + Rotaria hero, `/book/:id` overview, `/read/:id` CFI reader, `/me` profile, `/admin` upload + job monitor. Verified by `make test-web` (pytest pyramid + visual goldens + axe a11y, 0 page-errors).
+* **Client-Side WebAssembly (WASM):** Built with **Leptos 0.7**, delivering native-speed page transitions and smooth pagination inside any modern browser. Routes: `/` catalog + hero, `/book/:id` overview, `/read/:id` paginated reader (no shell chrome), `/me` shelf and profile, `/admin` curation. Verified by `make test-web` (pytest pyramid + visual goldens + axe a11y, 0 page-errors).
 * **Postgres for Everything:** Relational tables, sub-5ms typo-tolerant catalog search (`pg_trgm`), and sub-10ms semantic vector traversal (`pgvector` HNSW) all unified within **PostgreSQL 17**.
 * **Modern Edge Transport:** Terminated via **Caddy Reverse Proxy** supporting **HTTP/3 over QUIC** (UDP 443) with seamless fallback to HTTP/2 (TCP 443). Features 0-RTT/1-RTT handshakes and connection migration for uninterrupted reading while moving between Wi-Fi and mobile networks.
 * **Pragmatic Background Queues:** Asynchronous EPUB processing, HTML cleaning, and transactional notifications managed via **Redis 7 Streams**.

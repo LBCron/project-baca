@@ -67,6 +67,10 @@ make migrate-status # Show applied migration history
 * **Structured JSON:** Enable via `LOG_FORMAT=json cargo run -p server`.
 * **Request Correlation:** The `request_id_middleware` mints a fresh UUID `x-request-id` per request (client-supplied values are ignored) across all spans and responses.
 
+### Server Environment Notes
+* `PUBLIC_RATE_LIMIT_PER_MINUTE` caps unauthenticated catalog and insight reads per IP. Keep `0` locally (dev and in-memory tests share one fallback IP); production compose sets 600.
+* Signup fails closed with HTTP 502 when SMTP is unreachable, so Mailpit must be up for the OTP flow.
+
 ### Ingestion Worker (Python)
 ```bash
 make worker-install   # create venv + install deps (first time only)
@@ -80,7 +84,7 @@ Test debris (pending PEL, draft probe rows, fake MinIO objects) accumulates on t
 
 ## 5. Testing & Quality Assurance
 
-Comprehensive workspace test suite (`cargo test --workspace`, expect 0 failures) plus worker unit tests:
+Comprehensive workspace test suite (`cargo test --workspace`, expect 0 failures) plus worker unit tests. Functional server suites live in one binary (`crates/server/tests/it`); each `make test-*` target filters that binary by module:
 
 ```bash
 make test-smoke        # Service boot, health endpoints, Swagger UI, network reachability
@@ -100,8 +104,8 @@ make test-web          # Web pyramid (unit + e2e + component + integration) vs l
 make test-web-full     # + visual goldens + axe a11y + firefox smoke
 ```
 
-### Web Regression Gate (M6)
-`make test-web` runs `crates/web/tests/` (pytest pyramid: e2e + component gallery + API contracts + unit). Run it after any `crates/web` change; on failure, check `knowledge/output/audit-2026-09-27/REPORT.md` for the last full route-by-route audit and its 8 fixed findings (notably TD-06: always assert mutation side effects, e.g. IndexedDB counts after Save Offline).
+### Web Regression Gate
+`make test-web` runs `crates/web/tests/` (pytest pyramid: e2e + component gallery + API contracts + unit); `make test-web-full` adds visual goldens, axe a11y, and a Firefox smoke. Run it after any `crates/web` change. Goldens live in `tests/visual/test_visual.py-snapshots/` and are captured at 1280x720 in Chromium with the English default; delete a golden to regenerate it after an intentional visual change, then review the new image before committing. The suite needs a published book with chapters (the Sitti Nurbaya seed) and Mailpit for the authed flow.
 
 ### Test Libraries
 * **Mocking:** `mockall` (declarative mock generation for trait ports).

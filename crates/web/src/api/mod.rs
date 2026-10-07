@@ -367,10 +367,47 @@ pub async fn me() -> Result<UserProfileDto, String> {
     get("/me").await
 }
 
+/// Changes the password; when the server revoked other sessions it returns
+/// a fresh pair, which replaces the now-dead local tokens.
 pub async fn change_password(
     req: &shared::ChangePasswordRequest,
-) -> Result<serde_json::Value, String> {
-    put("/me/password", req).await
+) -> Result<shared::PasswordChangedDto, String> {
+    let outcome: shared::PasswordChangedDto = put("/me/password", req).await?;
+    if let Some(tokens) = &outcome.tokens {
+        set_tokens(&tokens.access_token, &tokens.refresh_token);
+    }
+    Ok(outcome)
+}
+
+pub async fn my_streak() -> Result<shared::ReadingStreakDto, String> {
+    get("/me/streak").await
+}
+
+pub async fn admin_job(job_id: &str) -> Result<shared::JobStatusDto, String> {
+    get(&format!("/admin/jobs/{job_id}")).await
+}
+
+/// Copies text to the clipboard; false when the platform refuses.
+pub async fn copy_text(text: &str) -> bool {
+    let Some(navigator) = window().map(|w| w.navigator()) else {
+        return false;
+    };
+    wasm_bindgen_futures::JsFuture::from(navigator.clipboard().write_text(text))
+        .await
+        .is_ok()
+}
+
+/// Shares text through the Web Share API when the platform offers it.
+pub async fn share_text(title: &str, text: &str) -> bool {
+    let Some(navigator) = window().map(|w| w.navigator()) else {
+        return false;
+    };
+    let data = web_sys::ShareData::new();
+    data.set_title(title);
+    data.set_text(text);
+    wasm_bindgen_futures::JsFuture::from(navigator.share_with_data(&data))
+        .await
+        .is_ok()
 }
 
 pub async fn revoke_all() -> Result<serde_json::Value, String> {

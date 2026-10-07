@@ -2,12 +2,12 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Rotaria — Sirkulasi Buku-Buku Hebat</title>
-    <meta name="description" content="Rotaria — the circulation of great books. Public domain classics with vintage typography, reflowable reader, and quote discovery.">
+    <meta name="description" content="Rotaria — the circulation of great books. Public domain classics with literary typography, a paginated reader, offline reading, and quote discovery.">
     <link rel="icon" type="image/svg+xml" href="/assets/rotaria-windmill.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#9D5A3C" />
+    <meta name="theme-color" content="#1F1916" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -16,31 +16,21 @@
 
     <link data-trunk rel="copy-file" href="manifest.webmanifest" />
     <link data-trunk rel="copy-file" href="sw.js" />
+    <link data-trunk rel="copy-file" href="boot.js" />
     <link data-trunk rel="copy-dir" href="icons" data-target-path="icons" />
-    <script>
-        if ("serviceWorker" in navigator) {
-            window.addEventListener("load", () => {
-                navigator.serviceWorker.register("/sw.js").catch(() => {});
-            });
-        }
-    </script>
-    
-    <!-- Vintage Literary Fonts -->
+    <script src="/boot.js"></script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..700;1,400..700&family=Newsreader:ital,opsz,wght@0,6..72,300..800;1,6..72,300..800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
-    <!-- CSS Design System (Trunk Bundled) -->
+    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <link data-trunk rel="css" href="style/main.css" />
 
-    <!-- Vintage engravings served as static files -->
     <link data-trunk rel="copy-dir" href="../../assets/illustrations" data-target-path="assets" />
 
-    
-    <!-- WASM Link for Trunk -->
     <link data-trunk rel="rust" data-bin="web" />
 </head>
-<body class="theme-vintage-paper">
+<body>
     <div id="root"></div>
 </body>
 </html>

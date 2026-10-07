@@ -114,17 +114,18 @@ project-baca/
 
 ## 5. Frontend Leptos WASM & PWA Architecture
 
-* **Reflowable Paginated Layout:** Horizontal multi-column CSS splitting text into screen-sized pages.
-* **Anchor Positioning:** Reading position locked to DOM CFI character offsets, preserving location during device rotation.
-* **Offline Storage:** Downloaded chapters and WebP images stored in browser IndexedDB via `rexie`.
-* **Reactive i18n (`[ ID | EN ]`):** Immediate language switching via Leptos signals (`crates/web/src/i18n/mod.rs`, persisted as `rotaria_lang`) without full page reload.
+* **Shell and reader split:** `ShellLayout` (header, phone tab bar, auth sheet, toasts) wraps `/`, `/book/:id`, `/me`, `/admin`; `/read/:id` renders without chrome. Root contexts: one language signal (`i18n::provide_lang`), `Session` (token, profile, sheet state), `Toasts`, and the shell theme (`theme::ShellTheme`).
+* **Paginated reader:** chapter HTML flows into CSS columns whose gap equals twice the side padding, so one page stride is exactly the viewport width (one column, two from 1024px). Turns: tap zones, swipe, arrow keys. The position is anchored to the first visible paragraph (`p-N`), saved debounced after each turn (account via `PUT /progress/{book}`, guest via IndexedDB), and heartbeats report real elapsed seconds once a minute while the tab is visible.
+* **Offline Storage:** Downloaded chapters and book metadata stored in browser IndexedDB via `rexie`; the reader and shelf fall back to them when the network is gone.
+* **Reactive i18n (`[ ID | EN ]`):** Table-driven dictionary in `crates/web/src/i18n/mod.rs` (register: literate, "kamu"); default follows the browser language, persisted as `rotaria_lang`. Reader preferences persist as `rotaria_reader_prefs`, the shell theme as `rotaria_theme` (applied by `boot.js` before first paint).
 
-## 6. Visual Design Identity (Vintage Literary 1900–1950)
+## 6. Visual Design Identity (Vintage Literary, two surfaces)
 
-* **Color Palette:**
-  * Antique Paper (as built): `--color-paper-bg: #F9F6F0`, deep ink `--color-ink-primary: #2B2625`, Terracotta `--color-accent-terracotta: #9D5A3C` (slider accent, CTA pills).
-* **Typography:** `Newsreader` for body (`--font-serif-reading`), `EB Garamond` for display (`--font-serif-display`), `Courier Prime` for tool labels (`--font-mono`).
-* **Illustrations:** Classic Victorian and Edwardian cross-hatching engravings in `assets/illustrations/`.
+* **Espresso shell:** `--bg: #1F1916`, elevated `#29211C`, border `#362C27`, text `#F0EAE1`, clay accent `#CE734E`; Paper shell available via the header toggle (`data-theme="paper"`).
+* **Reading surfaces:** Paper `#F9F6F0`/`#2B2625`/`#9D5A3C`, Sepia `#EFE4CF`, Espresso `#1F1916`, chosen in the reader's type sheet.
+* **Typography:** `EB Garamond` display (`--font-display`), `Newsreader` reading body (`--font-reading`), `Plus Jakarta Sans` interface labels (`--font-ui`); fleuron `❖` as ornament; chapter numerals in roman.
+* **Shape and motion:** 20px card radius, pill controls, 44px touch targets; fade-up on mount, sheet slide-in, page-turn fade, all disabled under `prefers-reduced-motion`.
+* **Illustrations:** Classic pen-and-ink engravings in `assets/illustrations/`, shown as paper plates over the dark shell.
 
 ## 7. Infrastructure Services (`docker-compose.yml`)
 
@@ -132,7 +133,7 @@ project-baca/
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
 4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). *(Local `Caddyfile` host-run in Task 06; prod `Caddyfile.prod` + compose shipped in Task 07 BL-10 — real-domain `up --build` and `caddy validate` still pending, Task 09i.)*
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
@@ -142,7 +143,8 @@ project-baca/
 * **Makefile Automation:** Centralized command runners (`make dev-server`, `make dev-web`, `make migrate-up`, `make test-all`).
 * **API Documentation (`utoipa`):** Compile-time checked OpenAPI 3.1 schema serving Swagger UI at `/swagger-ui`.
 * **Structured Observability:** Tracing with automatic `x-request-id` propagation and NDJSON format via `LOG_FORMAT=json`.
-* **4-Tier Test Suite:** Smoke, integration, performance SLA (p95 < 50ms), and reliability tests.
+* **Test Layout:** Functional suites are modules of one binary, `crates/server/tests/it` (smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability); `performance_test` and `load_stress_test` stay separate so parallel functional tests cannot skew latency assertions. Debug builds keep `line-tables-only` debuginfo for workspace code and none for dependencies.
+* **Rate Limiting:** One Redis fixed-window engine (`middleware/rate_limit.rs`) behind three policies: auth (20/min per IP), AI search (10/min per user or guest IP), and public reads (`PUBLIC_RATE_LIMIT_PER_MINUTE`, off in dev, 600 in production compose).
 
 ## 9. Development Intelligence Architecture (Quad-Layer System One)
 

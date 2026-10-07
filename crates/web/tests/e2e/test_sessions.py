@@ -1,5 +1,4 @@
-"""Authed flow: OTP via Mailpit, PUT tap-to-save, sessions UI, cleanup."""
-import asyncio
+"""Authed flow: OTP via Mailpit, automatic progress save, shelf, cleanup."""
 import json
 import re
 import time
@@ -36,16 +35,17 @@ def _mailpit_otp(email: str, timeout_s: int = 15) -> str:
     raise AssertionError("OTP email never arrived in Mailpit")
 
 
-def test_authed_tap_save_sessions_cleanup(clean_page: Page, book_with_chapters: str):
+def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str):
     page = clean_page
     book_id = book_with_chapters
     detail = api_get(f"/books/{book_id}")
     ch_no = detail["chapters"][0]["chapter_number"]
 
     goto(page, "/")
-    page.click("text=Masuk" if page.query_selector("text=Masuk") else "text=Sign In")
+    page.click("text=Sign In")
     page.wait_for_timeout(500)
-    assert page.query_selector(".modal-vintage") is not None
+    assert page.query_selector(".sheet[role='dialog']") is not None
+    page.keyboard.press("Escape")
 
     email = f"e2e-{int(time.time())}@example.com"
     _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
@@ -62,10 +62,9 @@ def test_authed_tap_save_sessions_cleanup(clean_page: Page, book_with_chapters: 
     assert "E2E" in body_text
     assert "Sessions" in body_text
 
+    # Opening a chapter saves the position by itself (debounced), no tap needed.
     goto(page, f"/read/{book_id}?chapter={ch_no}")
-    page.wait_for_timeout(500)
-    page.click(".reader-status")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
     req = urllib.request.Request(
         f"{API}/progress/active",
         headers={"Authorization": f"Bearer {tokens['access_token']}"},
@@ -73,6 +72,7 @@ def test_authed_tap_save_sessions_cleanup(clean_page: Page, book_with_chapters: 
     with urllib.request.urlopen(req) as r:
         act = json.load(r)["data"]
     assert isinstance(act, dict) and act.get("book_id") == book_id
+    assert act.get("completion_percentage", 0) > 0
 
     req = urllib.request.Request(
         f"{API}/me", method="DELETE",
@@ -86,11 +86,12 @@ def test_authed_tap_save_sessions_cleanup(clean_page: Page, book_with_chapters: 
     assert_no_page_errors(page)
 
 
-def test_guest_profile_and_admin_form(clean_page: Page):
+def test_guest_profile_and_admin_guard(clean_page: Page):
     page = clean_page
     goto(page, "/me")
     assert "Sign in" in page.inner_text("body")
     goto(page, "/admin")
     page.wait_for_timeout(500)
-    assert page.query_selector('input[type="file"]') is not None
+    assert page.query_selector('input[type="file"]') is None, "guests never see the upload form"
+    assert "curators" in page.inner_text("body")
     assert_no_page_errors(page)

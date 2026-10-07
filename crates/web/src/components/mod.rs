@@ -1,5 +1,10 @@
-//! Shared UI components.
-
 pub mod auth;
+pub mod book_card;
 pub mod header;
+pub mod icons;
 pub mod insights;
+pub mod progress;
+pub mod session;
+pub mod shell;
+pub mod tabbar;
+pub mod toast;

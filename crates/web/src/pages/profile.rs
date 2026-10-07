@@ -1,46 +1,70 @@
-//! Profile: stats, streak, badges, saved quotes, logout (P4/P5/P6).
+//! Shelf and profile: streak, saved books, badges, quotes, sessions.
 
 use crate::api;
-use crate::components::header::SiteHeader;
+use crate::components::book_card::Cover;
+use crate::components::icons;
+use crate::components::session::use_session;
+use crate::components::toast::use_toasts;
+use crate::i18n::{use_lang, Lang};
+use crate::storage;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{SavedQuoteResponseDto, UserBadgeDto, UserProfileDto};
+use shared::{BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDto};
 
 #[component]
-pub fn ProfilePage() -> impl IntoView {
-    let (profile, set_profile) = signal(None::<UserProfileDto>);
-    let (badges, set_badges) = signal(Vec::<UserBadgeDto>::new());
-    let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
-    let (error, set_error) = signal(None::<String>);
+fn GuestShelf() -> impl IntoView {
+    let (lang, _) = use_lang();
+    let session = use_session();
+    view! {
+        <div class="empty-state" style="padding-top: 48px">
+            <img src="/assets/cozy-reader-armchair-owl.png" alt=""/>
+            <h1 class="section-title">{move || lang.get().text("shelf_title")}</h1>
+            <p>{move || lang.get().text("guest_shelf")}</p>
+            <div class="sheet-actions" style="justify-content: center">
+                <button class="btn btn-primary" on:click=move |_| session.open_sheet()>{move || lang.get().text("sign_in")}</button>
+                <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
+    let (lang, _) = use_lang();
+    let days = streak.current_streak_days;
+    let lit = days.clamp(0, 7) as usize;
+    let today_done = streak.today_seconds >= streak.daily_threshold_seconds;
+    view! {
+        <section class="streak-card" aria-label="Streak">
+            <div class="flame" aria-hidden="true">{icons::flame()}</div>
+            <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px">
+                <span class="count">{move || lang.get().text_with("streak_days", "n", &days.to_string())}</span>
+                <small>{move || if today_done { format!("{} XP \u{00B7} {}", streak.total_xp, lang.get().duration((streak.total_reading_seconds / 60) as i32)) } else { lang.get().text("streak_hint") }}</small>
+                <div class="week-dots" aria-hidden="true">
+                    {(0..7).map(|i| {
+                        let on = i < lit;
+                        view! { <span class:on=on></span> }
+                    }).collect::<Vec<_>>()}
+                </div>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn SessionsPanel() -> impl IntoView {
+    let (lang, _) = use_lang();
+    let session = use_session();
+    let toasts = use_toasts();
     let (current_pw, set_current_pw) = signal(String::new());
     let (new_pw, set_new_pw) = signal(String::new());
     let (revoke_others, set_revoke_others) = signal(true);
-    let (session_msg, set_session_msg) = signal(None::<String>);
+    let (busy, set_busy) = signal(false);
     let (revoke_armed, set_revoke_armed) = signal(false);
 
-    spawn_local(async move {
-        match api::me().await {
-            Ok(me) => set_profile.set(Some(me)),
-            Err(e) => set_error.set(Some(e)),
-        }
-        if let Ok(list) = api::my_badges().await {
-            set_badges.set(list);
-        }
-        if let Ok(saved) = api::my_quotes().await {
-            set_quotes.set(saved);
-        }
-    });
-
-    let logout = move |_| {
-        spawn_local(async move {
-            let _ = api::logout().await;
-            if let Some(window) = web_sys::window() {
-                let _ = window.location().set_href("/");
-            }
-        });
-    };
-
-    let change_password = move |_| {
+    let change_password = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        set_busy.set(true);
         spawn_local(async move {
             let req = shared::ChangePasswordRequest {
                 current_password: current_pw.get_untracked(),
@@ -49,12 +73,17 @@ pub fn ProfilePage() -> impl IntoView {
             };
             match api::change_password(&req).await {
                 Ok(_) => {
-                    set_session_msg.set(Some("Password changed.".to_string()));
+                    toasts.info(lang.get_untracked().text("password_changed"));
                     set_current_pw.set(String::new());
                     set_new_pw.set(String::new());
                 }
-                Err(e) => set_session_msg.set(Some(e)),
+                Err(e) => toasts.error(
+                    e.split_once(": ")
+                        .map(|(_, m)| m.to_string())
+                        .unwrap_or_else(|| lang.get_untracked().text("error_generic")),
+                ),
             }
+            set_busy.set(false);
         });
     };
 
@@ -68,83 +97,199 @@ pub fn ProfilePage() -> impl IntoView {
             match api::revoke_all().await {
                 Ok(_) => {
                     api::clear_token();
+                    session.refresh();
                     if let Some(window) = web_sys::window() {
                         let _ = window.location().set_href("/");
                     }
                 }
-                Err(e) => set_session_msg.set(Some(e)),
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
             }
         });
     };
 
     view! {
-        <div class="app-container">
-            <SiteHeader/>
-            {move || match profile.get() {
-                None => match error.get() {
-                    None => view! { <p class="hero-desc">"Loading profile…"</p> }.into_any(),
-                    Some(_) => view! {
-                        <section class="book-overview">
-                            <div class="catalog-section-title"><span>"Your Shelf"</span></div>
-                            <p class="hero-desc">"Sign in to see your shelf, streaks, and saved quotes."</p>
-                            <div class="book-actions">
-                                <a href="/" class="btn-read"><span>"Back to Catalog"</span></a>
-                            </div>
-                        </section>
-                    }.into_any(),
-                },
-                Some(me) => view! {
-                    <section>
-                        <div class="catalog-section-title"><span>{me.display_name.clone()}</span></div>
-                        <p class="book-author">{me.email.clone()}</p>
-                        <div class="book-actions">
-                            <button class="btn-ghost" on:click=logout>"Log Out"</button>
-                        </div>
-                        <div class="catalog-section-title"><span>"❖ Sessions"</span></div>
-                        <div class="session-panel">
-                            <label>
-                                "Current password"
-                                <input type="password" class="search-bar" prop:value=move || current_pw.get()
-                                    on:input=move |ev| set_current_pw.set(event_target_value(&ev))/>
-                            </label>
-                            <label>
-                                "New password (min 8 chars)"
-                                <input type="password" class="search-bar" prop:value=move || new_pw.get()
-                                    on:input=move |ev| set_new_pw.set(event_target_value(&ev))/>
-                            </label>
-                            <label class="session-check">
-                                <input type="checkbox" prop:checked=move || revoke_others.get()
-                                    on:change=move |ev| set_revoke_others.set(event_target_checked(&ev))/>
-                                "Sign out other sessions"
-                            </label>
-                            <div class="book-actions">
-                                <button class="btn-read" on:click=change_password>"Change Password"</button>
-                                <button class="btn-ghost" on:click=revoke_all>
-                                    {move || if revoke_armed.get() { "Click again to confirm" } else { "Revoke All Sessions" }}
-                                </button>
-                            </div>
-                            {move || session_msg.get().map(|m| view! {
-                                <p class="hero-desc">{m}</p>
-                            })}
-                        </div>
-                        <div class="catalog-section-title"><span>"❖ Badges"</span></div>
-                        <div class="book-grid">
-                            {badges.get().into_iter().map(|b| view! {
-                                <div class="book-card">
-                                    <div class="book-tag">{b.badge.title_en.clone()}</div>
-                                    <p class="book-synopsis">{b.badge.description_en.clone()}</p>
-                                    <div class="book-card-footer"><span>{format!("+{} XP", b.badge.xp_reward)}</span></div>
+        <section id="akun" class="card settings-list">
+            <h2 class="section-title">{move || lang.get().text("sessions")}</h2>
+            <form class="settings-list" on:submit=change_password>
+                <label class="field">
+                    {move || lang.get().text("current_password")}
+                    <input class="input" type="password" autocomplete="current-password" required prop:value=move || current_pw.get() on:input=move |ev| set_current_pw.set(event_target_value(&ev))/>
+                </label>
+                <label class="field">
+                    {move || lang.get().text("new_password")}
+                    <input class="input" type="password" autocomplete="new-password" required minlength="8" maxlength="128" prop:value=move || new_pw.get() on:input=move |ev| set_new_pw.set(event_target_value(&ev))/>
+                    <span class="form-hint">{move || lang.get().text("auth_password_hint")}</span>
+                </label>
+                <label class="field" style="flex-direction: row; align-items: center; gap: 10px">
+                    <input type="checkbox" prop:checked=move || revoke_others.get() on:change=move |ev| set_revoke_others.set(event_target_checked(&ev))/>
+                    {move || lang.get().text("revoke_others")}
+                </label>
+                <div class="sheet-actions">
+                    <button type="submit" class="btn btn-primary" disabled=move || busy.get()>{move || lang.get().text("change_password")}</button>
+                </div>
+            </form>
+            <div class="sheet-actions">
+                <button class="btn btn-ghost" on:click=revoke_all>
+                    {move || if revoke_armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_all") }}
+                </button>
+                <button class="btn btn-ghost" on:click=move |_| session.sign_out()>{move || lang.get().text("sign_out")}</button>
+            </div>
+        </section>
+    }
+}
+
+fn badge_title(badge: &UserBadgeDto, lang: Lang) -> String {
+    match lang {
+        Lang::Id => badge.badge.title_id.clone(),
+        Lang::En => badge.badge.title_en.clone(),
+    }
+}
+
+fn badge_description(badge: &UserBadgeDto, lang: Lang) -> String {
+    match lang {
+        Lang::Id => badge.badge.description_id.clone(),
+        Lang::En => badge.badge.description_en.clone(),
+    }
+}
+
+#[component]
+pub fn ProfilePage() -> impl IntoView {
+    let (lang, _) = use_lang();
+    let session = use_session();
+    let toasts = use_toasts();
+    let (streak, set_streak) = signal(None::<ReadingStreakDto>);
+    let (badges, set_badges) = signal(Vec::<UserBadgeDto>::new());
+    let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
+    let (offline_books, set_offline_books) = signal(Vec::<BookDetailDto>::new());
+
+    Effect::new(move || {
+        if !session.authed.get() {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(s) = api::my_streak().await {
+                set_streak.set(Some(s));
+            }
+            if let Ok(list) = api::my_badges().await {
+                set_badges.set(list);
+            }
+            if let Ok(saved) = api::my_quotes().await {
+                set_quotes.set(saved);
+            }
+        });
+    });
+
+    spawn_local(async move {
+        if let Ok(books) = storage::get_all::<BookDetailDto>(storage::STORE_OFFLINE_BOOKS).await {
+            set_offline_books.set(books);
+        }
+    });
+
+    let share = move |text: String| {
+        spawn_local(async move {
+            let body = format!("\u{201C}{text}\u{201D} \u{2014} Rotaria");
+            if !api::share_text("Rotaria", &body).await && api::copy_text(&body).await {
+                toasts.info(lang.get_untracked().text("quote_saved"));
+            }
+        });
+    };
+
+    view! {
+        <div class="container">
+            {move || if !session.authed.get() {
+                view! { <GuestShelf/> }.into_any()
+            } else {
+                view! {
+                    <div style="display: flex; flex-direction: column; gap: 28px; padding-top: 20px">
+                        <header class="profile-head">
+                            <div style="display: flex; align-items: center; gap: 12px; min-width: 0">
+                                <div class="avatar" aria-hidden="true">{move || session.initial()}</div>
+                                <div style="min-width: 0">
+                                    <h1 class="section-title" style="font-size: 1.4rem">{move || session.profile.get().map(|p| p.display_name).unwrap_or_default()}</h1>
+                                    <p class="form-hint">{move || session.profile.get().map(|p| format!("{} {}", lang.get().text("member_since"), p.created_at.format("%b %Y"))).unwrap_or_default()}</p>
                                 </div>
-                            }).collect::<Vec<_>>()}
-                        </div>
-                        <div class="catalog-section-title"><span>"❖ Saved Quotes"</span></div>
-                        <ol class="quote-results">
-                            {quotes.get().into_iter().map(|q| view! {
-                                <li class="quote-row"><p>{q.quote_text.clone()}</p></li>
-                            }).collect::<Vec<_>>()}
-                        </ol>
-                    </section>
-                }.into_any(),
+                            </div>
+                            <a href="#akun" class="btn-icon" aria-label=move || lang.get().text("sessions")>{icons::settings()}</a>
+                        </header>
+
+                        {move || match streak.get() {
+                            Some(s) => view! { <StreakCard streak=s/> }.into_any(),
+                            None => view! { <div class="skeleton" style="height: 110px"></div> }.into_any(),
+                        }}
+
+                        <section>
+                            <div class="section-head">
+                                <h2 class="section-title">{move || lang.get().text("offline_books")}</h2>
+                                <span class="form-hint">{move || offline_books.get().len()}</span>
+                            </div>
+                            {move || if offline_books.get().is_empty() {
+                                view! { <p class="form-hint">{move || lang.get().text("save_offline")}</p> }.into_any()
+                            } else {
+                                view! {
+                                    <div class="book-grid">
+                                        {offline_books.get().into_iter().map(|b| {
+                                            let href = format!("/book/{}", b.id);
+                                            view! {
+                                                <a href=href class="book-card">
+                                                    <Cover title=b.title.clone() cover_url=b.cover_url.clone() badge="offline"/>
+                                                    <div><h3 class="book-title">{b.title.clone()}</h3><p class="book-author">{b.author.clone()}</p></div>
+                                                </a>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                }.into_any()
+                            }}
+                        </section>
+
+                        <section>
+                            <div class="section-head"><h2 class="section-title">{move || lang.get().text("badges")}</h2></div>
+                            {move || if badges.get().is_empty() {
+                                view! { <p class="form-hint">{move || lang.get().text("no_badges")}</p> }.into_any()
+                            } else {
+                                view! {
+                                    <div class="badge-grid">
+                                        {badges.get().iter().enumerate().map(|(i, b)| view! {
+                                            <article class="badge-card">
+                                                <span class="numeral">{crate::format::roman(i as i32 + 1)}</span>
+                                                <h3>{badge_title(b, lang.get())}</h3>
+                                                <p>{badge_description(b, lang.get())}</p>
+                                                <span class="tag">{format!("+{} XP", b.badge.xp_reward)}</span>
+                                            </article>
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                }.into_any()
+                            }}
+                        </section>
+
+                        <section>
+                            <div class="section-head"><h2 class="section-title">{move || lang.get().text("saved_quotes")}</h2></div>
+                            {move || if quotes.get().is_empty() {
+                                view! { <p class="form-hint">{move || lang.get().text("no_quotes")}</p> }.into_any()
+                            } else {
+                                view! {
+                                    <ol class="quote-results">
+                                        {quotes.get().into_iter().map(|q| {
+                                            let text = q.quote_text.clone();
+                                            let href = format!("/book/{}", q.book_id);
+                                            view! {
+                                                <li class="quote-row">
+                                                    <div class="quote-meta"><span>{q.created_at.format("%d %b %Y").to_string()}</span><span aria-hidden="true">"\u{2756}"</span></div>
+                                                    <blockquote>{q.quote_text.clone()}</blockquote>
+                                                    <div class="quote-actions">
+                                                        <button class="btn btn-primary" on:click=move |_| share(text.clone())>{icons::share()}<span>{move || lang.get().text("quote_share")}</span></button>
+                                                        <a href=href class="btn btn-ghost">{move || lang.get().text("quote_jump")}</a>
+                                                    </div>
+                                                </li>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </ol>
+                                }.into_any()
+                            }}
+                        </section>
+
+                        <SessionsPanel/>
+                    </div>
+                }.into_any()
             }}
         </div>
     }

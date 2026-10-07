@@ -5,35 +5,63 @@
 
 use std::collections::HashSet;
 
-use crate::i18n::Lang;
+use crate::i18n::{entry_count, Lang};
 use crate::storage::OfflineChapterRecord;
 use shared::ApiResponse;
 
-/// The 18-key dictionary contract: every key renders non-empty in BOTH
-/// languages (guards the 19-key drift that once shipped).
+/// Every dictionary key renders non-empty in BOTH languages and the key
+/// set is identical, so a half-translated string can never ship.
 #[test]
-fn test_i18n_dictionary_has_18_nonempty_keys_both_langs() {
+fn test_i18n_dictionary_complete_in_both_langs() {
     for lang in [Lang::Id, Lang::En] {
         let dict = lang.dict();
-        assert_eq!(dict.len(), 18, "dictionary must hold exactly 18 keys");
+        assert_eq!(dict.len(), entry_count(), "duplicate dictionary key");
         for (k, v) in &dict {
-            assert!(
-                !v.trim().is_empty(),
-                "key {k} is empty for {:?}",
-                lang.code()
-            );
+            assert!(!v.trim().is_empty(), "key {k} is empty for {}", lang.code());
         }
     }
     let id_keys: HashSet<_> = Lang::Id.dict().keys().cloned().collect();
     let en_keys: HashSet<_> = Lang::En.dict().keys().cloned().collect();
     assert_eq!(id_keys, en_keys, "ID and EN must share the key set");
+    // Unknown keys echo themselves so a typo is visible on screen.
+    assert_eq!(Lang::En.text("no_such_key"), "no_such_key");
 }
 
-/// `Lang::toggle` flips (guards the toggle-buta bug: EN click became ID).
 #[test]
-fn test_lang_toggle_flips() {
+fn test_i18n_placeholders_and_durations() {
+    assert_eq!(
+        Lang::En.text_with("page_of", "a", "4").replace("{b}", "18"),
+        "Page 4 of 18"
+    );
+    assert_eq!(Lang::Id.duration(130), "~2 jam 10 mnt");
+    assert_eq!(Lang::En.duration(45), "~45 min");
+    assert_eq!(Lang::En.duration(120), "~2 h");
+}
+
+/// `Lang::toggle` flips, and the browser language picks the default.
+#[test]
+fn test_lang_toggle_and_browser_default() {
     assert_eq!(Lang::Id.toggle(), Lang::En);
     assert_eq!(Lang::En.toggle(), Lang::Id);
+    assert_eq!(Lang::from_browser(Some("id-ID")), Lang::Id);
+    assert_eq!(Lang::from_browser(Some("en-US")), Lang::En);
+    assert_eq!(Lang::from_browser(None), Lang::En);
+}
+
+/// Reader preferences clamp to the supported range when loaded from a
+/// stale or hand-edited store.
+#[test]
+fn test_reader_prefs_clamp() {
+    use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, LINE_HEIGHT_MIN};
+    let prefs = ReaderPrefs {
+        theme: ReadingTheme::Sepia,
+        font_size: 99,
+        line_height: 1,
+    }
+    .clamped();
+    assert_eq!(prefs.font_size, FONT_SIZE_MAX);
+    assert_eq!(prefs.line_height, LINE_HEIGHT_MIN);
+    assert_eq!(prefs.line_height_css(), "1.5");
 }
 
 /// Typed offline chapter records survive a JSON round-trip with exact

@@ -71,7 +71,7 @@ def test_axe_admin(clean_page: Page):
 def test_axe_quote_modal(clean_page: Page, book_with_chapters: str):
     page = clean_page
     goto(page, f"/book/{book_with_chapters}")
-    page.click("text=Quote Finder")
+    page.click("text=Find a quote")
     page.wait_for_timeout(800)
     violations = _scan(page)
     assert violations == [], (
