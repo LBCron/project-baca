@@ -4057,6 +4057,7 @@ dependencies = [
  "axum",
  "chrono",
  "claims",
+ "domain",
  "infra",
  "jsonwebtoken",
  "mockall",

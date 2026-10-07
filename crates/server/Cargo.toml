@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 shared = { workspace = true, features = ["openapi"] }
 infra = { workspace = true }
+domain = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }

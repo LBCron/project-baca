@@ -75,7 +75,9 @@ Vector search memory scales with corpus size. Project Baca uses a scoped search 
 
 1. **Message Acknowledgment:** Tasks are only removed from the pending list after worker calls `XACK`.
 2. **Dead Worker Recovery:** Crashed jobs past `RECLAIM_IDLE_MS` (default 300000 ms) are reclaimed via `XAUTOCLAIM`.
-3. **Dead-Letter Queue (DLQ):** Corrupt files failing after 3 retries move to `stream:epub_ingestion:dlq` for curator inspection without stalling the main queue.
+3. **Dead-Letter Queue (DLQ):** Corrupt files failing after 3 retries move to `stream:epub_ingestion:dlq` for curator inspection without stalling the main queue; `POST /api/v1/admin/dlq/{id}/replay` re-queues one entry under its original job id.
+4. **Transient Gemini failures:** every embedding and generation call retries up to three times with quadratic backoff (1 s, 4 s, 9 s, up to 20% jitter), honouring `Retry-After` when the API sends one (capped at 60 s); client errors (4xx other than 429) fail at once. Logs carry the job id and model, never the key.
+5. **Recap context:** the spoiler-free recap for chapter *n* is built from the key concepts of chapters 1..n-1 plus the current chapter text, trimmed to the 12k-character prompt budget (current chapter keeps at least 4k; the oldest summaries drop first).
 
 ## 5. Horizontal Scaling Roadmap (Phase 2)
 

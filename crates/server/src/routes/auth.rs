@@ -6,8 +6,8 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::State,
-    http::{HeaderMap, StatusCode},
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post, put},
     Json, Router,
@@ -15,20 +15,23 @@ use axum::{
 use chrono::Utc;
 use infra::{
     activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
-    entities::users, find_user_by_email, find_user_by_id, generate_access_token,
-    generate_access_token_issued_at, generate_and_store_otp, generate_refresh_token,
-    hash_password_async, revoke_all_user_sessions, revoke_family_on_reuse, revoke_refresh_token,
-    send_otp_email, store_refresh_token, update_inactive_credentials, update_user_password,
-    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
-    verify_and_consume_otp, verify_password_async, RefreshOutcome, DUMMY_ARGON2_HASH,
+    entities::users, find_user_by_email, find_user_by_id, generate_and_store_otp,
+    generate_refresh_token, hash_password_async, issue_access_token, list_sessions,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
+    revoke_refresh_token, revoke_session, send_otp_email, store_refresh_token, touch_session,
+    update_inactive_credentials, update_user_password, update_user_profile,
+    validate_and_rotate_refresh_token, verify_access_token, verify_and_consume_otp,
+    verify_password_async, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
+use serde::Deserialize;
 use shared::{
     ApiResponse, AppError, ChangePasswordRequest, ErrorPayload, LoginRequest, PasswordChangedDto,
-    RefreshTokenRequest, SignupRequest, TokenResponse, UpdateProfileRequest, UserProfileDto,
-    VerifyOtpRequest,
+    RefreshTokenRequest, SessionDto, SignupRequest, TokenResponse, UpdateProfileRequest,
+    UserProfileDto, VerifyOtpRequest,
 };
 use std::sync::Arc;
+use uuid::Uuid;
 use validator::Validate;
 
 const INVALID_CREDENTIALS: &str = "Invalid email or password";
@@ -38,13 +41,30 @@ fn now_secs() -> usize {
 }
 
 /// Signs a fresh access token and persists a new refresh token for `user`.
+/// Device facts recorded with a new session so the reader can recognise it
+/// on the shelf: browser and platform from the User-Agent, a coarse network
+/// prefix from the client address.
+fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let ip = client_ip_from_headers(headers, state.config.server.trust_proxy_headers);
+    SessionMeta {
+        device: domain::device_label(user_agent),
+        ip_prefix: domain::ip_prefix(&ip),
+        jti,
+    }
+}
+
 async fn issue_token_pair(
     state: &AppState,
     redis: &mut redis::aio::MultiplexedConnection,
     user: &users::Model,
     issued_at: usize,
+    headers: &HeaderMap,
 ) -> Result<TokenResponse, HttpError> {
-    let access_token = generate_access_token_issued_at(
+    let (access_token, jti) = issue_access_token(
         user.id,
         &user.email,
         &user.role,
@@ -60,6 +80,7 @@ async fn issue_token_pair(
         &refresh_token,
         user.id,
         state.config.auth.refresh_expiry_days,
+        session_meta(state, headers, jti),
     )
     .await
     .map_err(HttpError::from)?;
@@ -229,12 +250,14 @@ pub async fn signup(
     request_body = VerifyOtpRequest,
     responses(
         (status = 200, description = "Verification successful, JWT tokens issued", body = ApiResponse<TokenResponse>),
-        (status = 400, description = "Invalid or expired OTP", body = ApiResponse<ErrorPayload>)
+        (status = 400, description = "Invalid or expired OTP", body = ApiResponse<ErrorPayload>),
+        (status = 429, description = "Code locked after three misses; Retry-After says when to try again", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
 )]
 pub async fn verify_otp(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<VerifyOtpRequest>,
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
@@ -255,7 +278,8 @@ pub async fn verify_otp(
         .await
         .map_err(HttpError::from)?;
 
-    let response = issue_token_pair(&state, &mut redis_conn, &updated_user, now_secs()).await?;
+    let response =
+        issue_token_pair(&state, &mut redis_conn, &updated_user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -344,7 +368,7 @@ pub async fn login(
         ])
         .await;
 
-    let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs()).await?;
+    let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -402,14 +426,22 @@ pub async fn refresh(
         )));
     }
 
-    let access_token = generate_access_token(
+    let (access_token, jti) = issue_access_token(
         user.id,
         &user.email,
         &user.role,
         state.config.jwt_secret(),
         state.config.auth.access_expiry_minutes,
+        now_secs(),
     )
     .map_err(HttpError::from)?;
+    touch_session(
+        &mut redis_conn,
+        &new_refresh_token,
+        jti,
+        state.config.auth.refresh_expiry_days,
+    )
+    .await;
 
     let response = TokenResponse {
         access_token,
@@ -539,6 +571,7 @@ pub async fn update_me(
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
+    headers: HeaderMap,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Response, HttpError> {
     req.validate().map_err(HttpError::from)?;
@@ -612,7 +645,7 @@ pub async fn change_password(
         .map_err(HttpError::from)?;
         // Stamped one second past the revocation cut, which compares whole
         // seconds; otherwise the fresh pair would be born revoked.
-        Some(issue_token_pair(&state, &mut redis_conn, &user, now_secs() + 1).await?)
+        Some(issue_token_pair(&state, &mut redis_conn, &user, now_secs() + 1, &headers).await?)
     } else {
         None
     };
@@ -680,22 +713,127 @@ pub async fn delete_me(
 pub async fn revoke_all(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
+    Query(query): Query<RevokeAllQuery>,
 ) -> Result<Response, HttpError> {
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
+    let access_ttl = state.config.auth.access_expiry_minutes * 60;
 
-    revoke_all_user_sessions(
-        &mut redis_conn,
-        auth.id,
-        state.config.auth.access_expiry_minutes * 60,
-    )
-    .await
-    .map_err(HttpError::from)?;
+    if query.keep_current.unwrap_or(false) {
+        let revoked = revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, access_ttl)
+            .await
+            .map_err(HttpError::from)?;
+        return Ok((
+            StatusCode::OK,
+            Json(ApiResponse::success(serde_json::json!({
+                "message": "Other sessions have been revoked",
+                "revoked": revoked
+            }))),
+        )
+            .into_response());
+    }
+
+    revoke_all_user_sessions(&mut redis_conn, auth.id, access_ttl)
+        .await
+        .map_err(HttpError::from)?;
 
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(serde_json::json!({
             "message": "All sessions have been revoked successfully"
         }))),
+    )
+        .into_response())
+}
+
+/// `keep_current=true` signs out every other device but the caller's.
+#[derive(Debug, Deserialize)]
+pub struct RevokeAllQuery {
+    keep_current: Option<bool>,
+}
+
+/// The caller's signed-in devices, most recently seen first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/sessions",
+    responses(
+        (status = 200, description = "Live sessions, the current one flagged", body = Vec<SessionDto>),
+        (status = 401, description = "Authentication required")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "User Management"
+)]
+pub async fn list_my_sessions(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+) -> Result<Response, HttpError> {
+    let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
+    let mut sessions: Vec<SessionDto> = list_sessions(&mut redis_conn, auth.id)
+        .await
+        .into_iter()
+        .map(|(id, record)| match record {
+            Some(r) => SessionDto {
+                id,
+                device: r.device,
+                ip_prefix: r.ip_prefix,
+                created_at: chrono::DateTime::from_timestamp(r.created_at, 0).unwrap_or_default(),
+                last_seen_at: chrono::DateTime::from_timestamp(r.last_seen_at, 0)
+                    .unwrap_or_default(),
+                current: r.jti == auth.jti,
+            },
+            None => SessionDto {
+                id,
+                device: String::new(),
+                ip_prefix: String::new(),
+                created_at: chrono::DateTime::<Utc>::default(),
+                last_seen_at: chrono::DateTime::<Utc>::default(),
+                current: false,
+            },
+        })
+        .collect();
+    sessions.sort_by(|a, b| {
+        b.current
+            .cmp(&a.current)
+            .then(b.last_seen_at.cmp(&a.last_seen_at))
+    });
+    Ok((StatusCode::OK, Json(ApiResponse::success(sessions))).into_response())
+}
+
+/// Signs one device out: its refresh token dies and its last access token is
+/// blacklisted. Revoking the current session signs the caller out too.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/me/sessions/{session_id}",
+    params(("session_id" = String, Path, description = "Session id from the listing")),
+    responses(
+        (status = 200, description = "Session revoked"),
+        (status = 401, description = "Authentication required"),
+        (status = 404, description = "No such session for this account")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "User Management"
+)]
+pub async fn revoke_my_session(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+    Path(session_id): Path<String>,
+) -> Result<Response, HttpError> {
+    let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
+    let revoked = revoke_session(
+        &mut redis_conn,
+        auth.id,
+        &session_id,
+        state.config.auth.access_expiry_minutes * 60,
+    )
+    .await
+    .map_err(HttpError::from)?;
+    if !revoked {
+        return Err(HttpError(AppError::NotFound(
+            "Session not found".to_string(),
+        )));
+    }
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse::success(serde_json::json!({ "revoked": true }))),
     )
         .into_response())
 }
@@ -718,6 +856,8 @@ pub fn user_routes() -> Router<Arc<AppState>> {
         .route("/", patch(update_me))
         .route("/", delete(delete_me))
         .route("/password", put(change_password))
+        .route("/sessions", get(list_my_sessions))
+        .route("/sessions/{session_id}", delete(revoke_my_session))
         .route("/badges", get(crate::routes::list_user_badges))
         .route("/streak", get(crate::routes::get_my_streak))
 }

@@ -139,7 +139,8 @@ test-web:
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/ component/ integration/ --browser chromium -q
 
 test-web-full:
-	@echo "Web pyramid + visual + a11y + firefox smoke..."
+	@echo "Web pyramid + visual + a11y + firefox smoke + strict-CSP shell check..."
+	@python3 scripts/externalize_inline_scripts.py --check crates/web/dist
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest . --browser chromium -q
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/test_smoke.py --browser chromium --browser firefox -q
 
@@ -213,8 +214,13 @@ prod-logs:
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
 purge-test-debris:
-	@echo "Purging test debris (pending PEL, draft Sherlock/scan rows, PKfake objects)..."
+	@echo "Purging test debris (pending PEL, probe drafts, PKfake objects, seed survivors)..."
 	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python ../scripts/purge_test_debris.py
+
+seed-dev:
+	@echo "Seeding the development catalog (four CC0 works with fixed ids)..."
+	@docker exec -i project_baca_db psql -U baca_user -d project_baca_db -v ON_ERROR_STOP=1 -q < scripts/seed_dev_catalog.sql
+	@echo "Seeded. The web suite pins a0000000-0000-4000-8000-000000000001."
 
 # Clean build artifacts
 clean:
@@ -222,5 +228,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

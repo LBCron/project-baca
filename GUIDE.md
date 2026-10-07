@@ -80,7 +80,7 @@ make worker-once      # process a single queued job then exit
 make worker           # long-running consumer
 ```
 Worker settings via `.env`: `GEMINI_API_KEY`, `LLM_MODEL_NAME` (default `gemini-flash-latest`), `RECLAIM_IDLE_MS` (default 300000). Canonical stream `stream:epub_ingestion`, DLQ `stream:epub_ingestion:dlq`.
-Test debris (pending PEL, draft probe rows, fake MinIO objects) accumulates on the shared dev stack; clean it with `make purge-test-debris` (dev-only).
+Server tests register every row they seed and delete them at the end (`TestHarness::track_*` + `harness.cleanup()`), so a green run leaves the database as it found it. Survivors of a panicked run, probe drafts, and fake MinIO objects are swept by `make purge-test-debris` (dev-only; it recognises test-only cover hosts, source markers, and email domains). `make seed-dev` installs four CC0 works with fixed ids so the local catalog reads like a library; the web suite pins the first of them.
 
 ## 5. Testing & Quality Assurance
 
@@ -105,7 +105,7 @@ make test-web-full     # + visual goldens + axe a11y + firefox smoke
 ```
 
 ### Web Regression Gate
-`make test-web` runs `crates/web/tests/` (pytest pyramid: e2e + component gallery + API contracts + unit); `make test-web-full` adds visual goldens, axe a11y, and a Firefox smoke. Run it after any `crates/web` change. Goldens live in `tests/visual/test_visual.py-snapshots/` and are captured at 1280x720 in Chromium with the English default; delete a golden to regenerate it after an intentional visual change, then review the new image before committing. The suite needs a published book with chapters (the Sitti Nurbaya seed) and Mailpit for the authed flow.
+`make test-web` runs `crates/web/tests/` (pytest pyramid: e2e + component gallery + API contracts + unit); `make test-web-full` adds visual goldens, axe a11y, and a Firefox smoke. Run it after any `crates/web` change. Goldens live in `tests/visual/test_visual.py-snapshots/` and are captured at 1280x720 in Chromium with the English default; delete a golden to regenerate it after an intentional visual change, then review the new image before committing. The suite pins the dev seed book (`make seed-dev`, id `a0000000-0000-4000-8000-000000000001`) and needs Mailpit for the authed flows; `make test-web-full` also fails when `crates/web/dist/index.html` still carries an inline script, since the edge CSP allows none.
 
 ### Test Libraries
 * **Mocking:** `mockall` (declarative mock generation for trait ports).

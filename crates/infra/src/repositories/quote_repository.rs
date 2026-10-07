@@ -177,6 +177,29 @@ pub async fn save_quote(
     quote_text: &str,
     image_card_url: Option<&str>,
 ) -> Result<(), AppError> {
+    insert_quote(
+        db,
+        id,
+        user_id,
+        book_id,
+        chapter_id,
+        quote_text,
+        image_card_url,
+    )
+    .await
+}
+
+/// One insert statement shared by the single save and the batch, so both
+/// write the same row through whatever connection they hold.
+async fn insert_quote<C: ConnectionTrait>(
+    conn: &C,
+    id: Uuid,
+    user_id: Uuid,
+    book_id: Uuid,
+    chapter_id: Uuid,
+    quote_text: &str,
+    image_card_url: Option<&str>,
+) -> Result<(), AppError> {
     let sql = r#"
         INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, image_card_url, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -196,11 +219,89 @@ pub async fn save_quote(
         ],
     );
 
-    db.execute(stmt)
+    conn.execute(stmt)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to save quote: {e}")))?;
 
     Ok(())
+}
+
+/// An identical quote the user already keeps for this chapter, if any.
+async fn find_saved_quote_duplicate<C: ConnectionTrait>(
+    conn: &C,
+    user_id: Uuid,
+    book_id: Uuid,
+    chapter_id: Uuid,
+    quote_text: &str,
+) -> Result<Option<Uuid>, AppError> {
+    #[derive(Debug, FromQueryResult)]
+    struct IdRow {
+        id: Uuid,
+    }
+
+    let stmt = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        "SELECT id FROM saved_quotes WHERE user_id = $1 AND book_id = $2 AND chapter_id = $3 AND quote_text = $4 LIMIT 1",
+        [
+            sea_orm::Value::from(user_id),
+            sea_orm::Value::from(book_id),
+            sea_orm::Value::from(chapter_id),
+            sea_orm::Value::from(quote_text),
+        ],
+    );
+    IdRow::find_by_statement(stmt)
+        .one(conn)
+        .await
+        .map(|row| row.map(|r| r.id))
+        .map_err(|e| AppError::Internal(format!("Failed to check saved quote: {e}")))
+}
+
+/// What happened to one quote of a batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchQuoteOutcome {
+    Saved(Uuid),
+    Duplicate(Uuid),
+}
+
+/// Saves several already-validated quotes in one transaction. An identical
+/// quote on the shelf is reported, not duplicated, so a merge can be replayed.
+pub async fn save_quotes_batch(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+    items: &[(Uuid, Uuid, String)],
+    card_url: impl Fn(Uuid) -> String,
+) -> Result<Vec<BatchQuoteOutcome>, AppError> {
+    use sea_orm::TransactionTrait;
+
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to open quote transaction: {e}")))?;
+    let mut outcomes = Vec::with_capacity(items.len());
+    for (book_id, chapter_id, text) in items {
+        if let Some(existing) =
+            find_saved_quote_duplicate(&txn, user_id, *book_id, *chapter_id, text).await?
+        {
+            outcomes.push(BatchQuoteOutcome::Duplicate(existing));
+            continue;
+        }
+        let id = Uuid::new_v4();
+        insert_quote(
+            &txn,
+            id,
+            user_id,
+            *book_id,
+            *chapter_id,
+            text,
+            Some(&card_url(id)),
+        )
+        .await?;
+        outcomes.push(BatchQuoteOutcome::Saved(id));
+    }
+    txn.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to commit quote batch: {e}")))?;
+    Ok(outcomes)
 }
 
 /// Retrieve single saved quote by its ID, scoped to the owning user.

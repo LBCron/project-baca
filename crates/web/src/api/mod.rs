@@ -202,6 +202,25 @@ async fn post_once<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> R
     })
 }
 
+async fn patch<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
+    let url = format!("{}{path}", api_base());
+    let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let resp = authed_send(&|| {
+        let (url, json) = (url.clone(), json.clone());
+        Box::pin(async move {
+            authed(Request::patch(&url))
+                .header("Content-Type", "application/json")
+                .body(json)
+                .map_err(|e| format!("{e:?}"))?
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
+}
+
 async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
     let url = format!("{}{path}", api_base());
     let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
@@ -387,6 +406,51 @@ pub async fn admin_job(job_id: &str) -> Result<shared::JobStatusDto, String> {
     get(&format!("/admin/jobs/{job_id}")).await
 }
 
+pub const ADMIN_PAGE_SIZE: usize = 30;
+
+pub async fn admin_books(
+    status: Option<&str>,
+    cursor: Option<uuid::Uuid>,
+) -> Result<Vec<shared::AdminBookRowDto>, String> {
+    let mut path = format!("/admin/books?limit={ADMIN_PAGE_SIZE}");
+    if let Some(status) = status {
+        path.push_str(&format!("&status={status}"));
+    }
+    if let Some(cursor) = cursor {
+        path.push_str(&format!("&cursor={cursor}"));
+    }
+    get(&path).await
+}
+
+pub async fn admin_set_status(
+    book_id: uuid::Uuid,
+    status: &str,
+) -> Result<shared::AdminBookRowDto, String> {
+    patch(
+        &format!("/admin/books/{book_id}"),
+        &shared::AdminBookPatchRequest {
+            status: status.to_string(),
+        },
+    )
+    .await
+}
+
+pub async fn admin_dlq() -> Result<Vec<shared::DlqEntryDto>, String> {
+    get("/admin/dlq?limit=100").await
+}
+
+pub async fn admin_replay(entry_id: &str) -> Result<shared::DlqReplayResponseDto, String> {
+    post(
+        &format!("/admin/dlq/{entry_id}/replay"),
+        &serde_json::json!({}),
+    )
+    .await
+}
+
+pub async fn admin_dropoff(book_id: uuid::Uuid) -> Result<Vec<shared::DropOffPointDto>, String> {
+    get(&format!("/admin/analytics/drop-off?book_id={book_id}")).await
+}
+
 /// Copies text to the clipboard; false when the platform refuses.
 pub async fn copy_text(text: &str) -> bool {
     let Some(navigator) = window().map(|w| w.navigator()) else {
@@ -410,8 +474,36 @@ pub async fn share_text(title: &str, text: &str) -> bool {
         .is_ok()
 }
 
-pub async fn revoke_all() -> Result<serde_json::Value, String> {
-    let url = format!("{}/auth/revoke-all", api_base());
+pub async fn my_sessions() -> Result<Vec<shared::SessionDto>, String> {
+    get("/me/sessions").await
+}
+
+pub async fn revoke_session(session_id: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/me/sessions/{session_id}", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::delete(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
+}
+
+/// `keep_current` signs every other device out while this one stays in.
+pub async fn revoke_all(keep_current: bool) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "{}/auth/revoke-all{}",
+        api_base(),
+        if keep_current {
+            "?keep_current=true"
+        } else {
+            ""
+        }
+    );
     let resp = authed_send(&|| {
         let url = url.clone();
         Box::pin(async move {
@@ -445,6 +537,12 @@ pub async fn save_quote(
 
 pub async fn my_quotes() -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
     get("/quotes").await
+}
+
+pub async fn save_quotes_batch(
+    req: &shared::SaveQuotesBatchRequest,
+) -> Result<shared::SaveQuotesBatchResponseDto, String> {
+    post("/quotes/save-batch", req).await
 }
 
 /// One unsent reading-progress write, replayed FIFO when connectivity returns.

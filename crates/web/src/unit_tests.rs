@@ -42,6 +42,9 @@ fn test_i18n_placeholders_and_durations() {
     assert_eq!(Lang::Id.month_year(october), "Okt 2026");
     assert_eq!(Lang::En.date_short(october), "8 Oct 2026");
     assert_eq!(Lang::Id.month_short(0), "Jan");
+    assert_eq!(Lang::Id.wait_text(300), "5 menit");
+    assert_eq!(Lang::En.wait_text(61), "2 minutes");
+    assert_eq!(Lang::En.wait_text(0), "1 seconds");
 }
 
 /// `Lang::toggle` flips, and the browser language picks the default.
@@ -68,6 +71,22 @@ fn test_reader_prefs_clamp() {
     assert_eq!(prefs.font_size, FONT_SIZE_MAX);
     assert_eq!(prefs.line_height, LINE_HEIGHT_MIN);
     assert_eq!(prefs.line_height_css(), "1.5");
+}
+
+/// The local quote key is stable for the same text (whitespace aside) and
+/// differs per text, so a repeated guest save overwrites instead of piling up.
+#[test]
+fn test_local_quote_key_is_stable_and_distinct() {
+    use crate::storage::local_quote_key;
+    let book = uuid::Uuid::new_v4();
+    let chapter = uuid::Uuid::new_v4();
+    let a = local_quote_key(book, chapter, "Kata-kata lebih setia.");
+    assert_eq!(
+        a,
+        local_quote_key(book, chapter, "  Kata-kata lebih setia. ")
+    );
+    assert_ne!(a, local_quote_key(book, chapter, "Kata lain."));
+    assert!(a.starts_with(&format!("{book}:{chapter}:")));
 }
 
 /// Typed offline chapter records survive a JSON round-trip with exact

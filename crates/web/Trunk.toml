@@ -11,3 +11,10 @@ ignore = ["dist"]
 addresses = ["127.0.0.1"]
 port = 3000
 open = false
+
+# Trunk's inline bootstrap (and the serve-mode live-reload script) move into
+# hashed external files so the edge CSP needs no 'unsafe-inline' for scripts.
+[[hooks]]
+stage = "post_build"
+command = "python3"
+command_arguments = ["../../scripts/externalize_inline_scripts.py"]

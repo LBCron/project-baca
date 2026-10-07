@@ -38,6 +38,7 @@ async fn seed_users(harness: &TestHarness) -> AdminContext {
     .insert(&harness.state.db)
     .await
     .expect("Admin seed must succeed");
+    harness.track_user(admin_id);
 
     let reader_id = Uuid::new_v4();
     let reader_email = format!("reader_{}@baca.local", Uuid::new_v4());
@@ -55,6 +56,7 @@ async fn seed_users(harness: &TestHarness) -> AdminContext {
     .insert(&harness.state.db)
     .await
     .expect("Reader seed must succeed");
+    harness.track_user(reader_id);
 
     let secret = harness.state.config.jwt_secret();
     let admin_token = infra::generate_access_token(admin_id, &admin_email, "admin", secret, 1440)
@@ -124,6 +126,7 @@ async fn test_upload_requires_admin_role() {
         .send_request(upload_request(Some(&ctx.reader_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -151,6 +154,7 @@ async fn test_upload_rejects_non_epub_and_missing_file() {
         ))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -185,6 +189,7 @@ async fn test_upload_happy_path_queues_job() {
     assert_eq!(json["success"], true);
     let job_id = json["data"]["job_id"].as_str().expect("job_id string");
     let book_id = json["data"]["book_id"].as_str().expect("book_id string");
+    harness.track_book(Uuid::parse_str(book_id).expect("book_id uuid"));
     assert_eq!(json["data"]["status"], "queued");
 
     // Book row exists in draft status.
@@ -226,6 +231,7 @@ async fn test_upload_happy_path_queues_job() {
         assert_eq!(json["data"]["status"], "queued");
         assert_eq!(json["data"]["book_id"], book_id);
     }
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -254,6 +260,7 @@ async fn test_job_status_requires_admin_role() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -268,6 +275,7 @@ async fn test_upload_rejects_oversize_payload() {
         .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -283,10 +291,17 @@ async fn test_upload_accepts_epub_filename_with_generic_mime() {
         b"PK\x03\x04payload",
         &[],
     );
-    let resp = harness
-        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    harness.track_book(
+        json["data"]["book_id"]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .expect("book_id uuid"),
+    );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -302,6 +317,7 @@ async fn test_job_status_unknown_id_returns_404() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -324,13 +340,14 @@ async fn test_job_status_rejects_malformed_id() {
         .as_str()
         .unwrap_or("")
         .contains("not-a-job-id"));
+    harness.cleanup().await;
 }
 
 /// Seeds a book with 2 chapters and progress for 2 users (one finishes ch1
 /// only, the other reaches ch2). Returns the book id.
 async fn seed_funnel(harness: &TestHarness) -> Uuid {
     let now = Utc::now();
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
     books::ActiveModel {
         id: Set(book_id),
         title: Set("Funnel Novel".to_string()),
@@ -375,7 +392,7 @@ async fn seed_funnel(harness: &TestHarness) -> Uuid {
 
     // Two users: both reach ch1, only the first reaches ch2.
     for (i, &last_chapter) in [chapter_ids[0], chapter_ids[1]].iter().enumerate() {
-        let user_id = Uuid::new_v4();
+        let user_id = harness.track_user(Uuid::new_v4());
         users::ActiveModel {
             id: Set(user_id),
             email: Set(format!("funnel_{}_{}@baca.local", i, Uuid::new_v4())),
@@ -435,6 +452,7 @@ async fn test_dropoff_analytics_funnel_math() {
     assert_eq!(data[1]["chapter_number"], 2);
     assert_eq!(data[1]["readers_reached"], 1);
     assert_eq!(data[1]["drop_off_pct"], 50.0);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -470,6 +488,7 @@ async fn test_dropoff_rejects_non_admin_and_unknown_book() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
 }
 
 // Multi-user funnel math, failed-job visibility, orphan compensation.
@@ -485,7 +504,7 @@ async fn test_dropoff_funnel_three_users_exact_math() {
     }
     let ctx = seed_users(&harness).await;
     let now = Utc::now();
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
     books::ActiveModel {
         id: Set(book_id),
         title: Set("Funnel3".to_string()),
@@ -531,7 +550,7 @@ async fn test_dropoff_funnel_three_users_exact_math() {
     // The funnel counts cumulatively (>= chapter): ch1=6, ch2=3, ch3=1.
     for (i, &last) in ch_ids.iter().enumerate() {
         for _ in 0..(3 - i) {
-            let uid = Uuid::new_v4();
+            let uid = harness.track_user(Uuid::new_v4());
             users::ActiveModel {
                 id: Set(uid),
                 email: Set(format!("f3_{}_{}@baca.local", i, Uuid::new_v4())),
@@ -597,6 +616,7 @@ async fn test_dropoff_funnel_three_users_exact_math() {
         ))
         .await;
     let _ = books::Entity::delete_by_id(book_id).exec(db).await;
+    harness.cleanup().await;
 }
 
 /// A worker-marked `failed` job is visible via the status endpoint with its
@@ -637,6 +657,7 @@ async fn test_job_status_shows_failed_with_error() {
     let json: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(json["data"]["status"], "failed");
     assert_eq!(json["data"]["job_id"], job_id);
+    harness.cleanup().await;
 }
 
 /// DB-insert failure triggers orphan compensation: S3 object removed, 500
@@ -678,6 +699,7 @@ async fn test_upload_db_failure_compensates_orphan() {
         .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 /// Real EPUBs are several megabytes: the multipart body limit must sit
@@ -710,6 +732,7 @@ async fn test_upload_accepts_multi_megabyte_epub() {
     let _ = books::Entity::delete_by_id(book_id)
         .exec(&harness.state.db)
         .await;
+    harness.cleanup().await;
 }
 
 /// The admin claim is only a pre-check: once the row is demoted the token
@@ -741,4 +764,238 @@ async fn test_demoted_admin_loses_access_immediately() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    harness.cleanup().await;
+}
+
+/// Draft or published, with one chapter, for lifecycle and listing checks.
+async fn seed_status_book(harness: &TestHarness, status: &str) -> Uuid {
+    let now = Utc::now();
+    let book_id = harness.track_book(Uuid::new_v4());
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set(format!("Lifecycle {status}")),
+        author: Set("Test".to_string()),
+        language: Set("id".to_string()),
+        primary_theme: Set("Test".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(100),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set(status.to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Book seed must succeed");
+    chapters::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        book_id: Set(book_id),
+        chapter_number: Set(1),
+        title: Set("I".to_string()),
+        word_count: Set(100),
+        html_content: Set("<p>probe</p>".to_string()),
+        created_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("Chapter seed must succeed");
+    book_id
+}
+
+fn admin_get(path: &str, token: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri(path);
+    if let Some(t) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+fn admin_patch(book_id: Uuid, status: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/admin/books/{book_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "status": status }).to_string(),
+        ))
+        .unwrap()
+}
+
+/// The curator catalog shows every status with content counts and is closed
+/// to readers and guests; the lifecycle refuses a hand-published draft but
+/// lets it be archived.
+#[tokio::test]
+async fn test_admin_catalog_listing_and_lifecycle_guard() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let draft_id = seed_status_book(&harness, "draft").await;
+
+    let resp = harness
+        .send_request(admin_get("/api/v1/admin/books", None))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let resp = harness
+        .send_request(admin_get("/api/v1/admin/books", Some(&ctx.reader_token)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let (resp, json) = harness
+        .send_json_request(admin_get(
+            "/api/v1/admin/books?status=draft&limit=100",
+            Some(&ctx.admin_token),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let row = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == draft_id.to_string())
+        .expect("seeded draft listed");
+    assert_eq!(row["chapter_count"], 1);
+    assert_eq!(row["chunk_count"], 0);
+    assert_eq!(row["status"], "draft");
+
+    let (resp, _) = harness
+        .send_json_request(admin_get(
+            "/api/v1/admin/books?status=banana",
+            Some(&ctx.admin_token),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(draft_id, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
+    let (resp, _) = harness
+        .send_json_request(admin_patch(draft_id, "archived", &ctx.reader_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (resp, json) = harness
+        .send_json_request(admin_patch(draft_id, "archived", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "archived");
+    let (resp, _) = harness
+        .send_json_request(admin_patch(draft_id, "draft", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "archived is final");
+    let (resp, _) = harness
+        .send_json_request(admin_patch(Uuid::new_v4(), "archived", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
+}
+
+/// A dead-letter entry replays exactly once: the job returns to the main
+/// stream under its own id with a reset status hash, and a second replay
+/// finds nothing.
+#[tokio::test]
+async fn test_admin_dlq_replay_is_idempotent() {
+    use redis::AsyncCommands;
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
+    let ctx = seed_users(&harness).await;
+
+    let job_id = Uuid::new_v4().to_string();
+    let book_id = Uuid::new_v4();
+    let storage_path = format!("raw-epubs/{book_id}.epub");
+    let _: () = redis
+        .hset_multiple(
+            format!("job:{job_id}"),
+            &[
+                ("status", "failed"),
+                ("progress", "100"),
+                ("book_id", &book_id.to_string()),
+                ("storage_path", &storage_path),
+            ],
+        )
+        .await
+        .unwrap();
+    let entry_id: String = redis
+        .xadd(
+            infra::INGESTION_DLQ_STREAM,
+            "*",
+            &[("job_id", job_id.as_str()), ("error", "probe failure")],
+        )
+        .await
+        .unwrap();
+
+    let resp = harness
+        .send_request(admin_get("/api/v1/admin/dlq", Some(&ctx.reader_token)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (resp, json) = harness
+        .send_json_request(admin_get(
+            "/api/v1/admin/dlq?limit=200",
+            Some(&ctx.admin_token),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let listed = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entry_id)
+        .expect("entry listed");
+    assert_eq!(listed["job_id"], job_id);
+    assert_eq!(listed["error"], "probe failure");
+
+    let replay = |token: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/admin/dlq/{entry_id}/replay"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (resp, json) = harness.send_json_request(replay(&ctx.admin_token)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["job_id"], job_id);
+    assert_eq!(json["data"]["replayed"], true);
+
+    let status: String = redis.hget(format!("job:{job_id}"), "status").await.unwrap();
+    assert_eq!(status, "queued");
+    let main: redis::streams::StreamRangeReply = redis
+        .xrevrange_count(infra::INGESTION_STREAM, "+", "-", 50)
+        .await
+        .unwrap();
+    let requeued: Vec<String> = main
+        .ids
+        .iter()
+        .filter(|e| {
+            e.map
+                .get("job_id")
+                .and_then(|v| redis::from_redis_value::<String>(v).ok())
+                .as_deref()
+                == Some(job_id.as_str())
+        })
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(requeued.len(), 1, "exactly one re-queued entry");
+    let _: () = redis
+        .xdel(infra::INGESTION_STREAM, &requeued)
+        .await
+        .unwrap();
+
+    let (resp, _) = harness.send_json_request(replay(&ctx.admin_token)).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "second replay is a no-op"
+    );
+    let _: () = redis.del(format!("job:{job_id}")).await.unwrap();
+    harness.cleanup().await;
 }

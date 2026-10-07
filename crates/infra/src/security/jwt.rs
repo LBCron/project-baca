@@ -47,15 +47,28 @@ pub fn generate_access_token_issued_at(
     expiry_minutes: u64,
     issued_at: usize,
 ) -> Result<String, AppError> {
-    let exp = issued_at + (expiry_minutes as usize * 60);
+    issue_access_token(user_id, email, role, secret, expiry_minutes, issued_at).map(|(t, _)| t)
+}
 
+/// Signs an access token and returns its `jti`, so the session record of the
+/// refresh token it travels with can name it.
+pub fn issue_access_token(
+    user_id: Uuid,
+    email: &str,
+    role: &str,
+    secret: &str,
+    expiry_minutes: u64,
+    issued_at: usize,
+) -> Result<(String, Uuid), AppError> {
+    let exp = issued_at + (expiry_minutes as usize * 60);
+    let jti = Uuid::new_v4();
     let claims = Claims {
         sub: user_id,
         email: email.to_string(),
         role: role.to_string(),
         exp,
         iat: issued_at,
-        jti: Uuid::new_v4(),
+        jti,
     };
 
     encode(
@@ -63,6 +76,7 @@ pub fn generate_access_token_issued_at(
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
+    .map(|token| (token, jti))
     .map_err(|e| AppError::Internal(format!("Failed to sign JWT access token: {e}")))
 }
 
@@ -150,14 +164,60 @@ pub fn generate_refresh_token() -> String {
     format!("rt_{}_{:016x}", Uuid::new_v4(), rand::random::<u64>())
 }
 
-/// Stores a refresh token mapped to a user ID in Redis with expiration in days.
-/// Only the SHA-256 hash is persisted: a Redis dump must not yield directly
-/// usable session tokens.
+/// What a reader sees about one signed-in device.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub user_id: Uuid,
+    pub device: String,
+    pub ip_prefix: String,
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    /// `jti` of the access token last issued with this refresh token.
+    pub jti: Uuid,
+}
+
+/// Facts about the device a token pair is issued to.
+#[derive(Debug, Clone, Default)]
+pub struct SessionMeta {
+    pub device: String,
+    pub ip_prefix: String,
+    pub jti: Uuid,
+}
+
+fn session_key(token_hash: &str) -> String {
+    format!("session:{token_hash}")
+}
+
+async fn write_session_record(
+    redis: &mut redis::aio::MultiplexedConnection,
+    token_hash: &str,
+    record: &SessionRecord,
+    ttl_seconds: u64,
+) {
+    if let Ok(json) = serde_json::to_string(record) {
+        let _: Result<(), _> = redis
+            .set_ex(session_key(token_hash), json, ttl_seconds)
+            .await;
+    }
+}
+
+async fn read_session_record(
+    redis: &mut redis::aio::MultiplexedConnection,
+    token_hash: &str,
+) -> Option<SessionRecord> {
+    let json: Option<String> = redis.get(session_key(token_hash)).await.unwrap_or(None);
+    json.and_then(|j| serde_json::from_str(&j).ok())
+}
+
+/// Stores a refresh token mapped to a user ID in Redis with expiration in days,
+/// plus the session record readers see on their shelf. Only the SHA-256 hash
+/// is persisted: a Redis dump must not yield directly usable session tokens.
 pub async fn store_refresh_token(
     redis: &mut redis::aio::MultiplexedConnection,
     token: &str,
     user_id: Uuid,
     expiry_days: u64,
+    meta: SessionMeta,
 ) -> Result<(), AppError> {
     let redis_key = refresh_key(token);
     let user_set_key = format!("user_refresh_tokens:{user_id}");
@@ -170,10 +230,110 @@ pub async fn store_refresh_token(
             AppError::Internal(format!("Failed to persist refresh token in Redis: {e}"))
         })?;
 
-    let _: Result<(), _> = redis.sadd(&user_set_key, token_hash(token)).await;
+    let hash = token_hash(token);
+    let _: Result<(), _> = redis.sadd(&user_set_key, &hash).await;
     let _: Result<(), _> = redis.expire(&user_set_key, ttl_seconds as i64).await;
+    let now = Utc::now().timestamp();
+    write_session_record(
+        redis,
+        &hash,
+        &SessionRecord {
+            user_id,
+            device: meta.device,
+            ip_prefix: meta.ip_prefix,
+            created_at: now,
+            last_seen_at: now,
+            jti: meta.jti,
+        },
+        ttl_seconds,
+    )
+    .await;
 
     Ok(())
+}
+
+/// Points the session record of a refresh token at the access token just
+/// issued with it and marks it seen now.
+pub async fn touch_session(
+    redis: &mut redis::aio::MultiplexedConnection,
+    token: &str,
+    jti: Uuid,
+    expiry_days: u64,
+) {
+    let hash = token_hash(token);
+    if let Some(mut record) = read_session_record(redis, &hash).await {
+        record.jti = jti;
+        record.last_seen_at = Utc::now().timestamp();
+        write_session_record(redis, &hash, &record, expiry_days * 86400).await;
+    }
+}
+
+/// Every live session of a user, keyed by session id (the token hash).
+pub async fn list_sessions(
+    redis: &mut redis::aio::MultiplexedConnection,
+    user_id: Uuid,
+) -> Vec<(String, Option<SessionRecord>)> {
+    let user_set_key = format!("user_refresh_tokens:{user_id}");
+    let hashes: Vec<String> = redis.smembers(&user_set_key).await.unwrap_or_default();
+    let mut sessions = Vec::with_capacity(hashes.len());
+    for hash in hashes {
+        let live: bool = redis
+            .exists(format!("refresh_token:{hash}"))
+            .await
+            .unwrap_or(false);
+        if !live {
+            let _: Result<(), _> = redis.srem(&user_set_key, &hash).await;
+            continue;
+        }
+        let record = read_session_record(redis, &hash).await;
+        sessions.push((hash, record));
+    }
+    sessions
+}
+
+/// Revokes one session of the user: its refresh token dies and the access
+/// token last issued with it is blacklisted. False when the id is not theirs.
+pub async fn revoke_session(
+    redis: &mut redis::aio::MultiplexedConnection,
+    user_id: Uuid,
+    session_id: &str,
+    access_ttl_seconds: u64,
+) -> Result<bool, AppError> {
+    let user_set_key = format!("user_refresh_tokens:{user_id}");
+    let owned: bool = redis
+        .sismember(&user_set_key, session_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("Session lookup failed: {e}")))?;
+    if !owned {
+        return Ok(false);
+    }
+    if let Some(record) = read_session_record(redis, session_id).await {
+        blacklist_access_token(redis, record.jti, access_ttl_seconds).await?;
+    }
+    let _: Result<(), _> = redis.del(format!("refresh_token:{session_id}")).await;
+    let _: Result<(), _> = redis.del(session_key(session_id)).await;
+    let _: Result<(), _> = redis.srem(&user_set_key, session_id).await;
+    Ok(true)
+}
+
+/// Signs every other device out while the caller (identified by the access
+/// token it holds) stays signed in; no global revocation stamp is written.
+pub async fn revoke_other_sessions_keeping(
+    redis: &mut redis::aio::MultiplexedConnection,
+    user_id: Uuid,
+    current_jti: Uuid,
+    access_ttl_seconds: u64,
+) -> Result<usize, AppError> {
+    let mut revoked = 0;
+    for (hash, record) in list_sessions(redis, user_id).await {
+        if record.as_ref().map(|r| r.jti) == Some(current_jti) {
+            continue;
+        }
+        if revoke_session(redis, user_id, &hash, access_ttl_seconds).await? {
+            revoked += 1;
+        }
+    }
+    Ok(revoked)
 }
 
 fn token_hash(token: &str) -> String {
@@ -258,7 +418,25 @@ pub async fn validate_and_rotate_refresh_token(
             ROTATION_GRACE_SECS,
         )
         .await;
-    store_refresh_token(redis, &new_token, user_id, expiry_days).await?;
+    // The device stays the same across a rotation; only the token changes.
+    let previous = read_session_record(redis, &old_hash).await;
+    let meta = previous
+        .as_ref()
+        .map(|p| SessionMeta {
+            device: p.device.clone(),
+            ip_prefix: p.ip_prefix.clone(),
+            jti: p.jti,
+        })
+        .unwrap_or_default();
+    store_refresh_token(redis, &new_token, user_id, expiry_days, meta).await?;
+    if let Some(previous) = previous {
+        let new_hash = token_hash(&new_token);
+        if let Some(mut record) = read_session_record(redis, &new_hash).await {
+            record.created_at = previous.created_at;
+            write_session_record(redis, &new_hash, &record, expiry_days * 86400).await;
+        }
+    }
+    let _: Result<(), _> = redis.del(session_key(&old_hash)).await;
 
     Ok(RefreshOutcome::Rotated {
         user_id,

@@ -6,9 +6,14 @@ Removes, in order:
      (11/24-byte probe bodies) — acked, deleted, job hash removed.
   2. `draft` book rows titled 'Sherlock Test' / 'scan' (admin_test probes).
   3. PKfake objects (11/24 bytes) under raw-epubs/ in the EPUB bucket.
+  4. Rows left by test seeds that panicked before `TestHarness::cleanup`:
+     books whose cover points at a test host or whose source is a test
+     marker, and users with test-only email domains. Cascades take their
+     chapters, chunks, progress, quotes, and cache rows.
 
-Leaves untouched: published books, other drafts, real EPUB objects,
-the DLQ stream, and job hashes of surviving jobs.
+Leaves untouched: real published books (worker-ingested covers live in the
+covers bucket), the dev seed catalog (`make seed-dev`), the DLQ stream, and
+job hashes of surviving jobs.
 
 Usage: make purge-test-debris   (loads .env via the Makefile)
 """
@@ -24,6 +29,40 @@ STREAM = "stream:epub_ingestion"
 GROUP = "ingestion-workers"
 FAKE_SIZES = (11, 24)
 FAKE_TITLES = ("Sherlock Test", "scan")
+TEST_COVER_HOSTS = ("https://assets.baca.local/%", "https://example.com/%")
+TEST_COVER_PATHS = ("/covers/test.jpg",)
+TEST_SOURCE_NAMES = ("Test", "Test Source", "Draft")
+TEST_EMAIL_DOMAINS = ("baca.local", "example.com", "test.local")
+
+
+def psql(sql: str) -> str:
+    out = subprocess.run(
+        ["docker", "exec", "project_baca_db", "psql", "-U", "baca_user",
+         "-d", "project_baca_db", "-tAc", sql],
+        capture_output=True, text=True, check=True,
+    )
+    return out.stdout.strip()
+
+
+def purge_seed_survivors() -> tuple[str, str]:
+    """Deletes books and users that only test seeds create; returns counts."""
+    hosts = " OR ".join(f"cover_url LIKE '{h}'" for h in TEST_COVER_HOSTS)
+    paths = ",".join(f"'{p}'" for p in TEST_COVER_PATHS)
+    sources = ",".join(f"'{s}'" for s in TEST_SOURCE_NAMES)
+    books = psql(
+        "WITH gone AS (DELETE FROM books "
+        f"WHERE {hosts} OR cover_url IN ({paths}) OR source_name IN ({sources}) "
+        "RETURNING 1) SELECT count(*) FROM gone"
+    )
+    domains = " OR ".join(f"email LIKE '%@{d}'" for d in TEST_EMAIL_DOMAINS)
+    users = psql(
+        f"WITH gone AS (DELETE FROM users WHERE {domains} RETURNING 1) SELECT count(*) FROM gone"
+    )
+    # Tags only exist alongside books; one without any book is seed debris.
+    psql(
+        "DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM book_tags bt WHERE bt.tag_id = tags.id)"
+    )
+    return books, users
 
 
 def main() -> int:
@@ -68,9 +107,12 @@ def main() -> int:
          f"DELETE FROM books WHERE status='draft' AND title IN ({titles})"],
         capture_output=True, text=True,
     )
+    seed_books, seed_users = purge_seed_survivors()
     print(f"fake objects deleted: {len(fake_objs)}")
     print(f"pending entries purged: {purged_pending}")
     print(f"draft rows deleted: {out.stdout.strip()}")
+    print(f"test-seed books deleted: {seed_books}")
+    print(f"test-seed users deleted: {seed_users}")
     print(f"pending now: {red.xpending(STREAM, GROUP)['pending']}")
     return 0
 

@@ -117,10 +117,7 @@ fn search_hit_to_summary(r: shared::BookSearchResultDto) -> BookSummaryDto {
 #[component]
 fn ResumeCard(resume: Resume, wide: bool) -> impl IntoView {
     let (lang, _) = use_lang();
-    let read_href = format!(
-        "/read/{}?chapter={}",
-        resume.book_id, resume.chapter_number
-    );
+    let read_href = format!("/read/{}?chapter={}", resume.book_id, resume.chapter_number);
     let recap_href = format!("{read_href}&recap=1");
     let percent = resume.percent;
     let chapter_no = resume.chapter_number;
@@ -505,7 +502,10 @@ async fn latest_guest_resume() -> Option<Resume> {
         .filter(|r| !r.is_finished.unwrap_or(false))
         .max_by_key(|r| r.last_read_at)?;
     let book = api::book_detail(&latest.book_id.to_string()).await.ok()?;
-    let chapter = book.chapters.iter().find(|c| c.id == latest.last_chapter_id)?;
+    let chapter = book
+        .chapters
+        .iter()
+        .find(|c| c.id == latest.last_chapter_id)?;
     Some(Resume {
         book_id: book.id.to_string(),
         title: book.title,

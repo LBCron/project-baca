@@ -212,10 +212,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("quote_save", "Simpan", "Save"),
     ("quote_saved", "Tersimpan", "Saved"),
     ("quote_share", "Bagikan kartu", "Share card"),
+    ("quote_saved_device", "Tersimpan di perangkat ini", "Saved on this device"),
     (
-        "quote_sign_in",
-        "Masuk untuk menyimpan kutipan ke rakmu.",
-        "Sign in to keep quotes on your shelf.",
+        "quote_guest_hint",
+        "Kutipan tersimpan di perangkat ini. Masuk untuk menyatukannya ke akunmu.",
+        "Quotes stay on this device. Sign in to merge them into your account.",
     ),
     ("similarity", "kemiripan", "match"),
     ("shelf_title", "Rak saya", "My shelf"),
@@ -241,6 +242,14 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("change_password", "Ganti kata sandi", "Change password"),
     ("password_changed", "Kata sandi diperbarui.", "Password updated."),
     ("revoke_all", "Keluar dari semua perangkat", "Sign out everywhere"),
+    ("revoke_others_now", "Keluarkan perangkat lain", "Sign out other devices"),
+    ("others_revoked", "Perangkat lain sudah dikeluarkan.", "Other devices signed out."),
+    ("devices", "Perangkat yang masuk", "Signed-in devices"),
+    ("this_device", "Perangkat ini", "This device"),
+    ("unknown_device", "Perangkat tak dikenal", "Unknown device"),
+    ("last_seen", "Terakhir aktif {t}", "Last active {t}"),
+    ("sign_out_device", "Keluarkan", "Sign out"),
+    ("device_revoked", "Perangkat dikeluarkan.", "Device signed out."),
     ("confirm_again", "Ketuk lagi untuk konfirmasi", "Tap again to confirm"),
     ("member_since", "Pembaca sejak", "Reader since"),
     (
@@ -274,6 +283,48 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("job_published", "Terbit", "Published"),
     ("job_failed", "Gagal", "Failed"),
     ("admin_forbidden", "Halaman ini untuk kurator.", "This page is for curators."),
+    ("admin_desk", "Meja kurator", "Curator desk"),
+    ("tab_manuscripts", "Naskah", "Manuscripts"),
+    ("tab_queue", "Antrean", "Queue"),
+    ("tab_retention", "Retensi", "Retention"),
+    ("status_draft", "Draf", "Draft"),
+    ("status_processing", "Diproses", "Processing"),
+    ("status_published", "Terbit", "Published"),
+    ("status_archived", "Arsip", "Archived"),
+    ("archive", "Arsipkan", "Archive"),
+    ("archived_done", "Naskah diarsipkan.", "Manuscript archived."),
+    ("chunks_count", "{n} potongan", "{n} chunks"),
+    (
+        "no_manuscripts",
+        "Belum ada naskah dengan status ini.",
+        "No manuscripts in this status yet.",
+    ),
+    ("dlq_title", "Pekerjaan gagal", "Failed jobs"),
+    (
+        "dlq_empty",
+        "Tidak ada pekerjaan yang gagal. Antrean bersih.",
+        "No failed jobs. The queue is clear.",
+    ),
+    ("replay", "Ulangi", "Replay"),
+    ("replayed", "Pekerjaan diantrekan ulang.", "Job queued again."),
+    (
+        "replay_expired",
+        "Catatan pekerjaan sudah kedaluwarsa; unggah ulang EPUB-nya.",
+        "The job record expired; upload the EPUB again.",
+    ),
+    ("funnel_pick", "Pilih naskah", "Choose a manuscript"),
+    (
+        "funnel_hint",
+        "Berapa pembaca yang mencapai tiap bab.",
+        "How many readers reach each chapter.",
+    ),
+    ("readers_reached", "{n} pembaca", "{n} readers"),
+    ("drop_off", "turun {n}%", "{n}% drop"),
+    (
+        "no_funnel",
+        "Belum ada data pembaca untuk naskah ini.",
+        "No reader data for this manuscript yet.",
+    ),
     (
         "error_generic",
         "Ada yang tidak beres. Coba lagi.",
@@ -285,6 +336,13 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "You are offline. Saved books remain readable.",
     ),
     ("not_found", "Naskah tidak ditemukan.", "Manuscript not found."),
+    (
+        "rate_limited",
+        "Terlalu banyak percobaan. Coba lagi dalam {t}.",
+        "Too many attempts. Try again in {t}.",
+    ),
+    ("unit_minutes", "menit", "minutes"),
+    ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
     ("minutes", "mnt", "min"),
 ];
@@ -371,6 +429,15 @@ impl Lang {
         }
     }
 
+    /// A wait in whole minutes when it is a minute or more, else seconds.
+    pub fn wait_text(self, seconds: u64) -> String {
+        if seconds >= 60 {
+            format!("{} {}", seconds.div_ceil(60), self.text("unit_minutes"))
+        } else {
+            format!("{} {}", seconds.max(1), self.text("unit_seconds"))
+        }
+    }
+
     /// Three-letter month name in the interface language (1 = January).
     pub fn month_short(self, month: u32) -> &'static str {
         const ID: [&str; 12] = [
@@ -395,7 +462,12 @@ impl Lang {
     /// "8 Okt 2026" or "8 Oct 2026".
     pub fn date_short(self, date: chrono::DateTime<chrono::Utc>) -> String {
         use chrono::Datelike;
-        format!("{} {} {}", date.day(), self.month_short(date.month()), date.year())
+        format!(
+            "{} {} {}",
+            date.day(),
+            self.month_short(date.month()),
+            date.year()
+        )
     }
 
     pub fn document_lang(self) {

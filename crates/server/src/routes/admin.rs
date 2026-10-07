@@ -1,4 +1,5 @@
-//! Admin EPUB ingestion endpoints.
+//! Curator endpoints: EPUB ingestion, the catalog in every status, the
+//! lifecycle guard, the dead-letter queue, and the drop-off funnel.
 use crate::{
     error::HttpError,
     middleware::{require_admin, AuthUser},
@@ -8,16 +9,23 @@ use axum::{
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
+use domain::BookStatus;
 use infra::{
-    chapter_dropoff, entities::books, get_book_by_id, get_job_status, publish_ingestion_job,
+    chapter_dropoff, entities::books, get_book_by_id, get_book_status, get_job_status,
+    list_books_for_admin, list_dlq_entries, publish_ingestion_job, replay_dlq_entry,
+    set_book_status,
 };
 use sea_orm::ActiveModelTrait;
 use sea_orm::Set;
 use serde::Deserialize;
-use shared::{ApiResponse, AppError, DropOffPointDto, JobStatusDto, UploadBookResponseDto};
+use shared::{
+    AdminBookPatchRequest, AdminBookRowDto, ApiResponse, AppError, DlqEntryDto,
+    DlqReplayResponseDto, DropOffPointDto, JobStatusDto, UploadBookResponseDto,
+};
+use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -26,9 +34,181 @@ pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/books", get(list_catalog))
         .route("/books/upload", post(upload_book))
+        .route("/books/{book_id}", patch(patch_book))
         .route("/jobs/{job_id}", get(ingestion_status))
+        .route("/dlq", get(list_dlq))
+        .route("/dlq/{entry_id}/replay", post(replay_dlq))
         .route("/analytics/drop-off", get(dropoff_analytics))
+}
+
+/// Filters for the curator catalog.
+#[derive(Debug, Deserialize)]
+pub struct AdminCatalogQuery {
+    status: Option<String>,
+    cursor: Option<Uuid>,
+    limit: Option<u64>,
+}
+
+/// Every manuscript in every status, newest first, with content counts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/books",
+    params(
+        ("status" = Option<String>, Query, description = "draft, processing, published, or archived"),
+        ("cursor" = Option<Uuid>, Query, description = "Last book id of the previous page"),
+        ("limit" = Option<u64>, Query, description = "Page size, 1-100 (default 50)")
+    ),
+    responses(
+        (status = 200, description = "Catalog rows, newest first", body = Vec<AdminBookRowDto>),
+        (status = 400, description = "Unknown status filter"),
+        (status = 401, description = "Authentication required"),
+        (status = 403, description = "Admin role required")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Administration"
+)]
+pub async fn list_catalog(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Query(query): Query<AdminCatalogQuery>,
+) -> Result<impl IntoResponse, HttpError> {
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
+    if let Some(status) = &query.status {
+        BookStatus::from_str(status).map_err(|e| HttpError(e.into()))?;
+    }
+    let rows = list_books_for_admin(
+        &state.db,
+        query.status.as_deref(),
+        query.cursor,
+        query.limit.unwrap_or(50),
+    )
+    .await
+    .map_err(HttpError)?;
+    Ok((StatusCode::OK, Json(ApiResponse::success(rows))))
+}
+
+/// Moves a manuscript along its lifecycle; the domain refuses illegal steps
+/// (a draft cannot be published by hand, an archived book stays archived).
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/books/{book_id}",
+    params(("book_id" = Uuid, Path, description = "Book to update")),
+    request_body = AdminBookPatchRequest,
+    responses(
+        (status = 200, description = "New status applied", body = AdminBookRowDto),
+        (status = 400, description = "Unknown status"),
+        (status = 401, description = "Authentication required"),
+        (status = 403, description = "Admin role required"),
+        (status = 404, description = "Book not found"),
+        (status = 409, description = "Transition not allowed by the lifecycle")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Administration"
+)]
+pub async fn patch_book(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Path(book_id): Path<Uuid>,
+    Json(req): Json<AdminBookPatchRequest>,
+) -> Result<impl IntoResponse, HttpError> {
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
+    req.validate()
+        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+    let next = BookStatus::from_str(&req.status).map_err(|e| HttpError(e.into()))?;
+    let current_raw = get_book_status(&state.db, book_id)
+        .await
+        .map_err(HttpError)?;
+    let current = BookStatus::from_str(&current_raw).map_err(|e| HttpError(e.into()))?;
+    if !current.can_transition_to(next) {
+        return Err(HttpError(AppError::Conflict(format!(
+            "A {current_raw} book cannot move to {}",
+            req.status
+        ))));
+    }
+    if current != next {
+        set_book_status(&state.db, book_id, &req.status)
+            .await
+            .map_err(HttpError)?;
+    }
+    let row = list_books_for_admin(&state.db, None, None, 100)
+        .await
+        .map_err(HttpError)?
+        .into_iter()
+        .find(|r| r.id == book_id)
+        .ok_or_else(|| HttpError(AppError::NotFound("Book not found".to_string())))?;
+    Ok((StatusCode::OK, Json(ApiResponse::success(row))))
+}
+
+/// Page size for the dead-letter listing.
+#[derive(Debug, Deserialize)]
+pub struct DlqQuery {
+    limit: Option<usize>,
+}
+
+/// Dead-letter entries, newest first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/dlq",
+    params(("limit" = Option<usize>, Query, description = "Entries to return, 1-200 (default 50)")),
+    responses(
+        (status = 200, description = "Dead-letter entries", body = Vec<DlqEntryDto>),
+        (status = 401, description = "Authentication required"),
+        (status = 403, description = "Admin role required")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Administration"
+)]
+pub async fn list_dlq(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Query(query): Query<DlqQuery>,
+) -> Result<impl IntoResponse, HttpError> {
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
+    let entries = list_dlq_entries(&state.redis, query.limit.unwrap_or(50))
+        .await
+        .map_err(HttpError)?;
+    Ok((StatusCode::OK, Json(ApiResponse::success(entries))))
+}
+
+/// Re-queues one dead-letter entry under its original job id. A second call
+/// for the same entry finds nothing and answers 404, so replays never double.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/dlq/{entry_id}/replay",
+    params(("entry_id" = String, Path, description = "Dead-letter stream entry id")),
+    responses(
+        (status = 200, description = "Job re-queued", body = DlqReplayResponseDto),
+        (status = 401, description = "Authentication required"),
+        (status = 403, description = "Admin role required"),
+        (status = 404, description = "Entry not found (already replayed or removed)"),
+        (status = 409, description = "Job record expired; the EPUB must be uploaded again")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Administration"
+)]
+pub async fn replay_dlq(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Path(entry_id): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
+    let job_id = replay_dlq_entry(&state.redis, &entry_id)
+        .await
+        .map_err(HttpError)?
+        .ok_or_else(|| {
+            HttpError(AppError::NotFound(
+                "Dead-letter entry not found".to_string(),
+            ))
+        })?;
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse::success(DlqReplayResponseDto {
+            job_id,
+            replayed: true,
+        })),
+    ))
 }
 
 #[utoipa::path(

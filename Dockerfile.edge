@@ -8,6 +8,8 @@ RUN rustup target add wasm32-unknown-unknown \
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY scripts/externalize_inline_scripts.py ./scripts/
+COPY assets/illustrations ./assets/illustrations
 ARG API_BASE_URL=http://localhost:8080/api/v1
 ENV API_BASE_URL=$API_BASE_URL
 WORKDIR /app/crates/web

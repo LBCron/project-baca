@@ -2215,6 +2215,207 @@ img {
     gap: var(--space-4);
 }
 
+.device-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.device-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-sunken);
+}
+
+.device-row.current {
+    border-color: var(--border-strong);
+}
+
+.device-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1 1 200px;
+}
+
+.device-name {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-weight: 600;
+    flex-wrap: wrap;
+}
+
+.device-row .btn {
+    min-height: 40px;
+    font-size: 0.88rem;
+}
+
+/* Curator desk */
+
+.desk {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+    padding-top: var(--space-5);
+}
+
+.desk-tabs {
+    width: 100%;
+}
+
+.desk-tabs button {
+    min-height: 44px;
+}
+
+.section-title.small {
+    font-size: 1.25rem;
+}
+
+.section-head.compact {
+    margin-bottom: 0;
+}
+
+.upload-card,
+.job-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.job-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.manuscript-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.manuscript-row,
+.dlq-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-3);
+    align-items: center;
+    padding: var(--space-4);
+    border-radius: var(--radius-md);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+}
+
+.manuscript-main,
+.dlq-row > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.manuscript-title {
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.manuscript-meta {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.manuscript-row .btn,
+.dlq-row .btn {
+    grid-column: 1 / -1;
+}
+
+.tag[data-status="published"] {
+    color: var(--success);
+}
+
+.tag[data-status="processing"] {
+    color: var(--gold);
+}
+
+.tag[data-status="archived"] {
+    color: var(--text-faint);
+}
+
+.dlq-error {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.retention {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+select.input {
+    padding-right: var(--space-8);
+}
+
+.funnel {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.funnel-row {
+    display: grid;
+    gap: 6px;
+}
+
+.funnel-label {
+    font-size: 0.9rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.funnel-bar {
+    height: 10px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-sunken);
+    overflow: hidden;
+}
+
+.funnel-bar > span {
+    display: block;
+    height: 100%;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    transition: width var(--dur-slow) var(--ease-out);
+}
+
+.funnel-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
 /* Admin */
 
 .admin-grid {
@@ -2471,6 +2672,25 @@ img {
 
     .admin-grid {
         grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    }
+
+    .desk-tabs {
+        width: auto;
+        align-self: flex-start;
+    }
+
+    .manuscript-row {
+        grid-template-columns: minmax(0, 1fr) auto auto;
+    }
+
+    .manuscript-row .btn,
+    .dlq-row .btn {
+        grid-column: auto;
+    }
+
+    .funnel-row {
+        grid-template-columns: minmax(0, 240px) minmax(0, 1fr) auto;
+        align-items: center;
     }
 
     .book-hero {

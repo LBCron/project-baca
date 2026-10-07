@@ -8,6 +8,7 @@ use leptos_router::hooks::use_query_map;
 use crate::components::auth::AuthSheet;
 use crate::components::header::SiteHeader;
 use crate::components::insights::{AtomicCards, CatchupRecap, QuoteFinder};
+use crate::pages::admin::CuratorDesk;
 
 #[component]
 pub fn GalleryPage() -> impl IntoView {
@@ -40,6 +41,7 @@ fn gallery_body() -> impl IntoView {
                     />
                 }
                 .into_any(),
+                "curator-desk" => view! { <CuratorDesk /> }.into_any(),
                 "recap" => view! {
                     <CatchupRecap
                         book_id="00000000-0000-0000-0000-000000000000".to_string()

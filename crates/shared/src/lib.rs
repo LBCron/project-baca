@@ -505,6 +505,59 @@ pub struct SaveQuoteRequest {
     pub quote_text: String,
 }
 
+/// One signed-in device, from the refresh token it holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SessionDto {
+    /// Opaque session id (hash of the refresh token), used to revoke it.
+    pub id: String,
+    /// Browser and platform, empty when unknown.
+    pub device: String,
+    /// Coarse network location, never the full address.
+    pub ip_prefix: String,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    /// True for the session that made this request.
+    pub current: bool,
+}
+
+/// Upper bound of one batch save, matching the guest merge chunk size.
+pub const SAVE_QUOTES_BATCH_MAX: usize = 50;
+
+/// Several quotes saved together, used to merge a device's local quotes into
+/// the account at sign-in. Each item is validated like a single save.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SaveQuotesBatchRequest {
+    #[validate(
+        length(min = 1, max = 50, message = "A batch holds between 1 and 50 quotes"),
+        nested
+    )]
+    pub items: Vec<SaveQuoteRequest>,
+}
+
+/// Result for one item of a batch save, in request order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SaveQuoteOutcomeDto {
+    pub index: usize,
+    /// One of: saved, duplicate, rejected.
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct SaveQuotesBatchResponseDto {
+    pub saved: usize,
+    pub duplicates: usize,
+    pub rejected: usize,
+    pub outcomes: Vec<SaveQuoteOutcomeDto>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SavedQuoteResponseDto {
@@ -537,6 +590,50 @@ pub struct UploadBookResponseDto {
     pub job_id: String,
     pub book_id: Uuid,
     pub status: String,
+}
+
+/// One row of the curator's catalog table: every status, with content counts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AdminBookRowDto {
+    pub id: Uuid,
+    pub title: String,
+    pub author: String,
+    pub language: String,
+    /// One of: draft, processing, published, archived.
+    pub status: String,
+    pub chapter_count: i64,
+    pub chunk_count: i64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Status change requested by a curator; the domain lifecycle decides.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AdminBookPatchRequest {
+    #[validate(length(min = 1, max = 20))]
+    pub status: String,
+}
+
+/// One dead-letter entry of the ingestion queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DlqEntryDto {
+    /// Redis stream entry id, used to replay.
+    pub id: String,
+    pub job_id: String,
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub book_id: Option<Uuid>,
+    pub failed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DlqReplayResponseDto {
+    pub job_id: String,
+    pub replayed: bool,
 }
 
 /// One funnel step of the chapter drop-off analytics.

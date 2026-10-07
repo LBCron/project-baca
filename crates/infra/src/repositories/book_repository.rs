@@ -5,8 +5,8 @@ use sea_orm::{
     QueryOrder, QuerySelect, Statement, Value,
 };
 use shared::{
-    AppError, BookCatalogQuery, BookDetailDto, BookSearchQuery, BookSearchResultDto,
-    BookSummaryDto, ChapterDetailDto, ChapterSummaryDto, OfflineBundleDto,
+    AdminBookRowDto, AppError, BookCatalogQuery, BookDetailDto, BookSearchQuery,
+    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, ChapterSummaryDto, OfflineBundleDto,
 };
 use uuid::Uuid;
 
@@ -428,4 +428,96 @@ async fn get_tags_for_book(
     }
 
     Ok(tag_names)
+}
+
+/// Raw row of the curator listing.
+#[derive(Debug, FromQueryResult)]
+struct AdminBookRow {
+    id: Uuid,
+    title: String,
+    author: String,
+    language: String,
+    status: String,
+    chapter_count: i64,
+    chunk_count: i64,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Every book regardless of status, newest first, with chapter and chunk
+/// counts; keyset-paginated on (created_at, id) by the cursor book.
+pub async fn list_books_for_admin(
+    db: &DatabaseConnection,
+    status: Option<&str>,
+    cursor: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<AdminBookRowDto>, AppError> {
+    let sql = r#"
+        SELECT b.id, b.title, b.author, b.language, b.status, b.created_at, b.updated_at,
+               (SELECT count(*) FROM chapters c WHERE c.book_id = b.id) AS chapter_count,
+               (SELECT count(*) FROM book_chunks k WHERE k.book_id = b.id) AS chunk_count
+        FROM books b
+        WHERE ($1::varchar IS NULL OR b.status = $1)
+          AND ($2::uuid IS NULL
+               OR (b.created_at, b.id) < (SELECT created_at, id FROM books WHERE id = $2))
+        ORDER BY b.created_at DESC, b.id DESC
+        LIMIT $3
+    "#;
+    let stmt = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        sql,
+        [
+            sea_orm::Value::from(status.map(str::to_string)),
+            sea_orm::Value::from(cursor),
+            sea_orm::Value::from(limit.clamp(1, 100) as i64),
+        ],
+    );
+    let rows = AdminBookRow::find_by_statement(stmt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to list books for admin: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| AdminBookRowDto {
+            id: r.id,
+            title: r.title,
+            author: r.author,
+            language: r.language,
+            status: r.status,
+            chapter_count: r.chapter_count,
+            chunk_count: r.chunk_count,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
+/// Current lifecycle status of any book, published or not.
+pub async fn get_book_status(db: &DatabaseConnection, book_id: Uuid) -> Result<String, AppError> {
+    books::Entity::find_by_id(book_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to load book status: {e}")))?
+        .map(|b| b.status)
+        .ok_or_else(|| AppError::NotFound("Book not found".to_string()))
+}
+
+/// Writes a status the caller has already validated against the lifecycle.
+pub async fn set_book_status(
+    db: &DatabaseConnection,
+    book_id: Uuid,
+    status: &str,
+) -> Result<(), AppError> {
+    use sea_orm::ActiveModelTrait;
+    let model = books::ActiveModel {
+        id: sea_orm::Set(book_id),
+        status: sea_orm::Set(status.to_string()),
+        updated_at: sea_orm::Set(chrono::Utc::now().into()),
+        ..Default::default()
+    };
+    model
+        .update(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to update book status: {e}")))?;
+    Ok(())
 }

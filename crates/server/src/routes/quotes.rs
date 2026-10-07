@@ -11,11 +11,12 @@ use axum::{
 use infra::{
     get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
     list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
-    search_quotes_by_embedding,
+    save_quotes_batch as repo_save_quotes_batch, search_quotes_by_embedding, BatchQuoteOutcome,
 };
+use sea_orm::DatabaseConnection;
 use shared::{
-    ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteRequest,
-    SavedQuoteResponseDto,
+    ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteOutcomeDto,
+    SaveQuoteRequest, SaveQuotesBatchRequest, SaveQuotesBatchResponseDto, SavedQuoteResponseDto,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -28,6 +29,7 @@ pub fn quotes_routes() -> Router<Arc<AppState>> {
 pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/save", post(handle_save_quote))
+        .route("/save-batch", post(handle_save_quotes_batch))
         .route("/{quote_id}/card", get(get_quote_card))
         .route("/", get(handle_list_saved_quotes))
 }
@@ -118,22 +120,11 @@ pub async fn handle_save_quote(
         .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
 
     let id = Uuid::new_v4();
-    let card_url = format!("/api/v1/quotes/{id}/card");
+    let card_url = card_url_for(id);
 
-    // Validate the (book_id, chapter_id) pair: 404 for unknown or draft ids,
-    // 400 for cross-book mismatches — never a raw 500 FK violation.
-    get_book_by_id(&state.db, payload.book_id)
+    validate_quote_target(&state.db, payload.book_id, payload.chapter_id)
         .await
         .map_err(HttpError)?;
-    let chapter_book_id = get_chapter_book_id(&state.db, payload.chapter_id)
-        .await
-        .map_err(HttpError)?;
-    if chapter_book_id != payload.book_id {
-        return Err(HttpError(AppError::ValidationError(format!(
-            "Chapter {} does not belong to book {}",
-            payload.chapter_id, payload.book_id
-        ))));
-    }
 
     repo_save_quote(
         &state.db,
@@ -155,6 +146,103 @@ pub async fn handle_save_quote(
             "image_card_url": card_url
         }))),
     ))
+}
+
+fn card_url_for(quote_id: Uuid) -> String {
+    format!("/api/v1/quotes/{quote_id}/card")
+}
+
+/// The (book, chapter) pair must exist, be readable, and belong together:
+/// 404 for unknown or draft ids, 400 for cross-book mismatches, never a raw
+/// FK violation. Shared by the single save and the batch.
+async fn validate_quote_target(
+    db: &DatabaseConnection,
+    book_id: Uuid,
+    chapter_id: Uuid,
+) -> Result<(), AppError> {
+    get_book_by_id(db, book_id).await?;
+    let chapter_book_id = get_chapter_book_id(db, chapter_id).await?;
+    if chapter_book_id != book_id {
+        return Err(AppError::ValidationError(format!(
+            "Chapter {chapter_id} does not belong to book {book_id}"
+        )));
+    }
+    Ok(())
+}
+
+fn outcome(
+    index: usize,
+    status: &str,
+    id: Option<Uuid>,
+    error: Option<String>,
+) -> SaveQuoteOutcomeDto {
+    SaveQuoteOutcomeDto {
+        index,
+        status: status.to_string(),
+        id,
+        error,
+    }
+}
+
+/// Saves up to fifty quotes at once, reporting each one: `saved`, `duplicate`
+/// (an identical quote was already on the shelf), or `rejected` (bad target).
+/// Accepted items are written in one transaction.
+#[utoipa::path(
+    post,
+    path = "/api/v1/quotes/save-batch",
+    request_body = SaveQuotesBatchRequest,
+    responses(
+        (status = 200, description = "Per-item outcomes in request order", body = SaveQuotesBatchResponseDto),
+        (status = 400, description = "Empty batch, more than 50 items, or an invalid item"),
+        (status = 401, description = "Authentication required")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Semantic Search"
+)]
+pub async fn handle_save_quotes_batch(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Json(payload): Json<SaveQuotesBatchRequest>,
+) -> Result<impl IntoResponse, HttpError> {
+    payload
+        .validate()
+        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+
+    let mut outcomes: Vec<Option<SaveQuoteOutcomeDto>> = vec![None; payload.items.len()];
+    let mut accepted: Vec<(usize, (Uuid, Uuid, String))> = Vec::new();
+    for (index, item) in payload.items.iter().enumerate() {
+        match validate_quote_target(&state.db, item.book_id, item.chapter_id).await {
+            Ok(()) => accepted.push((
+                index,
+                (item.book_id, item.chapter_id, item.quote_text.clone()),
+            )),
+            Err(AppError::NotFound(msg)) | Err(AppError::ValidationError(msg)) => {
+                outcomes[index] = Some(outcome(index, "rejected", None, Some(msg)));
+            }
+            Err(other) => return Err(HttpError(other)),
+        }
+    }
+
+    let rows: Vec<(Uuid, Uuid, String)> = accepted.iter().map(|(_, row)| row.clone()).collect();
+    let written = repo_save_quotes_batch(&state.db, auth_user.id, &rows, card_url_for)
+        .await
+        .map_err(HttpError)?;
+    for ((index, _), result) in accepted.iter().zip(written) {
+        outcomes[*index] = Some(match result {
+            BatchQuoteOutcome::Saved(id) => outcome(*index, "saved", Some(id), None),
+            BatchQuoteOutcome::Duplicate(id) => outcome(*index, "duplicate", Some(id), None),
+        });
+    }
+
+    let outcomes: Vec<SaveQuoteOutcomeDto> = outcomes.into_iter().flatten().collect();
+    let count = |status: &str| outcomes.iter().filter(|o| o.status == status).count();
+    let response = SaveQuotesBatchResponseDto {
+        saved: count("saved"),
+        duplicates: count("duplicate"),
+        rejected: count("rejected"),
+        outcomes,
+    };
+    Ok((StatusCode::OK, Json(ApiResponse::success(response))))
 }
 
 /// Saved quotes of the authenticated user, most recent first.

@@ -51,6 +51,7 @@ async fn seed_reader(harness: &TestHarness, email: &str) -> SeededReader {
     .insert(&harness.state.db)
     .await
     .expect("Intruder seed must succeed");
+    harness.track_user(user_id);
     let token = infra::generate_access_token(
         user_id,
         email,
@@ -87,6 +88,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
     user.insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed user: {e}"))?;
+    harness.track_user(user_id);
 
     let token = infra::generate_access_token(
         user_id,
@@ -123,6 +125,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
     book.insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed book: {e}"))?;
+    harness.track_book(book_id);
 
     // Create chapter 1
     let chapter1_id = Uuid::new_v4();
@@ -201,7 +204,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         .map_err(|e| format!("Failed to seed chunk B: {e}"))?;
 
     // Second book proving per-book scope isolation.
-    let other_book_id = Uuid::new_v4();
+    let other_book_id = harness.track_book(Uuid::new_v4());
     let other_book = books::ActiveModel {
         id: Set(other_book_id),
         title: Set("The Call of Cthulhu".to_string()),
@@ -334,6 +337,7 @@ async fn test_scoped_quote_search_open_to_guests_and_validation() {
 
     let resp = harness.send_request(invalid_limit_req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -404,6 +408,7 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
             "search leaked another book's chunk: {content}"
         );
     }
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -446,6 +451,7 @@ async fn test_scoped_quote_search_isolated_per_book() {
         .as_str()
         .expect("content must be a string")
         .contains("Cthulhu"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -494,13 +500,14 @@ async fn test_ai_rate_limiter_burst_enforcement() {
         assert_eq!(json["success"], false);
         assert_eq!(json["error"]["code"], "AI_RATE_LIMITED");
     }
+    harness.cleanup().await;
 }
 
 #[tokio::test]
 async fn test_scoped_quote_search_empty_book_returns_empty_array() {
     let harness = TestHarness::new().await;
     let now = Utc::now();
-    let empty_book_id = Uuid::new_v4();
+    let empty_book_id = harness.track_book(Uuid::new_v4());
     books::ActiveModel {
         id: Set(empty_book_id),
         title: Set("Empty Shelves".to_string()),
@@ -541,6 +548,7 @@ async fn test_scoped_quote_search_empty_book_returns_empty_array() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
     assert_eq!(json["data"].as_array().expect("data array").len(), 0);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -582,6 +590,7 @@ async fn test_guest_ai_burst_enforcement() {
     }
     assert!(ok_count >= 1, "guest burst must allow initial requests");
     assert!(ok_count <= 10, "guest burst must shed past 10 req/min");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -608,6 +617,7 @@ async fn test_quote_search_unknown_book_returns_404() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], false);
     assert_eq!(json["error"]["code"], "NOT_FOUND");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -712,6 +722,7 @@ async fn test_save_quote_rejects_unknown_book_and_mismatched_chapter() {
 
     let resp = harness.send_request(ok_req).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -803,6 +814,7 @@ async fn test_saved_quotes_and_vintage_card_export() {
     let quotes = json["data"].as_array().expect("Array of saved quotes");
     assert!(!quotes.is_empty());
     assert!(quotes[0]["image_card_url"].is_string());
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -837,6 +849,7 @@ async fn test_atomic_cards_scoped_to_path_book() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -870,6 +883,7 @@ async fn test_chapter1_recap_unavailable_by_uuid() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -946,6 +960,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
 
     let resp = harness.send_request(hit_uuid_req).await;
     assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -1026,6 +1041,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
 
     let resp = harness.send_request(hit_uuid_req).await;
     assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
 }
 
 // Split card ownership (owner 200 / intruder 404 / anon 401) +
@@ -1096,6 +1112,7 @@ async fn test_quote_card_ownership_split() {
         .expect("Valid request");
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
 }
 
 /// Insights endpoints on an unknown book: 404 (never 404-cache-miss
@@ -1119,4 +1136,82 @@ async fn test_insights_unknown_book_returns_404() {
         let resp = harness.send_request(req).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
+    harness.cleanup().await;
+}
+
+/// Batch save reports every item in order: new quotes save, an identical
+/// quote already on the shelf is a duplicate, bad targets are rejected without
+/// failing the rest. The batch is capped at fifty and guests are refused.
+#[tokio::test]
+async fn test_save_quotes_batch_outcomes_cap_and_auth() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let text = "The oldest and strongest emotion of mankind is fear.";
+    let batch = |items: Value, token: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/quotes/save-batch")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(t) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        builder
+            .body(Body::from(
+                serde_json::json!({ "items": items }).to_string(),
+            ))
+            .expect("Valid request")
+    };
+    let items = serde_json::json!([
+        { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": text },
+        { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": text },
+        { "book_id": seeded.book_id, "chapter_id": Uuid::new_v4(), "quote_text": "orphan chapter" },
+        { "book_id": Uuid::new_v4(), "chapter_id": seeded.chapter1_id, "quote_text": "unknown book" },
+    ]);
+
+    let (resp, json) = harness
+        .send_json_request(batch(items.clone(), Some(&seeded.token)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let statuses: Vec<&str> = json["data"]["outcomes"]
+        .as_array()
+        .expect("outcomes array")
+        .iter()
+        .map(|o| o["status"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(statuses, ["saved", "duplicate", "rejected", "rejected"]);
+    assert_eq!(json["data"]["saved"], 1);
+    assert_eq!(json["data"]["rejected"], 2);
+
+    // Replaying the same device merge adds nothing.
+    let (resp, json) = harness
+        .send_json_request(batch(items, Some(&seeded.token)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json["data"]["saved"], 0);
+    assert_eq!(json["data"]["duplicates"], 2);
+
+    let list = Request::builder()
+        .method("GET")
+        .uri("/api/v1/quotes")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let (_, json) = harness.send_json_request(list).await;
+    assert_eq!(json["data"].as_array().map(Vec::len), Some(1));
+
+    let too_many: Vec<Value> = (0..51)
+        .map(|i| serde_json::json!({ "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": format!("quote {i}") }))
+        .collect();
+    let (resp, _) = harness
+        .send_json_request(batch(Value::Array(too_many), Some(&seeded.token)))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let (resp, _) = harness
+        .send_json_request(batch(serde_json::json!([{ "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": text }]), None))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
 }

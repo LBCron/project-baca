@@ -1,6 +1,6 @@
 //! Local-first persistence via IndexedDB (`rexie`).
 //! Database `project_baca_db` with stores for guest progress, offline books,
-//! offline chapters, and the pending sync queue.
+//! offline chapters, the pending sync queue, and quotes kept on the device.
 
 use rexie::{ObjectStore, Rexie, TransactionMode};
 use serde::de::DeserializeOwned;
@@ -8,12 +8,31 @@ use serde::Serialize;
 use wasm_bindgen::JsValue;
 
 const DB_NAME: &str = "project_baca_db";
-const DB_VERSION: u32 = 2;
+const DB_VERSION: u32 = 3;
 
 pub const STORE_GUEST_PROGRESS: &str = "guest_progress";
 pub const STORE_OFFLINE_BOOKS: &str = "offline_books";
 pub const STORE_OFFLINE_CHAPTERS: &str = "offline_chapters";
 pub const STORE_PENDING_SYNC: &str = "pending_sync_queue";
+pub const STORE_LOCAL_QUOTES: &str = "local_quotes";
+
+/// A quote a guest kept on this device, merged into the account at sign-in.
+/// `key` is stable per (book, chapter, text) so repeated saves never pile up.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LocalQuoteRecord {
+    pub key: String,
+    pub book_id: uuid::Uuid,
+    pub chapter_id: uuid::Uuid,
+    pub quote_text: String,
+    pub saved_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub fn local_quote_key(book_id: uuid::Uuid, chapter_id: uuid::Uuid, text: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.trim().hash(&mut hasher);
+    format!("{book_id}:{chapter_id}:{:016x}", hasher.finish())
+}
 
 /// Typed chapter cache record (keyPath `chapter_id`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,6 +51,7 @@ async fn db() -> Result<Rexie, String> {
         .add_object_store(ObjectStore::new(STORE_OFFLINE_BOOKS).key_path("id"))
         .add_object_store(ObjectStore::new(STORE_OFFLINE_CHAPTERS).key_path("chapter_id"))
         .add_object_store(ObjectStore::new(STORE_PENDING_SYNC).auto_increment(true))
+        .add_object_store(ObjectStore::new(STORE_LOCAL_QUOTES).key_path("key"))
         .build()
         .await
         .map_err(|e| format!("{e:?}"))
@@ -68,6 +88,20 @@ pub async fn get_all<T: DeserializeOwned>(store: &str) -> Result<Vec<T>, String>
         .into_iter()
         .map(|v| serde_wasm_bindgen::from_value(v).map_err(|e| e.to_string()))
         .collect()
+}
+
+pub async fn delete(store: &str, key: &str) -> Result<(), String> {
+    let rexie = db().await?;
+    let tx = rexie
+        .transaction(&[store], TransactionMode::ReadWrite)
+        .map_err(|e| format!("{e:?}"))?;
+    tx.store(store)
+        .map_err(|e| format!("{e:?}"))?
+        .delete(JsValue::from_str(key))
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    tx.done().await.map_err(|e| format!("{e:?}"))?;
+    Ok(())
 }
 
 pub async fn clear(store: &str) -> Result<(), String> {

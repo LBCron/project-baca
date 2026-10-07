@@ -26,6 +26,7 @@ async fn test_smoke_health_endpoint() {
     assert_eq!(body["data"]["status"], "healthy");
     assert_eq!(body["data"]["service"], "project-baca-server");
     assert!(resp.headers().contains_key("x-request-id"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -48,6 +49,7 @@ async fn test_smoke_api_v1_health_dependencies() {
     if body["data"]["redis"] == "disconnected" || body["data"]["postgres"] == "disconnected" {
         assert_eq!(body["data"]["status"], "degraded");
     }
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -69,6 +71,7 @@ async fn test_smoke_swagger_ui_endpoint() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert!(content_type.contains("text/html"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -88,6 +91,7 @@ async fn test_smoke_openapi_json_spec() {
     assert_eq!(spec["info"]["version"], "0.1.0");
     assert!(spec["paths"]["/health"].is_object());
     assert!(spec["paths"]["/api/v1/health"].is_object());
+    harness.cleanup().await;
 }
 
 #[test]

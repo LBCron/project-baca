@@ -32,6 +32,7 @@ async fn test_integration_request_id_server_generated() {
         Uuid::parse_str(returned_id).is_ok(),
         "server must mint its own request id, got {returned_id}"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -54,6 +55,7 @@ async fn test_integration_request_id_auto_generation() {
         .to_str()
         .unwrap();
     assert!(Uuid::parse_str(generated_id).is_ok());
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -72,6 +74,7 @@ async fn test_integration_cors_headers() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("access-control-allow-origin"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -133,6 +136,7 @@ async fn test_integration_openapi_schema_contains_registered_dtos() {
         schemas["ReadingProgressUpdateDto"].is_object(),
         "ReadingProgressUpdateDto schema missing"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -149,4 +153,5 @@ async fn test_integration_route_not_found_handling() {
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert!(resp.headers().contains_key("x-request-id"));
+    harness.cleanup().await;
 }

@@ -47,6 +47,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
     user.insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed user: {e}"))?;
+    harness.track_user(user_id);
 
     let token = infra::generate_access_token(
         user_id,
@@ -67,6 +68,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         created_at: Set(now.into()),
     };
     let _ = tag.insert(&harness.state.db).await;
+    harness.track_tag(tag_id);
 
     // Seed Published Books
     let book1_id = Uuid::new_v4();
@@ -97,6 +99,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         .insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed book 1: {e}"))?;
+    harness.track_book(book1_id);
 
     // Connect tag to book 1
     let book_tag = book_tags::ActiveModel {
@@ -130,6 +133,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         .insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed book 2: {e}"))?;
+    harness.track_book(book2_id);
 
     let book3_id = Uuid::new_v4();
     let book3 = books::ActiveModel {
@@ -158,6 +162,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         .insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed book 3: {e}"))?;
+    harness.track_book(book3_id);
 
     // Seed Draft Book (Must NOT appear in catalog)
     let draft_id = Uuid::new_v4();
@@ -185,6 +190,7 @@ async fn seed_test_catalog(harness: &TestHarness) -> Result<SeededCatalog, Strin
         .insert(&harness.state.db)
         .await
         .map_err(|e| format!("Failed to seed draft book: {e}"))?;
+    harness.track_book(draft_id);
 
     // Seed Chapters for Book 1
     let chap1_id = Uuid::new_v4();
@@ -288,6 +294,7 @@ async fn test_catalog_listing_and_filtering() {
     let (resp_alias, json_alias) = harness.send_json_request(req_alias).await;
     assert_eq!(resp_alias.status(), StatusCode::NOT_FOUND);
     assert_eq!(json_alias["error"]["code"], "NOT_FOUND");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -338,6 +345,7 @@ async fn test_catalog_typo_tolerant_fts_search() {
 
     let (resp_short, _) = harness.send_json_request(req_short).await;
     assert_eq!(resp_short.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -385,6 +393,7 @@ async fn test_book_overview_chapter_and_offline_bundle() {
     assert_eq!(resp_bundle.status(), StatusCode::OK);
     assert!(json_bundle["data"]["book"].is_object());
     assert_eq!(json_bundle["data"]["chapters"].as_array().unwrap().len(), 2);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -467,6 +476,7 @@ async fn test_reading_progress_and_active_retrieval() {
     let (resp_active2, json_active2) = harness.send_json_request(req_active2).await;
     assert_eq!(resp_active2.status(), StatusCode::OK);
     assert!(json_active2["data"].is_null());
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -548,6 +558,7 @@ async fn test_gamification_heartbeat_and_badges() {
         user_badges[0]["badge_id"].as_str().unwrap_or(""),
         "first_step"
     );
+    harness.cleanup().await;
 }
 
 /// Heartbeat credit is clamped server-side (domain cap of 90 s per
@@ -599,4 +610,5 @@ async fn test_heartbeat_credit_clamped_and_gate_per_user() {
     assert_eq!(json["data"]["total_reading_seconds"].as_i64(), Some(90));
     assert_eq!(json["data"]["today_seconds"].as_i64(), Some(90));
     assert_eq!(json["data"]["daily_threshold_seconds"].as_i64(), Some(300));
+    harness.cleanup().await;
 }

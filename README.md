@@ -66,10 +66,13 @@ Complete installation steps, environment configurations, and development workflo
 # 1. Start core database and cache services (PostgreSQL 17, Redis 7, MinIO, Mailpit)
 make db-up
 
-# 2. Run backend API server with hot reload
+# 2. Apply migrations and seed four public-domain sample books (dev only)
+make migrate-up seed-dev
+
+# 3. Run backend API server with hot reload
 make dev-server
 
-# 3. Run frontend Web Reader with hot reload
+# 4. Run frontend Web Reader with hot reload
 make dev-web
 ```
 

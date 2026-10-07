@@ -126,6 +126,8 @@ project-baca/
 * **Typography:** `EB Garamond` display (`--font-display`), `Newsreader` reading body (`--font-reading`), `Plus Jakarta Sans` interface labels (`--font-ui`); fleuron `❖` as ornament; chapter numerals in roman.
 * **Shape and motion:** 20px card radius, pill controls, 44px touch targets; fade-up on mount, sheet slide-in, page-turn fade, all disabled under `prefers-reduced-motion`.
 * **Illustrations:** Classic pen-and-ink engravings in `assets/illustrations/` (PNG originals, WebP copies shipped by Trunk), shown as paper plates over the dark shell; the home hero carries one static plate.
+* **Curator desk:** `/admin` (role `admin`, re-checked against the user row) shows manuscripts in every status, the ingestion queue with its dead letters, and the drop-off funnel; status changes go through the domain lifecycle (`BookStatus::can_transition_to`).
+* **Sessions:** refresh tokens live in Redis as hashes with a `session:{hash}` record (device label, IP prefix, last access `jti`); readers list and revoke devices from the shelf, and "sign out other devices" keeps the caller without a global revocation stamp.
 * **Responsive rules:** phones under 768px get the greeting-first home, the bottom tab bar, bottom sheets, and the book action dock; wider screens get the editorial hero, header navigation, centered dialogs, and inline actions. Safe-area insets apply on every edge; the reader paginates in a fixed-height flex column (one column, two from 1024px, measure capped at 1440px).
 
 ## 7. Infrastructure Services (`docker-compose.yml`)
@@ -134,7 +136,7 @@ project-baca/
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
 4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses; the CSP allows no inline scripts because a Trunk `post_build` hook (`scripts/externalize_inline_scripts.py`) moves the generated bootstrap into a hashed `boot-*.js`. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
@@ -144,7 +146,7 @@ project-baca/
 * **Makefile Automation:** Centralized command runners (`make dev-server`, `make dev-web`, `make migrate-up`, `make test-all`).
 * **API Documentation (`utoipa`):** Compile-time checked OpenAPI 3.1 schema serving Swagger UI at `/swagger-ui`.
 * **Structured Observability:** Tracing with automatic `x-request-id` propagation and NDJSON format via `LOG_FORMAT=json`.
-* **Test Layout:** Functional suites are modules of one binary, `crates/server/tests/it` (smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability); `performance_test` and `load_stress_test` stay separate so parallel functional tests cannot skew latency assertions. Debug builds keep `line-tables-only` debuginfo for workspace code and none for dependencies.
+* **Test Layout:** Functional suites are modules of one binary, `crates/server/tests/it` (smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability); `performance_test` and `load_stress_test` stay separate so parallel functional tests cannot skew latency assertions. Debug builds keep `line-tables-only` debuginfo for workspace code and none for dependencies. Every test registers the rows it seeds (`TestHarness::track_*`) and ends with `harness.cleanup()`, so the shared dev database holds the same row counts before and after a run; `make purge-test-debris` sweeps survivors of panicked runs and `make seed-dev` restores a small, human-looking catalog.
 * **Rate Limiting:** One Redis fixed-window engine (`middleware/rate_limit.rs`) behind three policies: auth (20/min per IP), AI search (10/min per user or guest IP), and public reads (`PUBLIC_RATE_LIMIT_PER_MINUTE`, off in dev, 600 in production compose).
 
 ## 9. Development Intelligence Architecture (Quad-Layer System One)

@@ -8,6 +8,7 @@ use common::TestHarness;
 use pretty_assertions::assert_eq;
 use redis::AsyncCommands;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, Statement};
+use serde_json::Value;
 use shared::{
     ChangePasswordRequest, GuestMergeRequest, GuestProgressRecord, LoginRequest,
     RefreshTokenRequest, SignupRequest, UpdateProfileRequest, VerifyOtpRequest,
@@ -31,6 +32,7 @@ async fn test_auth_full_lifecycle() {
     );
 
     let test_email = format!("reader_{}@example.com", Uuid::new_v4());
+    harness.track_email(&test_email);
     let test_password = "Password1234!";
 
     // Signup
@@ -340,13 +342,15 @@ async fn test_auth_full_lifecycle() {
     let (resp, delete_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(delete_body["success"], true);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
 async fn test_change_password_revokes_sessions_by_default() {
     let harness = TestHarness::new().await;
-    let user_id = Uuid::new_v4();
+    let user_id = harness.track_user(Uuid::new_v4());
     let email = format!("pwd_revoke_{user_id}@example.com");
+    harness.track_email(&email);
     let user = infra::entities::users::ActiveModel {
         id: Set(user_id),
         email: Set(email.clone()),
@@ -418,13 +422,15 @@ async fn test_change_password_revokes_sessions_by_default() {
         .unwrap();
     let (resp, _) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
 async fn test_auth_guest_progress_merge() {
     let harness = TestHarness::new().await;
-    let user_id = Uuid::new_v4();
+    let user_id = harness.track_user(Uuid::new_v4());
     let email = format!("guest_merger_{}@example.com", user_id);
+    harness.track_email(&email);
 
     // Create user in DB directly
     let user = infra::entities::users::ActiveModel {
@@ -443,7 +449,7 @@ async fn test_auth_guest_progress_merge() {
         .expect("live DB required (db-up)");
 
     // Seed test book & chapter
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
     let chapter_id = Uuid::new_v4();
     let book = infra::entities::books::ActiveModel {
         id: Set(book_id),
@@ -574,7 +580,7 @@ async fn test_auth_guest_progress_merge() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // Cross-book chapter ids are a 400, not a 500 FK violation.
-    let other_book_id = Uuid::new_v4();
+    let other_book_id = harness.track_book(Uuid::new_v4());
     let other_book = infra::entities::books::ActiveModel {
         id: Set(other_book_id),
         title: Set("Other Novel".to_string()),
@@ -635,6 +641,7 @@ async fn test_auth_guest_progress_merge() {
             vec![book_id.into()],
         ))
         .await;
+    harness.cleanup().await;
 }
 
 // Adversarial tests need live Postgres + Redis (`#[ignore]` by default,
@@ -652,6 +659,7 @@ async fn provision_verified_user(
     use redis::AsyncCommands;
 
     let email = format!("adv_{tag}_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email);
     let password = "Adversarial123!";
     let signup_req = SignupRequest {
         display_name: format!("Adv{tag}"),
@@ -772,6 +780,7 @@ async fn test_auth_replay_kills_token_family() {
         StatusCode::UNAUTHORIZED,
         "replay must revoke the whole family including the fresh sibling"
     );
+    harness.cleanup().await;
 }
 
 /// Pair lockout after 5 failures; a different IP is unaffected.
@@ -787,6 +796,7 @@ async fn test_auth_pair_lockout_five_failures() {
     let other_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
     let (email, password) = {
         let email = format!("lockpair_{}@example.com", Uuid::new_v4());
+        harness.track_email(&email);
         let password = "LockoutPair123!";
         let signup_req = SignupRequest {
             display_name: "LockPair".to_string(),
@@ -845,6 +855,7 @@ async fn test_auth_pair_lockout_five_failures() {
         .send_json_request(login_req(&email, password, &other_ip))
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
 }
 
 /// Aggregate email lockout after 20 failures across IPs.
@@ -859,6 +870,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
     let base: u8 = 10 + (Uuid::new_v4().as_u128() % 150) as u8;
     let (email, password) = {
         let email = format!("lockagg_{}@example.com", Uuid::new_v4());
+        harness.track_email(&email);
         let password = "LockoutAgg123!";
         let ip0 = format!("198.51.100.{base}");
         let signup_req = SignupRequest {
@@ -921,6 +933,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
         StatusCode::TOO_MANY_REQUESTS,
         "20 aggregate failures must lock the email"
     );
+    harness.cleanup().await;
 }
 
 /// Signup SMTP-abuse cap: 11 signups/hour from one IP sheds with 429.
@@ -936,7 +949,7 @@ async fn test_auth_signup_ip_cap_eleven_per_hour() {
     for i in 0..11 {
         let signup_req = SignupRequest {
             display_name: format!("Cap{i}"),
-            email: format!("cap{i}_{}@example.com", Uuid::new_v4()),
+            email: harness.track_email_owned(format!("cap{i}_{}@example.com", Uuid::new_v4())),
             password: "CapTest123!".to_string(),
         };
         let req = Request::builder()
@@ -961,6 +974,7 @@ async fn test_auth_signup_ip_cap_eleven_per_hour() {
         StatusCode::TOO_MANY_REQUESTS,
         "11th signup/hour from one IP must be shed"
     );
+    harness.cleanup().await;
 }
 
 /// OTP abuse: 3 wrong attempts lock the OTP for 5 minutes (even the right
@@ -976,6 +990,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
     use redis::AsyncCommands;
     let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
     let email = format!("otplock_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email);
     let signup_req = SignupRequest {
         display_name: "OtpLock".to_string(),
         email: email.clone(),
@@ -1014,25 +1029,32 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
             .unwrap()
     };
 
-    for _ in 0..3 {
+    for _ in 0..2 {
         let (resp, _) = harness.send_json_request(verify("000000")).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
-    // Correct code inside the lock window is still rejected (400 with a
-    // wait-a-few-minutes message — the OTP lock surfaces as ValidationError,
-    // unlike the login lockout which is 429; see follow-up note below).
+    // The third miss locks the code: 429 with Retry-After, like the login
+    // lockout, so a client can tell "typo" from "locked".
+    let (resp, _) = harness.send_json_request(verify("000000")).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    // The correct code inside the lock window is still rejected.
     let (resp, body) = harness.send_json_request(verify("424242")).await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    let retry_after: u64 = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .expect("locked OTP must carry Retry-After");
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("wait"),
-        "locked OTP must tell the user to wait"
+        (1..=300).contains(&retry_after),
+        "retry window is at most five minutes"
     );
 
     // Expired OTP (TTL 1s, then wait) is 400, not 500/accept.
     let email2 = format!("otpexp_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email2);
     let record_json =
         serde_json::json!({ "hash": infra::hash_otp("424242"), "attempts": 0 }).to_string();
     let _: () = redis_conn
@@ -1055,6 +1077,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
         .unwrap();
     let (resp, _) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 /// Password change with default flags kills the other session for real
@@ -1069,6 +1092,7 @@ async fn test_auth_password_change_kills_other_session_e2e() {
     };
     let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
     let email = format!("pwd_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email);
     let password = "SessionKill123!";
     let signup_req = SignupRequest {
         display_name: "SessKiller".to_string(),
@@ -1168,6 +1192,7 @@ async fn test_auth_password_change_kills_other_session_e2e() {
         StatusCode::UNAUTHORIZED,
         "requester token also dies under global-timestamp revocation"
     );
+    harness.cleanup().await;
 }
 
 /// Guest merge cap: 100 records OK, 101 rejected with 400.
@@ -1175,8 +1200,9 @@ async fn test_auth_password_change_kills_other_session_e2e() {
 async fn test_guest_merge_enforces_hundred_record_cap() {
     use sea_orm::{ActiveModelTrait, ActiveValue::Set};
     let harness = TestHarness::new().await;
-    let user_id = Uuid::new_v4();
+    let user_id = harness.track_user(Uuid::new_v4());
     let email = format!("mergecap_{}@example.com", user_id);
+    harness.track_email(&email);
     let user = infra::entities::users::ActiveModel {
         id: Set(user_id),
         email: Set(email.clone()),
@@ -1191,7 +1217,7 @@ async fn test_guest_merge_enforces_hundred_record_cap() {
     if user.insert(&harness.state.db).await.is_err() {
         panic!("live DB required (db-up), no silent pass");
     }
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
     let chapter_id = Uuid::new_v4();
     let book = infra::entities::books::ActiveModel {
         id: Set(book_id),
@@ -1288,6 +1314,7 @@ async fn test_guest_merge_enforces_hundred_record_cap() {
             vec![book_id.into()],
         ))
         .await;
+    harness.cleanup().await;
 }
 
 /// Inside the rotation grace window a consumed token returns the same
@@ -1314,6 +1341,7 @@ async fn test_auth_refresh_grace_window() {
 
     let (resp, _) = harness.send_json_request(rotate(&first)).await;
     assert_eq!(resp.status(), StatusCode::OK, "family must stay alive");
+    harness.cleanup().await;
 }
 
 /// Two simultaneous refreshes race on GETDEL: at least one wins, nobody is
@@ -1351,6 +1379,7 @@ async fn test_auth_concurrent_refresh_keeps_family_alive() {
         .send_json_request(refresh_req(&successor, &ip))
         .await;
     assert_eq!(resp.status(), StatusCode::OK, "family must stay alive");
+    harness.cleanup().await;
 }
 
 /// An unverified account must answer like a wrong password and count as a
@@ -1363,6 +1392,7 @@ async fn test_login_inactive_account_is_indistinguishable_from_wrong_password() 
         .await
         .expect("live Postgres + Redis required (db-up)");
     let email = format!("dormant_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email);
     let password = "DormantSecret123!";
     let hash = infra::hash_password_async(password.to_string())
         .await
@@ -1383,6 +1413,7 @@ async fn test_login_inactive_account_is_indistinguishable_from_wrong_password() 
         .await
         .unwrap_or(0);
     assert_eq!(failures, 1, "the attempt must count toward lockout");
+    harness.cleanup().await;
 }
 
 fn refresh_req(token: &str, ip: &str) -> Request<Body> {
@@ -1398,4 +1429,126 @@ fn refresh_req(token: &str, ip: &str) -> Request<Body> {
             .unwrap(),
         ))
         .unwrap()
+}
+
+/// Two devices sign in; the shelf lists both with the caller flagged, one
+/// device can be dropped alone (its refresh token dies), and "sign out
+/// everywhere but here" keeps the caller signed in.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_sessions_list_single_revoke_and_keep_current() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (phone_access, phone_refresh) =
+        provision_verified_user(&harness, &mut redis_conn, "sess", &ip).await;
+    let email = {
+        let claims =
+            infra::verify_access_token(&phone_access, harness.state.config.jwt_secret()).unwrap();
+        claims.email
+    };
+
+    let laptop_login = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header("cf-connecting-ip", "203.0.113.77")
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&LoginRequest {
+                email: email.clone(),
+                password: "Adversarial123!".to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(laptop_login).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let laptop_access = body["data"]["access_token"].as_str().unwrap().to_string();
+    let laptop_refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    let sessions = |token: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/me/sessions")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (resp, body) = harness.send_json_request(sessions(&laptop_access)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let list = body["data"].as_array().expect("sessions array");
+    assert_eq!(list.len(), 2, "{body}");
+    let current: Vec<&Value> = list.iter().filter(|s| s["current"] == true).collect();
+    assert_eq!(current.len(), 1, "exactly one current session");
+    assert_eq!(current[0]["device"], "Firefox \u{00B7} Linux");
+    assert_eq!(current[0]["ip_prefix"], "203.0.113.x");
+    let phone_id = list
+        .iter()
+        .find(|s| s["current"] == false)
+        .and_then(|s| s["id"].as_str())
+        .expect("other session id")
+        .to_string();
+
+    let revoke = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/me/sessions/{phone_id}"))
+        .header("authorization", format!("Bearer {laptop_access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, _) = harness.send_json_request(revoke).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (resp, _) = harness
+        .send_json_request(refresh_req(&phone_refresh, &ip))
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "the dropped device cannot refresh"
+    );
+    let (resp, _) = harness.send_json_request(sessions(&phone_access)).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "its last access token is blacklisted"
+    );
+    let (_, body) = harness.send_json_request(sessions(&laptop_access)).await;
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+
+    let revoke_again = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/me/sessions/{phone_id}"))
+        .header("authorization", format!("Bearer {laptop_access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, _) = harness.send_json_request(revoke_again).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let (resp, body) = harness
+        .send_json_request(refresh_req(&laptop_refresh, "203.0.113.77"))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let laptop_access = body["data"]["access_token"].as_str().unwrap().to_string();
+    let keep_current = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/revoke-all?keep_current=true")
+        .header("authorization", format!("Bearer {laptop_access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, body) = harness.send_json_request(keep_current).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let (resp, body) = harness.send_json_request(sessions(&laptop_access)).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the caller survives keep_current: {body}"
+    );
+    assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+    harness.cleanup().await;
 }

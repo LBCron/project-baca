@@ -1,6 +1,6 @@
 """Shared pytest fixtures for the Rotaria web suite.
 
-Requires: `make db-up`, Axum on :8080 (`make dev-server`),
+Requires: `make db-up`, `make seed-dev`, Axum on :8080 (`make dev-server`),
 Trunk on :3000 (`make dev-web`).
 """
 import json
@@ -19,27 +19,31 @@ def api_get(path: str):
         return json.load(r)["data"]
 
 
+SEED_BOOK_ID = "a0000000-0000-4000-8000-000000000001"
+
+
 @pytest.fixture(scope="session")
 def book_with_chapters() -> str:
-    """ID of a book that has at least one chapter (never debris content)."""
+    """ID of a book that has at least one chapter.
+
+    Prefers the dev seed (`make seed-dev`, fixed id, deterministic content for
+    visual goldens); falls back to any published book with chapters.
+    """
+    try:
+        if api_get(f"/books/{SEED_BOOK_ID}").get("chapters"):
+            return SEED_BOOK_ID
+    except Exception:
+        pass
     books = api_get("/books?limit=100")
-    assert books, "catalog empty, seed or ingest a book first"
-    # Prefer the stable seed book (deterministic content for visual goldens);
-    # fall back to any debris book with chapters for flow tests.
-    fallback = None
+    assert books, "catalog empty, run `make seed-dev` or ingest a book first"
     for book in books:
         try:
             detail = api_get(f"/books/{book['id']}")
         except Exception:
             continue
         if detail.get("chapters"):
-            if "Sitti Nurbaya" in (book.get("title") or "") and fallback is None:
-                return book["id"]
-            if fallback is None:
-                fallback = book["id"]
-    if fallback is not None:
-        return fallback
-    raise AssertionError("no book with chapters found; ingest a sample EPUB first")
+            return book["id"]
+    raise AssertionError("no book with chapters found; run `make seed-dev`")
 
 
 @pytest.fixture(scope="session")

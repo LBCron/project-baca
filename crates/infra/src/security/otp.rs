@@ -1,4 +1,6 @@
-//! 6-digit numeric OTP generation and Redis SHA-256 storage with rate-limiting.
+//! 6-digit numeric OTP generation and Redis SHA-256 storage with attempt
+//! limiting: three misses lock the code for five minutes, surfaced as a
+//! 429 with `Retry-After` so clients can show a countdown.
 
 use rand::Rng;
 use redis::AsyncCommands;
@@ -85,10 +87,9 @@ pub async fn verify_and_consume_otp(
     let now = chrono::Utc::now().timestamp();
     if let Some(locked_until) = record.locked_until {
         if now < locked_until {
-            return Err(AppError::ValidationError(
-                "Too many incorrect attempts. Please wait a few minutes or request a new OTP."
-                    .to_string(),
-            ));
+            return Err(AppError::RateLimited {
+                retry_after: (locked_until - now).max(1) as u64,
+            });
         }
     }
 
@@ -109,9 +110,9 @@ pub async fn verify_and_consume_otp(
             .set_ex(&redis_key, locked_json, remaining_ttl)
             .await
             .unwrap_or(());
-        return Err(AppError::ValidationError(
-            "Maximum OTP verification attempts exceeded. Please wait a few minutes or request a new OTP.".to_string(),
-        ));
+        return Err(AppError::RateLimited {
+            retry_after: OTP_LOCK_SECONDS as u64,
+        });
     }
 
     // Save incremented attempts with remaining TTL

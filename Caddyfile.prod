@@ -20,15 +20,16 @@
 	}
 
 	# Leptos WASM SPA (static dist/, no Trunk dev server in prod).
-	# Axum sets its own headers; the static shell needs them here. Trunk
-	# injects an inline bootstrap script, hence 'unsafe-inline' on scripts;
-	# connect-src stays same-origin because the API shares the domain.
+	# Axum sets its own headers; the static shell needs them here. The Trunk
+	# post_build hook externalizes the bootstrap script, so script-src needs
+	# no 'unsafe-inline'; connect-src stays same-origin because the API
+	# shares the domain.
 	handle /* {
 		root * /srv/web
 		try_files {path} /index.html
 		file_server
 		header {
-			Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
 			X-Content-Type-Options "nosniff"
 			X-Frame-Options "DENY"

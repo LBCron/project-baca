@@ -1,10 +1,10 @@
 //! Quote finder, insight cards, and the spoiler-free recap, rendered as
 //! paper cards inside a sheet.
 
-use crate::api;
 use crate::components::icons;
 use crate::components::toast::use_toasts;
 use crate::i18n::{use_lang, Lang};
+use crate::{api, storage};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{QuoteSearchRequest, QuoteSearchResultDto};
@@ -95,28 +95,47 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
         });
     };
 
+    // Members save to the account; guests keep the quote on this device until
+    // sign-in merges it (see `AuthSheet`).
     let save = move |row: QuoteSearchResultDto| {
         let id = book.get_value();
         spawn_local(async move {
-            let chapter = api::chapter(&id, row.chapter_number).await.map(|c| c.id);
-            let book_uuid = id.parse::<uuid::Uuid>();
-            match (book_uuid, chapter) {
-                (Ok(book_id), Ok(chapter_id)) => {
-                    match api::save_quote(&shared::SaveQuoteRequest {
-                        book_id,
-                        chapter_id,
-                        quote_text: row.content.clone(),
-                    })
-                    .await
-                    {
-                        Ok(_) => {
-                            set_saved.update(|s| s.push(row.chunk_id));
-                            toasts.info(lang.get_untracked().text("quote_saved"));
-                        }
-                        Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
-                    }
+            let target = match (
+                id.parse::<uuid::Uuid>(),
+                api::chapter(&id, row.chapter_number).await.map(|c| c.id),
+            ) {
+                (Ok(book_id), Ok(chapter_id)) => (book_id, chapter_id),
+                _ => {
+                    toasts.error(lang.get_untracked().text("error_generic"));
+                    return;
                 }
-                _ => toasts.error(lang.get_untracked().text("error_generic")),
+            };
+            let stored = if api::is_authed() {
+                api::save_quote(&shared::SaveQuoteRequest {
+                    book_id: target.0,
+                    chapter_id: target.1,
+                    quote_text: row.content.clone(),
+                })
+                .await
+                .map(|_| "quote_saved")
+            } else {
+                let record = storage::LocalQuoteRecord {
+                    key: storage::local_quote_key(target.0, target.1, &row.content),
+                    book_id: target.0,
+                    chapter_id: target.1,
+                    quote_text: row.content.clone(),
+                    saved_at: chrono::Utc::now(),
+                };
+                storage::put(storage::STORE_LOCAL_QUOTES, &record)
+                    .await
+                    .map(|_| "quote_saved_device")
+            };
+            match stored {
+                Ok(message) => {
+                    set_saved.update(|s| s.push(row.chunk_id));
+                    toasts.info(lang.get_untracked().text(message));
+                }
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
             }
         });
     };
@@ -139,7 +158,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     <li class="empty-state"><p>{move || lang.get().text("quote_empty")}</p></li>
                 })}
                 {move || (!api::is_authed() && !results.get().is_empty()).then(|| view! {
-                    <li class="form-hint">{move || lang.get().text("quote_sign_in")}</li>
+                    <li class="form-hint">{move || lang.get().text("quote_guest_hint")}</li>
                 })}
                 {move || results.get().into_iter().map(|r| {
                     let id = book.get_value();
@@ -155,11 +174,9 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                             <blockquote>{r.content.clone()}</blockquote>
                             <div class="quote-actions">
                                 <a href=jump class="btn btn-primary">{move || lang.get().text("quote_jump")}</a>
-                                {api::is_authed().then(|| view! {
-                                    <button class="btn btn-ghost" disabled=is_saved on:click=move |_| save(row_for_save.clone())>
-                                        {move || if is_saved { lang.get().text("quote_saved") } else { lang.get().text("quote_save") }}
-                                    </button>
-                                })}
+                                <button class="btn btn-ghost" disabled=is_saved on:click=move |_| save(row_for_save.clone())>
+                                    {move || if is_saved { lang.get().text("quote_saved") } else { lang.get().text("quote_save") }}
+                                </button>
                                 <button class="btn btn-ghost" on:click=move |_| share_quote(toasts, share_text.clone(), share_source.clone(), lang.get_untracked())>
                                     {icons::share()}
                                     <span>{move || lang.get().text("quote_share")}</span>

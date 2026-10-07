@@ -96,6 +96,7 @@ async fn test_owasp_security_headers_and_error_handling() {
     assert!(body["error"]["details"].is_object());
     assert!(body["error"]["details"]["email"].is_array());
     assert!(body["error"]["details"]["password"].is_array());
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -132,6 +133,7 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
     assert!(resp.headers().contains_key("x-ratelimit-limit"));
     assert!(resp.headers().contains_key("x-ratelimit-remaining"));
     assert!(resp.headers().contains_key("x-ratelimit-reset"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -143,6 +145,7 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
         .expect("live Redis required (db-up)");
 
     let target_email = format!("victim_{}@example.com", Uuid::new_v4());
+    harness.track_email(&target_email);
     let signup_req = SignupRequest {
         display_name: "TargetUser".to_string(),
         email: target_email.clone(),
@@ -176,6 +179,7 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
     assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(body2["error"]["code"], "RATE_LIMITED");
     assert!(resp2.headers().contains_key(header::RETRY_AFTER));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -230,6 +234,7 @@ async fn test_owasp_login_brute_force_lockout() {
     let _: Result<(), _> = redis_conn
         .del(&[&pair_fail, &pair_lock, &lockout_key, &fail_key])
         .await;
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -268,6 +273,7 @@ async fn test_owasp_password_change_identical_rejection() {
         .as_str()
         .unwrap()
         .contains("different from current password"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -289,9 +295,15 @@ async fn test_owasp_token_revocation_on_logout() {
     .unwrap();
 
     let refresh_token = infra::generate_refresh_token();
-    infra::store_refresh_token(&mut redis_conn, &refresh_token, test_user_id, 14)
-        .await
-        .unwrap();
+    infra::store_refresh_token(
+        &mut redis_conn,
+        &refresh_token,
+        test_user_id,
+        14,
+        infra::SessionMeta::default(),
+    )
+    .await
+    .unwrap();
 
     // Verify access token works initially (get profile might 404 on DB, but NOT 401)
     let req = Request::builder()
@@ -333,6 +345,7 @@ async fn test_owasp_token_revocation_on_logout() {
         .as_str()
         .unwrap()
         .contains("revoked"));
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -355,12 +368,24 @@ async fn test_owasp_revoke_all_sessions() {
 
     let refresh_token1 = infra::generate_refresh_token();
     let refresh_token2 = infra::generate_refresh_token();
-    infra::store_refresh_token(&mut redis_conn, &refresh_token1, test_user_id, 14)
-        .await
-        .unwrap();
-    infra::store_refresh_token(&mut redis_conn, &refresh_token2, test_user_id, 14)
-        .await
-        .unwrap();
+    infra::store_refresh_token(
+        &mut redis_conn,
+        &refresh_token1,
+        test_user_id,
+        14,
+        infra::SessionMeta::default(),
+    )
+    .await
+    .unwrap();
+    infra::store_refresh_token(
+        &mut redis_conn,
+        &refresh_token2,
+        test_user_id,
+        14,
+        infra::SessionMeta::default(),
+    )
+    .await
+    .unwrap();
 
     // Call /api/v1/auth/revoke-all
     let req = Request::builder()
@@ -398,6 +423,7 @@ async fn test_owasp_revoke_all_sessions() {
     let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -419,9 +445,15 @@ async fn test_owasp_account_deletion_session_cleanup() {
     .unwrap();
 
     let refresh_token = infra::generate_refresh_token();
-    infra::store_refresh_token(&mut redis_conn, &refresh_token, test_user_id, 14)
-        .await
-        .unwrap();
+    infra::store_refresh_token(
+        &mut redis_conn,
+        &refresh_token,
+        test_user_id,
+        14,
+        infra::SessionMeta::default(),
+    )
+    .await
+    .unwrap();
 
     // Delete account
     let req = Request::builder()
@@ -454,6 +486,7 @@ async fn test_owasp_account_deletion_session_cleanup() {
     let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -484,6 +517,7 @@ async fn test_owasp_timing_attack_mitigation_on_login() {
     assert_eq!(body["success"], false);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     assert_eq!(body["error"]["message"], "Invalid email or password");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -511,6 +545,7 @@ async fn test_owasp_structured_validation_error_details() {
     assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
     assert!(body["error"]["details"].is_object());
     assert!(body["error"]["details"]["email"].is_array());
+    harness.cleanup().await;
 }
 
 /// The public read cap is off by default (shared fallback IP in dev) and,
@@ -550,4 +585,5 @@ async fn test_public_rate_limit_caps_catalog_reads_when_configured() {
         .unwrap();
     let resp = harness.send_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
 }

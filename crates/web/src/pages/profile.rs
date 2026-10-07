@@ -16,15 +16,58 @@ use shared::{BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDt
 fn GuestShelf() -> impl IntoView {
     let (lang, _) = use_lang();
     let session = use_session();
+    let toasts = use_toasts();
+    let (local, set_local) = signal(Vec::<storage::LocalQuoteRecord>::new());
+    spawn_local(async move {
+        if let Ok(items) =
+            storage::get_all::<storage::LocalQuoteRecord>(storage::STORE_LOCAL_QUOTES).await
+        {
+            set_local.set(items);
+        }
+    });
+    let share = move |text: String| {
+        spawn_local(async move {
+            let body = format!("\u{201C}{text}\u{201D} \u{2014} Rotaria");
+            if !api::share_text("Rotaria", &body).await && api::copy_text(&body).await {
+                toasts.info(lang.get_untracked().text("quote_saved"));
+            }
+        });
+    };
     view! {
-        <div class="empty-state guest-shelf">
-            <img src="/assets/cozy-reader-armchair-owl.webp" alt="" width="640" height="640"/>
-            <h1 class="section-title">{move || lang.get().text("shelf_title")}</h1>
-            <p>{move || lang.get().text("guest_shelf")}</p>
-            <div class="sheet-actions centered">
-                <button class="btn btn-primary" on:click=move |_| session.open_sheet()>{move || lang.get().text("sign_in")}</button>
-                <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
+        <div class="profile">
+            <div class="empty-state guest-shelf">
+                <img src="/assets/cozy-reader-armchair-owl.webp" alt="" width="640" height="640"/>
+                <h1 class="section-title">{move || lang.get().text("shelf_title")}</h1>
+                <p>{move || lang.get().text("guest_shelf")}</p>
+                <div class="sheet-actions centered">
+                    <button class="btn btn-primary" on:click=move |_| session.open_sheet()>{move || lang.get().text("sign_in")}</button>
+                    <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
+                </div>
             </div>
+            {move || (!local.get().is_empty()).then(|| view! {
+                <section aria-labelledby="local-quotes-title">
+                    <div class="section-head">
+                        <h2 id="local-quotes-title" class="section-title">{move || lang.get().text("saved_quotes")}</h2>
+                        <span class="form-hint">{move || lang.get().text("quote_guest_hint")}</span>
+                    </div>
+                    <ol class="quote-results">
+                        {local.get().into_iter().map(|q| {
+                            let text = q.quote_text.clone();
+                            let href = format!("/book/{}", q.book_id);
+                            view! {
+                                <li class="quote-row">
+                                    <div class="quote-meta"><span>{move || lang.get().date_short(q.saved_at)}</span><span aria-hidden="true">"\u{2756}"</span></div>
+                                    <blockquote>{q.quote_text.clone()}</blockquote>
+                                    <div class="quote-actions">
+                                        <button class="btn btn-primary" on:click=move |_| share(text.clone())>{icons::share()}<span>{move || lang.get().text("quote_share")}</span></button>
+                                        <a href=href class="btn btn-ghost">{move || lang.get().text("quote_jump")}</a>
+                                    </div>
+                                </li>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </ol>
+                </section>
+            })}
         </div>
     }
 }
@@ -49,6 +92,96 @@ fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
                 </div>
             </div>
         </section>
+    }
+}
+
+#[component]
+fn DeviceList() -> impl IntoView {
+    let (lang, _) = use_lang();
+    let session = use_session();
+    let toasts = use_toasts();
+    let (devices, set_devices) = signal(Vec::<shared::SessionDto>::new());
+    let (others_armed, set_others_armed) = signal(false);
+    let reload = move || {
+        spawn_local(async move {
+            if let Ok(list) = api::my_sessions().await {
+                set_devices.set(list);
+            }
+        });
+    };
+    reload();
+    let revoke = move |id: String, current: bool| {
+        spawn_local(async move {
+            match api::revoke_session(&id).await {
+                Ok(_) if current => {
+                    api::clear_token();
+                    session.refresh();
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().set_href("/");
+                    }
+                }
+                Ok(_) => {
+                    toasts.info(lang.get_untracked().text("device_revoked"));
+                    set_devices.update(|all| all.retain(|d| d.id != id));
+                }
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+            }
+        });
+    };
+    let revoke_others = move |_| {
+        if !others_armed.get_untracked() {
+            set_others_armed.set(true);
+            return;
+        }
+        set_others_armed.set(false);
+        spawn_local(async move {
+            match api::revoke_all(true).await {
+                Ok(_) => {
+                    toasts.info(lang.get_untracked().text("others_revoked"));
+                    reload();
+                }
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+            }
+        });
+    };
+    view! {
+        <div class="settings-list">
+            <div class="section-head compact">
+                <h3 class="section-title small">{move || lang.get().text("devices")}</h3>
+                {move || (devices.get().len() > 1).then(|| view! {
+                    <button class="btn btn-ghost" on:click=revoke_others>
+                        {move || if others_armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_others_now") }}
+                    </button>
+                })}
+            </div>
+            <ul class="device-list">
+                {move || devices.get().into_iter().map(|d| {
+                    let id = d.id.clone();
+                    let current = d.current;
+                    let label = if d.device.is_empty() { lang.get().text("unknown_device") } else { d.device.clone() };
+                    view! {
+                        <li class="device-row" class:current=current>
+                            <div class="device-main">
+                                <span class="device-name">
+                                    {label}
+                                    {current.then(|| view! { <span class="tag">{move || lang.get().text("this_device")}</span> })}
+                                </span>
+                                <span class="manuscript-meta">
+                                    {move || format!(
+                                        "{}{}",
+                                        if d.ip_prefix.is_empty() { String::new() } else { format!("{} \u{00B7} ", d.ip_prefix) },
+                                        lang.get().text_with("last_seen", "t", &lang.get().date_short(d.last_seen_at))
+                                    )}
+                                </span>
+                            </div>
+                            <button class="btn btn-ghost" on:click=move |_| revoke(id.clone(), current)>
+                                {move || lang.get().text("sign_out_device")}
+                            </button>
+                        </li>
+                    }
+                }).collect::<Vec<_>>()}
+            </ul>
+        </div>
     }
 }
 
@@ -95,7 +228,7 @@ fn SessionsPanel() -> impl IntoView {
         }
         set_revoke_armed.set(false);
         spawn_local(async move {
-            match api::revoke_all().await {
+            match api::revoke_all(false).await {
                 Ok(_) => {
                     api::clear_token();
                     session.refresh();
@@ -111,6 +244,7 @@ fn SessionsPanel() -> impl IntoView {
     view! {
         <section id="akun" class="card settings-list">
             <h2 class="section-title">{move || lang.get().text("sessions")}</h2>
+            <DeviceList/>
             <form class="settings-list" on:submit=change_password>
                 <label class="field">
                     <span>{move || lang.get().text("current_password")}</span>

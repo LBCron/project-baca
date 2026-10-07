@@ -199,6 +199,70 @@ pub fn eligible_badges(streak_days: i32, total_seconds: i64) -> Vec<&'static str
     badges
 }
 
+// Sessions
+
+/// Human label for a session from its User-Agent: browser family and
+/// platform, such as "Chrome · Android". Unknown parts are left out.
+pub fn device_label(user_agent: &str) -> String {
+    let ua = user_agent;
+    let browser = if ua.contains("Edg/") {
+        "Edge"
+    } else if ua.contains("OPR/") || ua.contains("Opera") {
+        "Opera"
+    } else if ua.contains("Firefox/") || ua.contains("FxiOS/") {
+        "Firefox"
+    } else if ua.contains("Chrome/") || ua.contains("CriOS/") {
+        "Chrome"
+    } else if ua.contains("Safari/") {
+        "Safari"
+    } else if ua.contains("Tauri") {
+        "Rotaria"
+    } else {
+        ""
+    };
+    let platform = if ua.contains("iPhone") {
+        "iPhone"
+    } else if ua.contains("iPad") {
+        "iPad"
+    } else if ua.contains("Android") {
+        "Android"
+    } else if ua.contains("Windows") {
+        "Windows"
+    } else if ua.contains("Mac OS X") || ua.contains("Macintosh") {
+        "macOS"
+    } else if ua.contains("Linux") {
+        "Linux"
+    } else {
+        ""
+    };
+    match (browser.is_empty(), platform.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => browser.to_string(),
+        (true, false) => platform.to_string(),
+        (false, false) => format!("{browser} \u{00B7} {platform}"),
+    }
+}
+
+/// Coarse network location for a session list: the first three IPv4 octets
+/// or the first two IPv6 groups, never the full address.
+pub fn ip_prefix(ip: &str) -> String {
+    let ip = ip.trim();
+    if ip.contains(':') {
+        let groups: Vec<&str> = ip.split(':').filter(|g| !g.is_empty()).take(2).collect();
+        return if groups.is_empty() {
+            String::new()
+        } else {
+            format!("{}::", groups.join(":"))
+        };
+    }
+    let octets: Vec<&str> = ip.split('.').collect();
+    if octets.len() == 4 {
+        format!("{}.{}.{}.x", octets[0], octets[1], octets[2])
+    } else {
+        String::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +413,29 @@ mod tests {
         let err = Percentage::new(150.0).unwrap_err();
         let app_err: shared::AppError = err.into();
         assert!(matches!(app_err, shared::AppError::BadRequest(_)));
+    }
+
+    #[test]
+    fn device_label_reads_browser_and_platform() {
+        assert_eq!(
+            device_label("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36"),
+            "Chrome \u{00B7} Android"
+        );
+        assert_eq!(
+            device_label("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"),
+            "Safari \u{00B7} iPhone"
+        );
+        assert_eq!(
+            device_label("Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"),
+            "Firefox \u{00B7} Linux"
+        );
+        assert_eq!(device_label("curl/8.9"), "");
+    }
+
+    #[test]
+    fn ip_prefix_hides_the_host_part() {
+        assert_eq!(ip_prefix("203.0.113.42"), "203.0.113.x");
+        assert_eq!(ip_prefix("2001:db8:85a3::8a2e:370:7334"), "2001:db8::");
+        assert_eq!(ip_prefix("not-an-ip"), "");
     }
 }

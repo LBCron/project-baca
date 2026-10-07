@@ -112,6 +112,7 @@ async fn test_reliability_oversized_request_id_handling() {
         Uuid::parse_str(returned).is_ok(),
         "oversized client id must be replaced by a server UUID, got {returned}"
     );
+    harness.cleanup().await;
 }
 
 /// Signup fails closed when the mail relay is unreachable: no 201 without a
@@ -127,11 +128,14 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
         panic!("live Postgres + Redis required (db-up)");
     }
     let email = format!("smtp_down_{}@example.com", uuid::Uuid::new_v4());
+    // A fresh address per run keeps the per-IP signup cap out of the picture.
+    let ip = format!("203.0.113.{}", 10 + (uuid::Uuid::new_v4().as_u128() % 200) as u8);
+    harness.track_email(&email);
     let signup = || {
         Request::builder()
             .method("POST")
             .uri("/api/v1/auth/signup")
-            .header("cf-connecting-ip", "203.0.113.250")
+            .header("cf-connecting-ip", &ip)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::json!({
@@ -152,4 +156,5 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     let (resp, body) = harness.send_json_request(signup()).await;
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
+    harness.cleanup().await;
 }

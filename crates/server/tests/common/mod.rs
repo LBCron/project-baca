@@ -3,16 +3,31 @@
 use axum::body::Body;
 use axum::http::{Request, Response};
 use axum::Router;
+use infra::entities::{books, tags, users};
 use infra::{build_embedding_provider, init_db_pool, init_redis_client, AiConfig, AppConfig};
-use sea_orm::DatabaseConnection;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use server::{create_app, AppState};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 pub struct TestHarness {
     pub app: Router,
     #[allow(dead_code)]
     pub state: Arc<AppState>,
+    seeded: Mutex<Seeded>,
+}
+
+/// Rows a test created in the shared dev database. Tests register what they
+/// seed and call `cleanup` at the end, so the catalog never fills with
+/// debris; a janitor (`make purge-test-debris`) catches survivors of a
+/// panicked run by their test-only markers.
+#[derive(Default)]
+struct Seeded {
+    users: Vec<Uuid>,
+    emails: Vec<String>,
+    books: Vec<Uuid>,
+    tags: Vec<Uuid>,
 }
 
 impl TestHarness {
@@ -69,7 +84,75 @@ impl TestHarness {
 
         let app = create_app(state.clone());
 
-        Self { app, state }
+        Self {
+            app,
+            state,
+            seeded: Mutex::new(Seeded::default()),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn track_user(&self, id: Uuid) -> Uuid {
+        self.seeded.lock().unwrap().users.push(id);
+        id
+    }
+
+    #[allow(dead_code)]
+    pub fn track_email(&self, email: &str) {
+        self.seeded.lock().unwrap().emails.push(email.to_string());
+    }
+
+    #[allow(dead_code)]
+    pub fn track_email_owned(&self, email: String) -> String {
+        self.track_email(&email);
+        email
+    }
+
+    #[allow(dead_code)]
+    pub fn track_book(&self, id: Uuid) -> Uuid {
+        self.seeded.lock().unwrap().books.push(id);
+        id
+    }
+
+    #[allow(dead_code)]
+    pub fn track_tag(&self, id: Uuid) -> Uuid {
+        self.seeded.lock().unwrap().tags.push(id);
+        id
+    }
+
+    /// Deletes every tracked row. Books go first so chapters, chunks,
+    /// progress, quotes, and cache rows cascade before their readers do.
+    #[allow(dead_code)]
+    pub async fn cleanup(&self) {
+        let seeded = std::mem::take(&mut *self.seeded.lock().unwrap());
+        if matches!(self.state.db, DatabaseConnection::Disconnected) {
+            return;
+        }
+        let db = &self.state.db;
+        if !seeded.books.is_empty() {
+            let _ = books::Entity::delete_many()
+                .filter(books::Column::Id.is_in(seeded.books))
+                .exec(db)
+                .await;
+        }
+        if !seeded.tags.is_empty() {
+            let _ = tags::Entity::delete_many()
+                .filter(tags::Column::Id.is_in(seeded.tags))
+                .exec(db)
+                .await;
+        }
+        if !seeded.users.is_empty() {
+            let _ = users::Entity::delete_many()
+                .filter(users::Column::Id.is_in(seeded.users))
+                .exec(db)
+                .await;
+        }
+        if !seeded.emails.is_empty() {
+            let _ = users::Entity::delete_many()
+                .filter(users::Column::Email.is_in(seeded.emails))
+                .exec(db)
+                .await;
+        }
     }
 
     /// Sends an HTTP request to the in-memory Axum router

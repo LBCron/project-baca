@@ -6,7 +6,8 @@ use crate::{api, storage};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{
-    GuestMergeRequest, GuestProgressRecord, LoginRequest, SignupRequest, VerifyOtpRequest,
+    GuestMergeRequest, GuestProgressRecord, LoginRequest, SaveQuoteRequest, SaveQuotesBatchRequest,
+    SignupRequest, VerifyOtpRequest, SAVE_QUOTES_BATCH_MAX,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                 }
                 api::drain_pending().await;
             }
+            merge_local_quotes().await;
             on_authed.run(());
         });
     };
@@ -180,15 +182,51 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
     }
 }
 
+/// Pushes quotes kept on this device into the account, fifty at a time, and
+/// forgets every quote the server has answered for: saved, already there, or
+/// pointing at a book that no longer exists.
+async fn merge_local_quotes() {
+    let Ok(records) =
+        storage::get_all::<storage::LocalQuoteRecord>(storage::STORE_LOCAL_QUOTES).await
+    else {
+        return;
+    };
+    for chunk in records.chunks(SAVE_QUOTES_BATCH_MAX) {
+        let request = SaveQuotesBatchRequest {
+            items: chunk
+                .iter()
+                .map(|r| SaveQuoteRequest {
+                    book_id: r.book_id,
+                    chapter_id: r.chapter_id,
+                    quote_text: r.quote_text.clone(),
+                })
+                .collect(),
+        };
+        let Ok(response) = api::save_quotes_batch(&request).await else {
+            continue;
+        };
+        for answered in &response.outcomes {
+            if let Some(record) = chunk.get(answered.index) {
+                let _ = storage::delete(storage::STORE_LOCAL_QUOTES, &record.key).await;
+            }
+        }
+    }
+}
+
 /// Turns the API layer's "CODE: message" strings into reader-facing copy.
 fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
-    if raw.contains("RATE_LIMITED") || raw.contains("SERVICE_UNAVAILABLE") {
-        return raw
-            .split_once(": ")
-            .map(|(_, m)| m.to_string())
-            .unwrap_or_else(|| raw.to_string());
+    if raw.contains("RATE_LIMITED") {
+        let seconds = raw
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|s| s.parse::<u64>().ok())
+            .next_back()
+            .unwrap_or(60);
+        return lang.text_with("rate_limited", "t", &lang.wait_text(seconds));
     }
-    if raw.contains("VALIDATION_FAILED") || raw.contains("CONFLICT") {
+    if raw.contains("SERVICE_UNAVAILABLE")
+        || raw.contains("VALIDATION_FAILED")
+        || raw.contains("CONFLICT")
+    {
         return raw
             .split_once(": ")
             .map(|(_, m)| m.to_string())

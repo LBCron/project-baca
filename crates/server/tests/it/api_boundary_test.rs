@@ -21,6 +21,7 @@ async fn test_api_boundary_route_not_found_returns_standard_envelope() {
     assert_eq!(body["success"], false);
     assert_eq!(body["error"]["code"], "NOT_FOUND");
     assert!(body["error"]["message"].is_string());
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -54,6 +55,7 @@ async fn test_api_boundary_method_not_allowed() {
         StatusCode::METHOD_NOT_ALLOWED,
         "PUT on /api/v1/books should return 405 Method Not Allowed"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -79,6 +81,7 @@ async fn test_api_boundary_malformed_json_payload_rejection() {
         "Malformed JSON must be rejected with 400 or 422, received: {}",
         resp.status()
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -99,6 +102,7 @@ async fn test_api_boundary_empty_body_on_json_endpoint() {
             || resp.status() == StatusCode::UNPROCESSABLE_ENTITY,
         "Empty body on required JSON endpoint must be rejected"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -137,6 +141,7 @@ async fn test_api_boundary_pagination_extremes() {
     let resp3 = harness.send_request(req3).await;
     // Axum Query extractor rejects invalid UUID parameter with 400 Bad Request
     assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -167,6 +172,7 @@ async fn test_api_boundary_field_length_overflow_validation() {
         body["error"]["details"]["display_name"].is_array(),
         "Validation error must pinpoint display_name field"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -196,6 +202,7 @@ async fn test_api_boundary_password_min_length_validation() {
         body["error"]["details"]["password"].is_array(),
         "Validation error must pinpoint password field"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -231,4 +238,5 @@ async fn test_api_boundary_authorization_header_schemes() {
             .contains("Bearer expected"),
         "Should inform client that Bearer is required"
     );
+    harness.cleanup().await;
 }

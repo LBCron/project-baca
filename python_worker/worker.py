@@ -20,8 +20,10 @@ import io
 import json
 import logging
 import os
+import random
 import socket
 import sys
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -387,21 +389,57 @@ def make_db(settings: Settings):
 
 # Gemini REST helpers (stdlib urllib, no extra dependency)
 
-def _gemini_post(url: str, payload: dict, timeout: int = 60) -> dict:
+LLM_MAX_ATTEMPTS = 4
+RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+RETRY_AFTER_CAP_S = 60.0
+
+
+def backoff_seconds(retry: int, retry_after: str | None = None, jitter: float = 0.0) -> float:
+    """Delay before the n-th retry: 1s, 4s, 9s with up to 20% jitter, or the
+    server's Retry-After (capped) when it sent one."""
+    if retry_after:
+        try:
+            return min(RETRY_AFTER_CAP_S, max(0.0, float(retry_after)))
+        except ValueError:
+            pass
+    return float(retry * retry) * (1.0 + max(0.0, min(jitter, 0.2)))
+
+
+def _gemini_post(url: str, payload: dict, timeout: int = 60, job_id: str = "") -> dict:
+    """POSTs to Gemini, retrying transient failures with quadratic backoff.
+    Logs the job id and model, never the URL (it carries the key)."""
     import urllib.error
 
     body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Gemini API unavailable (HTTP {exc.code})") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError("Gemini API unreachable") from exc
+    model = url.rsplit("/models/", 1)[-1].split(":", 1)[0]
+    last_error = "Gemini API unreachable"
+    for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+        request = urllib.request.Request(
+            url, data=body, headers={"Content-Type": "application/json"}
+        )
+        retry_after = None
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRYABLE_HTTP:
+                raise RuntimeError(f"Gemini API rejected the request (HTTP {exc.code})") from exc
+            last_error = f"Gemini API unavailable (HTTP {exc.code})"
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        except urllib.error.URLError:
+            last_error = "Gemini API unreachable"
+        if attempt == LLM_MAX_ATTEMPTS:
+            break
+        delay = backoff_seconds(attempt, retry_after, jitter=random.random() * 0.2)
+        LOG.warning(
+            "job %s: %s on %s (attempt %d/%d); retrying in %.1fs",
+            job_id or "-", last_error, model, attempt, LLM_MAX_ATTEMPTS, delay,
+        )
+        time.sleep(delay)
+    raise RuntimeError(last_error)
 
 
-def embed_batch(texts: list[str], settings: Settings) -> list[list[float]]:
+def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[list[float]]:
     """Returns one embedding vector per input text via batchEmbedContents."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -422,7 +460,7 @@ def embed_batch(texts: list[str], settings: Settings) -> list[list[float]]:
                 for text in batch
             ]
         }
-        result = _gemini_post(url, payload)
+        result = _gemini_post(url, payload, job_id=job_id)
         embeddings = result.get("embeddings", [])
         if len(embeddings) != len(batch):
             raise RuntimeError(f"Embedding batch returned {len(embeddings)} for {len(batch)} texts")
@@ -451,6 +489,29 @@ CHAPTERS SO FAR (last one is the current chapter):
 """
 
 
+PROMPT_BUDGET_CHARS = 12000
+CURRENT_CHAPTER_MIN_CHARS = 4000
+
+
+def build_recap_input(previous_cards: list[dict], current_text: str, budget: int = PROMPT_BUDGET_CHARS) -> str:
+    """Assembles the recap prompt body: one line of key concepts per earlier
+    chapter (oldest first), then the current chapter text, trimmed to fit the
+    budget. The current chapter keeps at least a few thousand characters; the
+    oldest summaries go first when room runs out."""
+    lines = []
+    for number, cards in enumerate(previous_cards, start=1):
+        concepts = [c for c in (cards or {}).get("key_concepts", []) if isinstance(c, str)]
+        if concepts:
+            lines.append(f"Chapter {number}: " + "; ".join(concepts))
+    marker = "\nCURRENT CHAPTER:\n"
+    while True:
+        head = "\n".join(lines)
+        room = budget - len(head) - len(marker)
+        if room >= CURRENT_CHAPTER_MIN_CHARS or not lines:
+            return head + marker + current_text[: max(0, room)]
+        lines.pop(0)
+
+
 def _strip_fences(text: str) -> str:
     text = text.strip()
     if text.startswith("```"):
@@ -460,7 +521,7 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
-def generate_json(prompt: str, settings: Settings) -> dict:
+def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
     """Calls the text LLM and parses the JSON object response."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
@@ -469,7 +530,7 @@ def generate_json(prompt: str, settings: Settings) -> dict:
         f"{settings.llm_model}:generateContent?key={settings.gemini_api_key}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    result = _gemini_post(url, payload, timeout=120)
+    result = _gemini_post(url, payload, timeout=120, job_id=job_id)
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -604,7 +665,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
-            vectors = embed_batch([text for _, _, text in batch], settings)
+            vectors = embed_batch([text for _, _, text in batch], settings, job_id)
             for (chapter_id, index, text), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
                 cur.execute(
@@ -625,14 +686,20 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
         # Atomic cards + spoiler-free recaps via the text LLM.
         set_job(redis_client, job_id, "summarizing", 80)
+        previous_cards: list[dict] = []
         for number, (chapter_id, chapter) in enumerate(
             zip(chapter_ids, parsed.chapters), start=1
         ):
-            cards = generate_json(ATOMIC_CARDS_PROMPT + chapter.text[:12000], settings)
+            cards = generate_json(
+                ATOMIC_CARDS_PROMPT + chapter.text[:PROMPT_BUDGET_CHARS], settings, job_id
+            )
             cur.execute(
                 """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
                    VALUES (%s, %s, %s, 'chapter_atomic_cards', %s::jsonb, %s)
-                   ON CONFLICT DO NOTHING""",
+                   ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
+                       SET content_json = EXCLUDED.content_json,
+                           model_version = EXCLUDED.model_version,
+                           created_at = NOW()""",
                 (
                     str(uuid.uuid4()),
                     book_id,
@@ -642,11 +709,16 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 ),
             )
             if number > 1:  # recaps start at chapter 2
-                recap = generate_json(RECAP_PROMPT + chapter.text[:12000], settings)
+                recap = generate_json(
+                    RECAP_PROMPT + build_recap_input(previous_cards, chapter.text), settings, job_id
+                )
                 cur.execute(
                     """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
                        VALUES (%s, %s, %s, 'chapter_recap', %s::jsonb, %s)
-                       ON CONFLICT DO NOTHING""",
+                       ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
+                       SET content_json = EXCLUDED.content_json,
+                           model_version = EXCLUDED.model_version,
+                           created_at = NOW()""",
                     (
                         str(uuid.uuid4()),
                         book_id,
@@ -655,6 +727,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                         settings.llm_model,
                     ),
                 )
+            previous_cards.append(cards)
             set_job(
                 redis_client,
                 job_id,

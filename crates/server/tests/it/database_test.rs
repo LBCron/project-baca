@@ -19,6 +19,7 @@ async fn test_db_unique_email_constraint_enforcement() {
     let _ = harness.live_only().await.expect("live DB required (db-up)");
 
     let shared_email = format!("dup_{}@example.com", Uuid::new_v4());
+    harness.track_email(&shared_email);
     let now = Utc::now();
 
     // Insert first user
@@ -61,6 +62,7 @@ async fn test_db_unique_email_constraint_enforcement() {
         err_str.contains("unique") || err_str.contains("duplicate"),
         "Error message should indicate unique constraint violation: {err_str}"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -86,6 +88,7 @@ async fn test_db_user_role_check_constraint() {
         result.is_err(),
         "Database check constraint must reject unauthorized user roles"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -97,7 +100,7 @@ async fn test_db_unique_tag_slug_constraint() {
     let now = Utc::now();
 
     let tag1 = tags::ActiveModel {
-        id: Set(Uuid::new_v4()),
+        id: Set(harness.track_tag(Uuid::new_v4())),
         name: Set(format!("Tag Name {}", Uuid::new_v4())),
         slug: Set(shared_slug.clone()),
         created_at: Set(now.into()),
@@ -114,6 +117,7 @@ async fn test_db_unique_tag_slug_constraint() {
     };
     let result = tag2.insert(&harness.state.db).await;
     assert!(result.is_err(), "Duplicate tag slug must be rejected");
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -141,7 +145,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         .expect("User insert failed");
 
     // Create Book & Chapter
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
     let book = books::ActiveModel {
         id: Set(book_id),
         title: Set("Cascade Test Novel".to_string()),
@@ -251,6 +255,7 @@ async fn test_db_foreign_key_cascade_on_user_deletion() {
         0,
         "User badges must be cascaded on user deletion"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -259,7 +264,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
     let _ = harness.live_only().await.expect("live DB required (db-up)");
 
     let now = Utc::now();
-    let book_id = Uuid::new_v4();
+    let book_id = harness.track_book(Uuid::new_v4());
 
     // Insert Book
     let book = books::ActiveModel {
@@ -302,7 +307,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         .expect("Chapter insert failed");
 
     // Insert Tag and BookTag
-    let tag_id = Uuid::new_v4();
+    let tag_id = harness.track_tag(Uuid::new_v4());
     let tag = tags::ActiveModel {
         id: Set(tag_id),
         name: Set(format!("Tag-{}", tag_id)),
@@ -350,6 +355,7 @@ async fn test_db_foreign_key_cascade_on_book_deletion() {
         0,
         "Book tags must be cascaded on book deletion"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -400,6 +406,7 @@ async fn test_db_transaction_atomicity_and_rollback() {
         found.is_none(),
         "Record inserted inside rolled-back transaction must not be persisted"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -457,6 +464,7 @@ async fn test_db_index_query_plan_verification() {
         full_plan.contains("idx_users_email"),
         "Query plan must explicitly use 'idx_users_email'. Plan:\n{full_plan}"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -464,14 +472,20 @@ async fn test_db_catalog_default_pagination_index_plan() {
     let harness = TestHarness::new().await;
     let _ = harness.live_only().await.expect("live DB required (db-up)");
 
-    // Begin transaction and disable seqscan to verify index path usability
+    // Sequential scans, bitmap scans, and sorts are switched off inside the
+    // transaction (one statement each: prepared statements take a single
+    // command) so the plan proves the ordered index is usable whatever the
+    // table size; on a small catalog the planner would otherwise scan a
+    // filter index and sort six rows.
     let txn = harness.state.db.begin().await.expect("Begin txn failed");
-    txn.execute(Statement::from_string(
-        harness.state.db.get_database_backend(),
-        "SET LOCAL enable_seqscan = OFF;",
-    ))
-    .await
-    .expect("Set enable_seqscan failed");
+    for switch in ["enable_seqscan", "enable_bitmapscan", "enable_sort"] {
+        txn.execute(Statement::from_string(
+            harness.state.db.get_database_backend(),
+            format!("SET LOCAL {switch} = OFF;"),
+        ))
+        .await
+        .expect("Set planner switch failed");
+    }
 
     let explain_stmt = Statement::from_string(
         harness.state.db.get_database_backend(),
@@ -498,6 +512,7 @@ async fn test_db_catalog_default_pagination_index_plan() {
         !full_plan.contains("Sort"),
         "Default catalog pagination must avoid an in-memory Sort node. Plan:\n{full_plan}"
     );
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -533,4 +548,104 @@ async fn test_db_foreign_key_and_optimized_index_coverage() {
             "Required performance index '{idx_name}' must exist in PostgreSQL catalog"
         );
     }
+    harness.cleanup().await;
+}
+
+/// `tldr_cache` keeps one row per (book, chapter, recap type): a replayed
+/// ingestion job must update the row, never add a twin, so the worker's
+/// upsert names this constraint.
+#[tokio::test]
+async fn test_db_tldr_cache_unique_per_chapter_and_type() {
+    let harness = TestHarness::new().await;
+    let _ = harness.live_only().await.expect("live DB required (db-up)");
+    let db = &harness.state.db;
+
+    let now = Utc::now();
+    let book_id = harness.track_book(Uuid::new_v4());
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set("Tldr Unique Probe".to_string()),
+        author: Set("Test".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set("Test".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set("/probe.epub".to_string()),
+        total_words: Set(10),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(None),
+        status: Set("draft".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("book insert");
+    let chapter_id = Uuid::new_v4();
+    chapters::ActiveModel {
+        id: Set(chapter_id),
+        book_id: Set(book_id),
+        chapter_number: Set(1),
+        title: Set("I".to_string()),
+        word_count: Set(10),
+        html_content: Set("<p>probe</p>".to_string()),
+        created_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("chapter insert");
+
+    let insert = |content: &str| {
+        Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "INSERT INTO tldr_cache (book_id, chapter_id, recap_type, content_json, model_version) \
+             VALUES ($1, $2, 'chapter_recap', $3::jsonb, 'probe')",
+            [book_id.into(), chapter_id.into(), content.to_string().into()],
+        )
+    };
+    db.execute(insert(r#"{"summary":"first"}"#))
+        .await
+        .expect("first row");
+    let twin = db.execute(insert(r#"{"summary":"twin"}"#)).await;
+    assert!(
+        twin.map_err(|e| e.to_string())
+            .unwrap_err()
+            .contains("uq_tldr_cache"),
+        "second row for the same chapter and type must hit uq_tldr_cache"
+    );
+
+    let upsert = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        "INSERT INTO tldr_cache (book_id, chapter_id, recap_type, content_json, model_version) \
+         VALUES ($1, $2, 'chapter_recap', $3::jsonb, 'probe-v2') \
+         ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE \
+         SET content_json = EXCLUDED.content_json, model_version = EXCLUDED.model_version",
+        [
+            book_id.into(),
+            chapter_id.into(),
+            r#"{"summary":"replayed"}"#.to_string().into(),
+        ],
+    );
+    db.execute(upsert).await.expect("replay upserts in place");
+    let count = db
+        .query_one(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT COUNT(*)::bigint AS n, MAX(model_version) AS v FROM tldr_cache WHERE book_id = $1",
+            [book_id.into()],
+        ))
+        .await
+        .expect("count")
+        .expect("row");
+    assert_eq!(count.try_get::<i64>("", "n").unwrap(), 1);
+    assert_eq!(count.try_get::<String>("", "v").unwrap(), "probe-v2");
+
+    books::Entity::delete_by_id(book_id)
+        .exec(db)
+        .await
+        .expect("cleanup cascades chapters and cache rows");
+    harness.cleanup().await;
 }

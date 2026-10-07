@@ -6,9 +6,20 @@ No Redis, MinIO, Postgres, or network access required.
 
 import io
 import unittest
+import urllib.error
 import zipfile
+from unittest import mock
 
-from worker import check_archive_limits, chunk_words, extract_text, parse_epub, sanitize_html
+import worker
+from worker import (
+    backoff_seconds,
+    build_recap_input,
+    check_archive_limits,
+    chunk_words,
+    extract_text,
+    parse_epub,
+    sanitize_html,
+)
 
 
 def make_epub(
@@ -147,3 +158,70 @@ class ArchiveLimitsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetryAndRecapTests(unittest.TestCase):
+    def test_backoff_schedule_is_quadratic_with_bounded_jitter(self):
+        self.assertEqual([backoff_seconds(n) for n in (1, 2, 3)], [1.0, 4.0, 9.0])
+        self.assertAlmostEqual(backoff_seconds(2, jitter=0.2), 4.8)
+        self.assertAlmostEqual(backoff_seconds(2, jitter=0.9), 4.8, msg="jitter is capped at 20%")
+
+    def test_backoff_honours_retry_after_within_cap(self):
+        self.assertEqual(backoff_seconds(1, retry_after="7"), 7.0)
+        self.assertEqual(backoff_seconds(1, retry_after="900"), 60.0)
+        self.assertEqual(backoff_seconds(3, retry_after="soon"), 9.0, msg="unparseable header falls back")
+
+    def test_gemini_post_retries_transient_errors_then_succeeds(self):
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append(request.full_url)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError(request.full_url, 503, "busy", {"Retry-After": "2"}, None)
+            return io.BytesIO(b'{"ok": true}')
+
+        with mock.patch.object(worker.urllib.request, "urlopen", fake_urlopen), \
+             mock.patch.object(worker.time, "sleep") as sleep:
+            result = worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {}, job_id="j1")
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([round(c.args[0]) for c in sleep.call_args_list], [2, 2], "Retry-After drives the wait")
+
+    def test_gemini_post_gives_up_after_max_attempts_and_skips_client_errors(self):
+        def always_busy(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 503, "busy", {}, None)
+
+        with mock.patch.object(worker.urllib.request, "urlopen", always_busy), \
+             mock.patch.object(worker.time, "sleep") as sleep, \
+             self.assertRaises(RuntimeError):
+            worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {})
+        self.assertEqual(sleep.call_count, worker.LLM_MAX_ATTEMPTS - 1)
+
+        def forbidden(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 403, "no", {}, None)
+
+        with mock.patch.object(worker.urllib.request, "urlopen", forbidden), \
+             mock.patch.object(worker.time, "sleep") as sleep, \
+             self.assertRaises(RuntimeError):
+            worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {})
+        self.assertEqual(sleep.call_count, 0, "client errors are not retried")
+
+    def test_recap_input_lists_earlier_chapters_then_current_text(self):
+        previous = [
+            {"key_concepts": ["a letter arrives", "the harbour"]},
+            {"key_concepts": ["a debt is paid"]},
+        ]
+        text = build_recap_input(previous, "Now the storm.")
+        self.assertTrue(text.startswith("Chapter 1: a letter arrives; the harbour\nChapter 2: a debt is paid"))
+        self.assertTrue(text.endswith("CURRENT CHAPTER:\nNow the storm."))
+
+    def test_recap_input_respects_budget_by_trimming_current_then_oldest(self):
+        previous = [{"key_concepts": ["x" * 3000]}, {"key_concepts": ["y" * 3000]}]
+        current = "c" * 20000
+        text = build_recap_input(previous, current, budget=12000)
+        self.assertLessEqual(len(text), 12000)
+        self.assertIn("Chapter 2: " + "y" * 3000, text)
+        self.assertIn("c" * worker.CURRENT_CHAPTER_MIN_CHARS, text)
+        crowded = build_recap_input([{"key_concepts": ["z" * 9000]}, {"key_concepts": ["w" * 9000]}], current, budget=12000)
+        self.assertNotIn("z" * 9000, crowded, "the oldest summary goes first when room runs out")
+        self.assertLessEqual(len(crowded), 12000)
