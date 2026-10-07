@@ -406,6 +406,21 @@ pub struct ReadingHeartbeatResponse {
     pub streak_incremented: bool,
 }
 
+/// Current streak standing for the profile page; zeros before the first
+/// heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReadingStreakDto {
+    pub current_streak_days: i32,
+    pub longest_streak_days: i32,
+    pub total_reading_seconds: i64,
+    pub total_xp: i32,
+    pub last_activity_date: Option<chrono::NaiveDate>,
+    /// Seconds read today toward the daily threshold.
+    pub today_seconds: i64,
+    pub daily_threshold_seconds: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BadgeDto {

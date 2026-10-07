@@ -585,4 +585,18 @@ async fn test_heartbeat_credit_clamped_and_gate_per_user() {
         .send_json_request(heartbeat(seeded.book2_id, 30))
         .await;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "{json}");
+
+    // The profile reads the same standing back, including today's progress
+    // toward the daily threshold.
+    let req = Request::builder()
+        .uri("/api/v1/me/streak")
+        .method("GET")
+        .header("Authorization", format!("Bearer {}", seeded.token))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json["data"]["total_reading_seconds"].as_i64(), Some(90));
+    assert_eq!(json["data"]["today_seconds"].as_i64(), Some(90));
+    assert_eq!(json["data"]["daily_threshold_seconds"].as_i64(), Some(300));
 }

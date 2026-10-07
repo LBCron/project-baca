@@ -719,4 +719,5 @@ pub fn user_routes() -> Router<Arc<AppState>> {
         .route("/", delete(delete_me))
         .route("/password", put(change_password))
         .route("/badges", get(crate::routes::list_user_badges))
+        .route("/streak", get(crate::routes::get_my_streak))
 }

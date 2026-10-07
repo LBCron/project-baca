@@ -24,7 +24,7 @@ pub use repositories::{
         chapter_dropoff, get_book_by_id, get_chapter_book_id, get_chapter_by_number,
         get_chapter_number, get_offline_bundle, list_books, search_books,
     },
-    progress_repository::{get_active_progress, record_heartbeat, update_progress},
+    progress_repository::{get_active_progress, get_streak, record_heartbeat, update_progress},
     quote_repository::{
         get_chapter_recap, get_saved_quote_by_id, get_tldr_cache, list_saved_quotes, save_quote,
         search_quotes_by_embedding, QuoteSearchRow, SavedQuoteDto,

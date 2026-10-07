@@ -9,7 +9,7 @@ use axum::{
 };
 use shared::{
     ApiResponse, AppError, BadgeDto, ErrorPayload, ReadingHeartbeatRequest,
-    ReadingHeartbeatResponse, UserBadgeDto,
+    ReadingHeartbeatResponse, ReadingStreakDto, UserBadgeDto,
 };
 use std::sync::Arc;
 use validator::Validate;
@@ -100,6 +100,27 @@ pub async fn list_user_badges(
         .await
         .map_err(HttpError::from)?;
     Ok(Json(ApiResponse::success(user_badges)).into_response())
+}
+
+/// Streak, XP, and today's progress toward the daily threshold.
+#[utoipa::path(
+    get,
+    path = "/api/v1/me/streak",
+    responses(
+        (status = 200, description = "Current streak standing", body = ApiResponse<ReadingStreakDto>),
+        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Gamification"
+)]
+pub async fn get_my_streak(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+) -> Result<Response, HttpError> {
+    let streak = infra::get_streak(&state.db, auth.id)
+        .await
+        .map_err(HttpError::from)?;
+    Ok(Json(ApiResponse::success(streak)).into_response())
 }
 
 pub fn gamification_routes() -> Router<Arc<AppState>> {

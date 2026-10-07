@@ -8,7 +8,7 @@ use sea_orm::{
 };
 use shared::{
     ActiveProgressDto, AppError, ReadingHeartbeatRequest, ReadingHeartbeatResponse,
-    UpdateProgressRequest,
+    ReadingStreakDto, UpdateProgressRequest,
 };
 use uuid::Uuid;
 
@@ -136,6 +136,54 @@ pub async fn update_progress(
     Ok(())
 }
 
+async fn seconds_read_on(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+    day: chrono::NaiveDate,
+) -> Result<i64, AppError> {
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        r#"
+        SELECT COALESCE(SUM(seconds_spent), 0)::bigint AS total_today
+        FROM reading_activity_logs
+        WHERE user_id = $1 AND activity_date = $2;
+    "#,
+        vec![Value::from(user_id), Value::from(day)],
+    );
+    let row = db
+        .query_one(stmt)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to aggregate daily reading time: {e}")))?
+        .ok_or_else(|| AppError::Internal("Failed to calculate daily reading time".to_string()))?;
+    row.try_get_by_index(0)
+        .map_err(|e| AppError::Database(format!("Failed to parse daily reading sum: {e}")))
+}
+
+/// Streak standing for the profile page; zeros before the first heartbeat.
+pub async fn get_streak(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+) -> Result<ReadingStreakDto, AppError> {
+    let record = user_reading_streaks::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to fetch streak record: {e}")))?;
+    let today_seconds = seconds_read_on(db, user_id, Utc::now().date_naive()).await?;
+
+    Ok(ReadingStreakDto {
+        current_streak_days: record.as_ref().map(|s| s.current_streak_days).unwrap_or(0),
+        longest_streak_days: record.as_ref().map(|s| s.longest_streak_days).unwrap_or(0),
+        total_reading_seconds: record
+            .as_ref()
+            .map(|s| s.total_reading_seconds)
+            .unwrap_or(0),
+        total_xp: record.as_ref().map(|s| s.total_xp).unwrap_or(0),
+        last_activity_date: record.and_then(|s| s.last_activity_date),
+        today_seconds,
+        daily_threshold_seconds: domain::DAILY_THRESHOLD_SECONDS,
+    })
+}
+
 /// Logs reading activity heartbeat, calculates daily streak, and awards XP.
 pub async fn record_heartbeat(
     db: &DatabaseConnection,
@@ -172,28 +220,7 @@ pub async fn record_heartbeat(
         .await
         .map_err(|e| AppError::Database(format!("Failed to record activity log: {e}")))?;
 
-    // Fetch total reading seconds for user today
-    let daily_sum_sql = r#"
-        SELECT COALESCE(SUM(seconds_spent), 0)::bigint AS total_today
-        FROM reading_activity_logs
-        WHERE user_id = $1 AND activity_date = $2;
-    "#;
-
-    let stmt = Statement::from_sql_and_values(
-        DatabaseBackend::Postgres,
-        daily_sum_sql,
-        vec![Value::from(user_id), Value::from(today)],
-    );
-
-    let query_result = db
-        .query_one(stmt)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to aggregate daily reading time: {e}")))?
-        .ok_or_else(|| AppError::Internal("Failed to calculate daily reading time".to_string()))?;
-
-    let total_today_seconds: i64 = query_result
-        .try_get_by_index(0)
-        .map_err(|e| AppError::Database(format!("Failed to parse daily reading sum: {e}")))?;
+    let total_today_seconds = seconds_read_on(db, user_id, today).await?;
 
     // Fetch or initialize user_reading_streaks
     let streak_record = user_reading_streaks::Entity::find_by_id(user_id)
