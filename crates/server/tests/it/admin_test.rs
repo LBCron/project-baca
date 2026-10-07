@@ -1,13 +1,13 @@
 //! Admin upload, job, and analytics tests (needs live MinIO + Redis).
 
-mod common;
+use crate::common;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use chrono::Utc;
 use common::TestHarness;
 use infra::entities::{books, chapters, user_reading_progress, users};
-use sea_orm::{ActiveModelTrait, Set};
+use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -211,11 +211,8 @@ async fn test_upload_happy_path_queues_job() {
         .expect("Uploaded bytes must be retrievable from MinIO");
     assert_eq!(fetched, epub_bytes);
 
-    // Job hash is queryable as queued (canonical and compat alias mounts).
-    for jobs_uri in [
-        format!("/api/v1/admin/jobs/{job_id}"),
-        format!("/api/admin/jobs/{job_id}"),
-    ] {
+    // Job hash is queryable as queued on the single versioned mount.
+    for jobs_uri in [format!("/api/v1/admin/jobs/{job_id}")] {
         let req = Request::builder()
             .method("GET")
             .uri(jobs_uri)
@@ -681,4 +678,67 @@ async fn test_upload_db_failure_compensates_orphan() {
         .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Real EPUBs are several megabytes: the multipart body limit must sit
+/// above axum's 2 MB default while the 50 MB product cap still holds.
+#[tokio::test]
+async fn test_upload_accepts_multi_megabyte_epub() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    assert!(harness.state.storage.is_some(), "MinIO must be reachable");
+
+    let mut big = vec![0u8; 5 * 1024 * 1024];
+    big[0] = b'P';
+    big[1] = b'K';
+    let (ctype, body) = multipart_body("novel.epub", "application/epub+zip", &big, &[]);
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED, "{json}");
+
+    // Remove the 5 MB probe so the shared dev bucket does not accumulate it.
+    let book_id: Uuid = json["data"]["book_id"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("book id in response");
+    if let Some(storage) = &harness.state.storage {
+        let _ = storage
+            .delete_epub(&format!("raw-epubs/{book_id}.epub"))
+            .await;
+    }
+    let _ = books::Entity::delete_by_id(book_id)
+        .exec(&harness.state.db)
+        .await;
+}
+
+/// The admin claim is only a pre-check: once the row is demoted the token
+/// stops working immediately instead of at expiry.
+#[tokio::test]
+async fn test_demoted_admin_loses_access_immediately() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let claims = infra::verify_access_token(&ctx.admin_token, harness.state.config.jwt_secret())
+        .expect("seeded admin token is valid");
+
+    let mut demoted: users::ActiveModel = users::Entity::find_by_id(claims.sub)
+        .one(&harness.state.db)
+        .await
+        .expect("live DB required (db-up)")
+        .expect("seeded admin exists")
+        .into();
+    demoted.role = Set("reader".to_string());
+    demoted
+        .update(&harness.state.db)
+        .await
+        .expect("demotion must persist");
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/jobs/{}", Uuid::new_v4()))
+        .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }

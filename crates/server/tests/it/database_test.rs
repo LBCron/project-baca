@@ -1,6 +1,6 @@
 //! Constraint, cascade, rollback, and query-plan tests.
 
-mod common;
+use crate::common;
 
 use chrono::Utc;
 use common::TestHarness;

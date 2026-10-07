@@ -35,11 +35,12 @@ pub use repositories::{
     },
 };
 pub use security::{
-    blacklist_access_token, generate_access_token, generate_and_store_otp, generate_refresh_token,
-    hash_otp, hash_password, hash_password_async, invalidate_user_tokens, is_known_rotated_token,
-    is_token_blacklisted, is_user_token_revoked, revoke_all_user_sessions, revoke_family_on_reuse,
-    revoke_other_user_sessions, revoke_refresh_token, store_refresh_token,
-    user_id_of_rotated_token, validate_and_rotate_refresh_token, verify_access_token,
-    verify_and_consume_otp, verify_password, verify_password_async, Claims, DUMMY_ARGON2_HASH,
+    blacklist_access_token, generate_access_token, generate_access_token_issued_at,
+    generate_and_store_otp, generate_refresh_token, hash_otp, hash_password, hash_password_async,
+    invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked, revoke_all_user_sessions,
+    revoke_family_on_reuse, revoke_other_user_sessions, revoke_refresh_token, rotation_grace_key,
+    store_refresh_token, validate_and_rotate_refresh_token, verify_access_token,
+    verify_and_consume_otp, verify_password, verify_password_async, Claims, RefreshOutcome,
+    DUMMY_ARGON2_HASH, ROTATION_GRACE_SECS,
 };
 pub use storage::StorageService;

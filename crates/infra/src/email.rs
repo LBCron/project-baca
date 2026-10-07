@@ -50,18 +50,22 @@ pub async fn send_otp_email(
         to_email, addr
     );
 
+    // Fail closed: a code that never left the server must surface as an error,
+    // or the caller reports success and the user is stranded at the OTP step.
     let connect_future = TcpStream::connect(&addr);
     let mut stream = match timeout(Duration::from_secs(3), connect_future).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(e)) => {
-            warn!("SMTP connection to {addr} failed: {e}. Falling back to log trace.");
-            info!("MOCK EMAIL DISPATCH: To: {to_email} (OTP redacted)");
-            return Ok(());
+            warn!("SMTP connection to {addr} failed: {e}");
+            return Err(AppError::ExternalService(format!(
+                "SMTP connection failed: {e}"
+            )));
         }
         Err(_) => {
-            warn!("SMTP connection to {addr} timed out. Falling back to log trace.");
-            info!("MOCK EMAIL DISPATCH: To: {to_email} (OTP redacted)");
-            return Ok(());
+            warn!("SMTP connection to {addr} timed out");
+            return Err(AppError::ExternalService(
+                "SMTP connection timed out".to_string(),
+            ));
         }
     };
 

@@ -1,6 +1,6 @@
 //! HTTP edge cases, error envelopes, and pagination bounds.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};

@@ -1,6 +1,6 @@
 //! OWASP ASVS: error handling, throttling, and revocation.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -48,6 +48,10 @@ async fn test_owasp_security_headers_and_error_handling() {
     assert_eq!(
         resp.headers().get("cross-origin-resource-policy").unwrap(),
         "same-origin"
+    );
+    assert_eq!(
+        resp.headers().get("strict-transport-security").unwrap(),
+        "max-age=31536000; includeSubDomains"
     );
 
     // Swagger UI needs inline scripts/styles, so its document CSP is relaxed
@@ -507,4 +511,43 @@ async fn test_owasp_structured_validation_error_details() {
     assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
     assert!(body["error"]["details"].is_object());
     assert!(body["error"]["details"]["email"].is_array());
+}
+
+/// The public read cap is off by default (shared fallback IP in dev) and,
+/// once configured, meters unauthenticated catalog reads per IP.
+#[tokio::test]
+async fn test_public_rate_limit_caps_catalog_reads_when_configured() {
+    let harness = TestHarness::with_config(|c| c.server.public_rate_limit_per_minute = 3).await;
+    if harness.live_only().await.is_none() {
+        panic!("live Redis required (db-up)");
+    }
+    let ip = unique_test_ip();
+    let catalog_req = || {
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/books?limit=1")
+            .header("cf-connecting-ip", &ip)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    for _ in 0..3 {
+        let resp = harness.send_request(catalog_req()).await;
+        assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+    }
+    let (resp, body) = harness.send_json_request(catalog_req()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
+
+    // Authenticated surfaces are not metered by the public policy.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/progress/active")
+        .header("cf-connecting-ip", &ip)
+        .body(Body::empty())
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

@@ -1,6 +1,6 @@
 //! Auth lifecycle, adversarial replay/lockout/OTP/revoke tests.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -201,6 +201,18 @@ async fn test_auth_full_lifecycle() {
         "Token must be rotated"
     );
 
+    // Expire the rotation grace window so the replays below read as theft
+    // rather than as a second tab asking for the same successor.
+    let mut redis_conn = harness
+        .state
+        .get_redis_conn()
+        .await
+        .expect("live Redis required (db-up)");
+    let _: () = redis_conn
+        .del(infra::rotation_grace_key(&active_refresh_token))
+        .await
+        .unwrap();
+
     // Old refresh token must be invalidated
     let req = Request::builder()
         .method("POST")
@@ -379,8 +391,12 @@ async fn test_change_password_revokes_sessions_by_default() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&change_req).unwrap()))
         .unwrap();
-    let (resp, _) = harness.send_json_request(req).await;
+    let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::OK);
+    let fresh_access = body["data"]["tokens"]["access_token"]
+        .as_str()
+        .expect("revocation hands back a fresh pair")
+        .to_string();
 
     // The pre-change access token is now revoked via user_revoked_before.
     let req = Request::builder()
@@ -391,6 +407,17 @@ async fn test_change_password_revokes_sessions_by_default() {
         .unwrap();
     let (resp, _) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // The caller continues on the fresh pair without a second login.
+    wait_next_second().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {fresh_access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -725,6 +752,13 @@ async fn test_auth_replay_kills_token_family() {
     let (resp, body) = harness.send_json_request(rotate(&refresh)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     let fresh: String = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    // Expire the rotation grace window: inside it the consumed token still
+    // yields the same successor (see test_auth_refresh_grace_window).
+    let _: () = redis_conn
+        .del(infra::rotation_grace_key(&refresh))
+        .await
+        .unwrap();
 
     // First reuse of the old token: 401 (rotation already consumed it).
     let (resp, _) = harness.send_json_request(rotate(&refresh)).await;
@@ -1254,4 +1288,114 @@ async fn test_guest_merge_enforces_hundred_record_cap() {
             vec![book_id.into()],
         ))
         .await;
+}
+
+/// Inside the rotation grace window a consumed token returns the same
+/// successor, so a second tab or a retried request never kills the family.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_refresh_grace_window() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "grace", &ip).await;
+    let rotate = |token: &str| refresh_req(token, &ip);
+
+    let (resp, body) = harness.send_json_request(rotate(&refresh)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let first: String = body["data"]["refresh_token"].as_str().unwrap().to_string();
+
+    let (resp, body) = harness.send_json_request(rotate(&refresh)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"]["refresh_token"].as_str().unwrap(), first);
+
+    let (resp, _) = harness.send_json_request(rotate(&first)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "family must stay alive");
+}
+
+/// Two simultaneous refreshes race on GETDEL: at least one wins, nobody is
+/// treated as a thief, and the family survives.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_concurrent_refresh_keeps_family_alive() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = match harness.live_only().await {
+        Some(c) => c,
+        None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
+    };
+    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "race", &ip).await;
+
+    let (a, b) = tokio::join!(
+        harness.send_json_request(refresh_req(&refresh, &ip)),
+        harness.send_json_request(refresh_req(&refresh, &ip))
+    );
+    let outcomes = [a, b];
+    let successor = outcomes
+        .iter()
+        .find(|(resp, _)| resp.status() == StatusCode::OK)
+        .map(|(_, body)| body["data"]["refresh_token"].as_str().unwrap().to_string())
+        .expect("one presenter must win the rotation");
+    for (resp, _) in &outcomes {
+        assert!(
+            matches!(resp.status(), StatusCode::OK | StatusCode::UNAUTHORIZED),
+            "unexpected status {}",
+            resp.status()
+        );
+    }
+
+    let (resp, _) = harness
+        .send_json_request(refresh_req(&successor, &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "family must stay alive");
+}
+
+/// An unverified account must answer like a wrong password and count as a
+/// failed attempt, so the activation state of an address is not probeable.
+#[tokio::test]
+async fn test_login_inactive_account_is_indistinguishable_from_wrong_password() {
+    let harness = TestHarness::new().await;
+    let mut redis_conn = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let email = format!("dormant_{}@example.com", Uuid::new_v4());
+    let password = "DormantSecret123!";
+    let hash = infra::hash_password_async(password.to_string())
+        .await
+        .unwrap();
+    infra::create_inactive_user(&harness.state.db, &email, "Dormant", &hash)
+        .await
+        .expect("inactive seed must succeed");
+    let ip = format!("198.51.101.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+
+    let (resp, body) = harness
+        .send_json_request(login_req(&email, password, &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["message"], "Invalid email or password");
+
+    let failures: i64 = redis_conn
+        .get(format!("auth:login:fail:{email}:{ip}"))
+        .await
+        .unwrap_or(0);
+    assert_eq!(failures, 1, "the attempt must count toward lockout");
+}
+
+fn refresh_req(token: &str, ip: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/refresh")
+        .header("cf-connecting-ip", ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&RefreshTokenRequest {
+                refresh_token: token.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap()
 }

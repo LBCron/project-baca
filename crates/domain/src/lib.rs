@@ -125,6 +125,15 @@ pub const BASE_HEARTBEAT_XP: i32 = 10;
 pub const STREAK_BONUS_XP: i32 = 50;
 /// Bonus XP for the first counted day (new or restarted streak).
 pub const DAILY_MILESTONE_BONUS_XP: i32 = 20;
+/// Longest stretch of reading a single heartbeat may claim. The API admits
+/// one heartbeat per minute, so this bounds XP inflation to 1.5x wall-clock
+/// time even when a client reports the maximum.
+pub const MAX_HEARTBEAT_CREDIT_SECONDS: i32 = 90;
+
+/// Reading seconds actually credited for one reported heartbeat.
+pub fn credited_heartbeat_seconds(reported: i32) -> i32 {
+    reported.clamp(0, MAX_HEARTBEAT_CREDIT_SECONDS)
+}
 
 /// Outcome of applying one heartbeat day-evaluation to a streak.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +316,16 @@ mod tests {
         assert_eq!(outcome.current_days, 1);
         assert_eq!(outcome.longest_days, 1);
         assert_eq!(outcome.incremented, true);
+    }
+
+    #[test]
+    fn heartbeat_credit_is_capped_and_never_negative() {
+        assert_eq!(credited_heartbeat_seconds(45), 45);
+        assert_eq!(
+            credited_heartbeat_seconds(3600),
+            MAX_HEARTBEAT_CREDIT_SECONDS
+        );
+        assert_eq!(credited_heartbeat_seconds(-5), 0);
     }
 
     #[test]

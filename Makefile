@@ -79,23 +79,23 @@ test-unit:
 
 test-smoke:
 	@echo "Running smoke tests (boot, health, Swagger UI, infrastructure)..."
-	@cargo test -p server --test smoke_test
+	@cargo test -p server --test it smoke_test::
 
 test-integration:
 	@echo "Running integration tests (routing, request-id, CORS, OpenAPI schemas)..."
-	@cargo test -p server --test integration_test
+	@cargo test -p server --test it integration_test::
 
 test-auth:
 	@echo "Running authentication and user integration tests..."
-	@cargo test -p server --test auth_test
+	@cargo test -p server --test it auth_test::
 
 test-catalog:
 	@echo "Running catalog, reader engine and gamification integration tests..."
-	@cargo test -p server --test catalog_test
+	@cargo test -p server --test it catalog_test::
 
 test-semantic:
 	@echo "Running semantic AI, quote search and atomic cards integration tests..."
-	@cargo test -p server --test semantic_ai_test
+	@cargo test -p server --test it semantic_ai_test::
 
 test-performance:
 	@echo "Running performance and SLA benchmark tests..."
@@ -107,11 +107,11 @@ test-performance-release:
 
 test-reliability:
 	@echo "Running reliability and fault injection tests..."
-	@cargo test -p server --test reliability_test
+	@cargo test -p server --test it reliability_test::
 
 test-database:
 	@echo "Running database integrity tests (constraints, cascades, rollbacks, query plans)..."
-	@cargo test -p server --test database_test
+	@cargo test -p server --test it database_test::
 
 test-load-stress:
 	@echo "Running load and stress tests (200 concurrent tasks, rate limit saturation)..."
@@ -119,15 +119,15 @@ test-load-stress:
 
 test-api-boundary:
 	@echo "Running API edge-case and boundary tests (404/405, malformed payloads, pagination)..."
-	@cargo test -p server --test api_boundary_test
+	@cargo test -p server --test it api_boundary_test::
 
 test-security:
 	@echo "Running OWASP security vulnerability tests..."
-	@cargo test -p server --test security_owasp_test
+	@cargo test -p server --test it security_owasp_test::
 
 test-admin:
 	@echo "Running admin ingestion, job monitoring and analytics tests..."
-	@cargo test -p server --test admin_test
+	@cargo test -p server --test it admin_test::
 
 test-domain:
 	@echo "Running domain-core pure unit tests (no database)..."

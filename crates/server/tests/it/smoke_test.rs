@@ -1,6 +1,6 @@
 //! Boot, health, Swagger UI, and infrastructure reachability.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

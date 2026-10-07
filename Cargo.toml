@@ -51,6 +51,13 @@ pretty_assertions = "1.4"
 claims = "0.8"
 rstest = "0.27"
 
+# Full debuginfo across ~570 crates made each test binary ~390 MB and target/ reach 50+ GB.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.dev.package.argon2]
 opt-level = 3
 

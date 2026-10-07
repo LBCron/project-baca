@@ -18,10 +18,18 @@ pub struct TestHarness {
 impl TestHarness {
     /// Initializes test harness with active database/redis connections or graceful fallbacks
     pub async fn new() -> Self {
+        Self::with_config(|_| {}).await
+    }
+
+    /// Harness whose config is adjusted before the app is built, for tests
+    /// that exercise optional features (public rate cap, SMTP outage).
+    #[allow(dead_code)]
+    pub async fn with_config(adjust: impl FnOnce(&mut AppConfig)) -> Self {
         // Tests simulate edge-provided IP headers, so proxy trust is on here
         // (production keeps the default off unless the edge overwrites headers).
         let mut app_config = AppConfig::from_env().unwrap_or_default();
         app_config.server.trust_proxy_headers = true;
+        adjust(&mut app_config);
         let config = Arc::new(app_config);
 
         let db = match init_db_pool(&config).await {

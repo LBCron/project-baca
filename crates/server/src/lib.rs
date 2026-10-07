@@ -6,7 +6,7 @@ pub mod routes;
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderName, HeaderValue, Request, Response, StatusCode},
     middleware as axum_mw,
     response::IntoResponse,
@@ -103,6 +103,7 @@ impl AppState {
             UserProfileDto,
             UpdateProfileRequest,
             ChangePasswordRequest,
+            PasswordChangedDto,
             GuestProgressRecord,
             GuestMergeRequest,
             BookSummaryDto,
@@ -233,6 +234,12 @@ pub async fn security_headers_middleware(
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
+    // Browsers ignore HSTS over plain HTTP, so emitting it unconditionally is
+    // safe for the dev stack and binding once TLS terminates at the edge.
+    headers.insert(
+        HeaderName::from_static("strict-transport-security"),
+        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+    );
     response
 }
 
@@ -347,30 +354,39 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         crate::middleware::ai_rate_limit_middleware,
     ));
 
+    // Unauthenticated reads get a per-IP cap only when configured: the dev
+    // stack and in-memory tests share one fallback IP and would collide.
+    let public_cap = state.config.server.public_rate_limit_per_minute;
+    let public = |router: Router<Arc<AppState>>| {
+        if public_cap > 0 {
+            router.layer(axum_mw::from_fn_with_state(
+                state.clone(),
+                crate::middleware::public_rate_limit_middleware,
+            ))
+        } else {
+            router
+        }
+    };
+
+    // Multipart EPUB uploads need more than axum's 2 MB default; the handler
+    // still enforces the 50 MB product limit while streaming.
+    let admin_router = routes::admin_routes().layer(DefaultBodyLimit::max(
+        routes::admin::MAX_EPUB_BYTES + 64 * 1024,
+    ));
+
     Router::new()
         .merge(swagger_routes(&state))
         .route("/health", get(health_check))
         .route("/api/v1/health", get(api_health_check))
-        // Versioned API routes (/api/v1/...)
-        .nest("/api/v1/auth", auth_router.clone())
+        .nest("/api/v1/auth", auth_router)
         .nest("/api/v1/me", routes::user_routes())
-        .nest("/api/v1/books", routes::books_routes())
+        .nest("/api/v1/books", public(routes::books_routes()))
         .nest("/api/v1/progress", routes::progress_routes())
-        .nest("/api/v1", routes::gamification_routes())
-        .nest("/api/v1/books", quotes_router.clone())
-        .nest("/api/v1/books", routes::insights_routes())
+        .nest("/api/v1", public(routes::gamification_routes()))
+        .nest("/api/v1/books", quotes_router)
+        .nest("/api/v1/books", public(routes::insights_routes()))
         .nest("/api/v1/quotes", routes::saved_quotes_routes())
-        .nest("/api/v1/admin", routes::admin_routes())
-        // Top-level aliases (/api/...)
-        .nest("/api/auth", auth_router)
-        .nest("/api/me", routes::user_routes())
-        .nest("/api/books", routes::books_routes())
-        .nest("/api/progress", routes::progress_routes())
-        .nest("/api", routes::gamification_routes())
-        .nest("/api/books", quotes_router)
-        .nest("/api/books", routes::insights_routes())
-        .nest("/api/quotes", routes::saved_quotes_routes())
-        .nest("/api/admin", routes::admin_routes())
+        .nest("/api/v1/admin", admin_router)
         .fallback(not_found_handler)
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))

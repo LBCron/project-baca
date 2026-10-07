@@ -1,6 +1,6 @@
 //! Quote search, saved quotes, cards, and recap tests.
 
-mod common;
+use crate::common;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};

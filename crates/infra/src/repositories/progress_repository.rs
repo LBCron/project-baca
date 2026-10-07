@@ -156,12 +156,12 @@ pub async fn record_heartbeat(
 
     let now = Utc::now();
     let today = now.date_naive();
+    let credited_seconds = domain::credited_heartbeat_seconds(req.seconds_spent);
 
-    // Log activity in reading_activity_logs
     let log_entry = reading_activity_logs::ActiveModel {
         user_id: Set(user_id),
         book_id: Set(req.book_id),
-        seconds_spent: Set(req.seconds_spent),
+        seconds_spent: Set(credited_seconds),
         activity_date: Set(today),
         created_at: Set(now.into()),
         ..Default::default()
@@ -213,7 +213,7 @@ pub async fn record_heartbeat(
         .as_ref()
         .map(|s| s.total_reading_seconds)
         .unwrap_or(0)
-        + req.seconds_spent as i64;
+        + credited_seconds as i64;
     let mut total_xp = streak_record.as_ref().map(|s| s.total_xp).unwrap_or(0);
     let last_active_date = streak_record.as_ref().and_then(|s| s.last_activity_date);
 

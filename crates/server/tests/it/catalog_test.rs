@@ -1,6 +1,6 @@
 //! Catalog, search, reader, and gamification tests.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -278,7 +278,7 @@ async fn test_catalog_listing_and_filtering() {
         assert_eq!(b["primary_theme"].as_str().unwrap_or(""), "Tragedi");
     }
 
-    // Test SRS top-level alias (/api/books)
+    // The unversioned `/api/*` alias is gone: one documented surface only.
     let req_alias = Request::builder()
         .uri("/api/books?language=id")
         .method("GET")
@@ -286,8 +286,8 @@ async fn test_catalog_listing_and_filtering() {
         .unwrap();
 
     let (resp_alias, json_alias) = harness.send_json_request(req_alias).await;
-    assert_eq!(resp_alias.status(), StatusCode::OK);
-    assert!(json_alias["success"].as_bool().unwrap_or(false));
+    assert_eq!(resp_alias.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_alias["error"]["code"], "NOT_FOUND");
 }
 
 #[tokio::test]
@@ -548,4 +548,41 @@ async fn test_gamification_heartbeat_and_badges() {
         user_badges[0]["badge_id"].as_str().unwrap_or(""),
         "first_step"
     );
+}
+
+/// Heartbeat credit is clamped server-side (domain cap of 90 s per
+/// heartbeat) and the anti-farm gate is per user, so alternating books
+/// cannot multiply XP or streak progress.
+#[tokio::test]
+async fn test_heartbeat_credit_clamped_and_gate_per_user() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up)");
+    let heartbeat = |book: Uuid, seconds: i32| {
+        Request::builder()
+            .uri("/api/v1/activity/heartbeat")
+            .method("POST")
+            .header("Authorization", format!("Bearer {}", seeded.token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "book_id": book, "seconds_spent": seconds }).to_string(),
+            ))
+            .unwrap()
+    };
+
+    let (resp, json) = harness
+        .send_json_request(heartbeat(seeded.book1_id, 3600))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        json["data"]["total_reading_seconds"].as_i64(),
+        Some(90),
+        "a fresh reader claiming an hour is credited the 90 s cap"
+    );
+
+    let (resp, json) = harness
+        .send_json_request(heartbeat(seeded.book2_id, 30))
+        .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "{json}");
 }

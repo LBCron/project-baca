@@ -1,6 +1,6 @@
 //! Request cycles, request IDs, CORS, and OpenAPI schemas.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

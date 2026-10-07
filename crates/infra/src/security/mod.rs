@@ -5,10 +5,12 @@ pub mod otp;
 pub mod password;
 
 pub use jwt::{
-    blacklist_access_token, generate_access_token, generate_refresh_token, invalidate_user_tokens,
-    is_known_rotated_token, is_token_blacklisted, is_user_token_revoked, revoke_all_user_sessions,
-    revoke_family_on_reuse, revoke_other_user_sessions, revoke_refresh_token, store_refresh_token,
-    user_id_of_rotated_token, validate_and_rotate_refresh_token, verify_access_token, Claims,
+    blacklist_access_token, generate_access_token, generate_access_token_issued_at,
+    generate_refresh_token, invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
+    revoke_refresh_token, rotation_grace_key, store_refresh_token,
+    validate_and_rotate_refresh_token, verify_access_token, Claims, RefreshOutcome,
+    ROTATION_GRACE_SECS,
 };
 pub use otp::{generate_and_store_otp, hash_otp, verify_and_consume_otp};
 pub use password::{

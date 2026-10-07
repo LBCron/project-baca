@@ -17,6 +17,10 @@ pub struct ServerConfig {
     /// limiting. Keep false unless the edge proxy overwrites these headers
     /// (spoofable by direct clients otherwise).
     pub trust_proxy_headers: bool,
+    /// Per-IP cap for unauthenticated catalog and insight reads. Zero disables
+    /// the limiter (dev stack and in-memory tests share one fallback IP);
+    /// production sets a positive value.
+    pub public_rate_limit_per_minute: u32,
 }
 
 impl Default for ServerConfig {
@@ -31,6 +35,7 @@ impl Default for ServerConfig {
             ],
             log_format: "text".to_string(),
             trust_proxy_headers: false,
+            public_rate_limit_per_minute: 0,
         }
     }
 }
@@ -204,6 +209,10 @@ impl AppConfig {
         let trust_proxy_headers = env::var("TRUST_PROXY_HEADERS")
             .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
             .unwrap_or(default_server.trust_proxy_headers);
+        let public_rate_limit_per_minute = env::var("PUBLIC_RATE_LIMIT_PER_MINUTE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_server.public_rate_limit_per_minute);
 
         let server = ServerConfig {
             host,
@@ -212,6 +221,7 @@ impl AppConfig {
             cors_allowed_origins,
             log_format,
             trust_proxy_headers,
+            public_rate_limit_per_minute,
         };
 
         let db_url = env::var("DATABASE_URL").unwrap_or(default_db.url);
@@ -384,6 +394,7 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
         assert!(!config.server.trust_proxy_headers);
+        assert_eq!(config.server.public_rate_limit_per_minute, 0);
         assert_eq!(config.database.max_connections, 20);
         assert_eq!(config.database.min_connections, 5);
         assert_eq!(config.auth.access_expiry_minutes, 1440);

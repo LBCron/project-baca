@@ -16,19 +16,62 @@ use chrono::Utc;
 use infra::{
     activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
     entities::users, find_user_by_email, find_user_by_id, generate_access_token,
-    generate_and_store_otp, generate_refresh_token, hash_password_async, is_known_rotated_token,
-    revoke_all_user_sessions, revoke_family_on_reuse, revoke_refresh_token, send_otp_email,
-    store_refresh_token, update_inactive_credentials, update_user_password, update_user_profile,
-    user_id_of_rotated_token, validate_and_rotate_refresh_token, verify_access_token,
-    verify_and_consume_otp, verify_password_async, DUMMY_ARGON2_HASH,
+    generate_access_token_issued_at, generate_and_store_otp, generate_refresh_token,
+    hash_password_async, revoke_all_user_sessions, revoke_family_on_reuse, revoke_refresh_token,
+    send_otp_email, store_refresh_token, update_inactive_credentials, update_user_password,
+    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
+    verify_and_consume_otp, verify_password_async, RefreshOutcome, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use shared::{
-    ApiResponse, AppError, ChangePasswordRequest, ErrorPayload, LoginRequest, RefreshTokenRequest,
-    SignupRequest, TokenResponse, UpdateProfileRequest, UserProfileDto, VerifyOtpRequest,
+    ApiResponse, AppError, ChangePasswordRequest, ErrorPayload, LoginRequest, PasswordChangedDto,
+    RefreshTokenRequest, SignupRequest, TokenResponse, UpdateProfileRequest, UserProfileDto,
+    VerifyOtpRequest,
 };
 use std::sync::Arc;
 use validator::Validate;
+
+const INVALID_CREDENTIALS: &str = "Invalid email or password";
+
+fn now_secs() -> usize {
+    Utc::now().timestamp() as usize
+}
+
+/// Signs a fresh access token and persists a new refresh token for `user`.
+async fn issue_token_pair(
+    state: &AppState,
+    redis: &mut redis::aio::MultiplexedConnection,
+    user: &users::Model,
+    issued_at: usize,
+) -> Result<TokenResponse, HttpError> {
+    let access_token = generate_access_token_issued_at(
+        user.id,
+        &user.email,
+        &user.role,
+        state.config.jwt_secret(),
+        state.config.auth.access_expiry_minutes,
+        issued_at,
+    )
+    .map_err(HttpError::from)?;
+
+    let refresh_token = generate_refresh_token();
+    store_refresh_token(
+        redis,
+        &refresh_token,
+        user.id,
+        state.config.auth.refresh_expiry_days,
+    )
+    .await
+    .map_err(HttpError::from)?;
+
+    Ok(TokenResponse {
+        access_token,
+        refresh_token,
+        token_type: "Bearer".to_string(),
+        expires_in: state.config.auth.access_expiry_minutes as i64 * 60,
+        user: Some(user_to_dto(user)),
+    })
+}
 
 /// Two-layer login brute-force accounting. The (email, IP) pair locks after
 /// 5 failures so hammering a victim's address cannot lock the victim out
@@ -161,7 +204,13 @@ pub async fn signup(
     // Set 60-second cooldown for subsequent OTP requests for this email
     let _: Result<(), _> = redis_conn.set_ex(&cooldown_key, "1", 60).await;
 
-    let _ = send_otp_email(&state.config.email, &req.email, &otp).await;
+    // Fail closed: a 201 without a deliverable code strands the user at the
+    // OTP step, and the cooldown must not block an immediate retry.
+    if let Err(e) = send_otp_email(&state.config.email, &req.email, &otp).await {
+        let _: Result<(), _> = redis_conn.del(&cooldown_key).await;
+        tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
+        return Err(HttpError(e));
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -206,33 +255,7 @@ pub async fn verify_otp(
         .await
         .map_err(HttpError::from)?;
 
-    let access_token = generate_access_token(
-        updated_user.id,
-        &updated_user.email,
-        &updated_user.role,
-        state.config.jwt_secret(),
-        state.config.auth.access_expiry_minutes,
-    )
-    .map_err(HttpError::from)?;
-
-    let refresh_token = generate_refresh_token();
-    store_refresh_token(
-        &mut redis_conn,
-        &refresh_token,
-        updated_user.id,
-        state.config.auth.refresh_expiry_days,
-    )
-    .await
-    .map_err(HttpError::from)?;
-
-    let response = TokenResponse {
-        access_token,
-        refresh_token,
-        token_type: "Bearer".to_string(),
-        expires_in: (state.config.auth.access_expiry_minutes as i64 * 60),
-        user: Some(user_to_dto(&updated_user)),
-    };
-
+    let response = issue_token_pair(&state, &mut redis_conn, &updated_user, now_secs()).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -279,14 +302,17 @@ pub async fn login(
 
             note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
             return Err(HttpError(AppError::Unauthorized(
-                "Invalid email or password".to_string(),
+                INVALID_CREDENTIALS.to_string(),
             )));
         }
     };
 
+    // An unverified account answers exactly like a wrong password, so the
+    // activation state of an address cannot be probed.
     if !user.is_active {
+        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
         return Err(HttpError(AppError::Unauthorized(
-            "Account not activated. Please verify OTP first.".to_string(),
+            INVALID_CREDENTIALS.to_string(),
         )));
     }
 
@@ -300,7 +326,7 @@ pub async fn login(
     if !is_valid {
         note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
         return Err(HttpError(AppError::Unauthorized(
-            "Invalid email or password".to_string(),
+            INVALID_CREDENTIALS.to_string(),
         )));
     }
 
@@ -318,33 +344,7 @@ pub async fn login(
         ])
         .await;
 
-    let access_token = generate_access_token(
-        user.id,
-        &user.email,
-        &user.role,
-        state.config.jwt_secret(),
-        state.config.auth.access_expiry_minutes,
-    )
-    .map_err(HttpError::from)?;
-
-    let refresh_token = generate_refresh_token();
-    store_refresh_token(
-        &mut redis_conn,
-        &refresh_token,
-        user.id,
-        state.config.auth.refresh_expiry_days,
-    )
-    .await
-    .map_err(HttpError::from)?;
-
-    let response = TokenResponse {
-        access_token,
-        refresh_token,
-        token_type: "Bearer".to_string(),
-        expires_in: (state.config.auth.access_expiry_minutes as i64 * 60),
-        user: Some(user_to_dto(&user)),
-    };
-
+    let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs()).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -367,26 +367,29 @@ pub async fn refresh(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    // A rotated (dead) token presented again signals theft: the family may
-    // already be gone, but if the user set still holds sibling hashes the
-    // whole family dies with this request.
-    if is_known_rotated_token(&mut redis_conn, &req.refresh_token).await {
-        if let Some(uid) = user_id_of_rotated_token(&mut redis_conn, &req.refresh_token).await {
-            let access_ttl = state.config.auth.access_expiry_minutes * 60;
-            let _ = revoke_family_on_reuse(&mut redis_conn, uid, access_ttl).await;
-        }
-        return Err(HttpError(AppError::Unauthorized(
-            "Invalid or expired refresh token".to_string(),
-        )));
-    }
-
-    let (user_id, new_refresh_token) = validate_and_rotate_refresh_token(
+    let outcome = validate_and_rotate_refresh_token(
         &mut redis_conn,
         &req.refresh_token,
         state.config.auth.refresh_expiry_days,
     )
     .await
     .map_err(HttpError::from)?;
+
+    let (user_id, new_refresh_token) = match outcome {
+        RefreshOutcome::Rotated {
+            user_id,
+            refresh_token,
+        } => (user_id, refresh_token),
+        // A token rotated out before the grace window signals theft: the
+        // whole family dies so the attacker's copy goes with the victim's.
+        RefreshOutcome::Replayed { user_id } => {
+            let access_ttl = state.config.auth.access_expiry_minutes * 60;
+            let _ = revoke_family_on_reuse(&mut redis_conn, user_id, access_ttl).await;
+            return Err(HttpError(AppError::Unauthorized(
+                "Invalid or expired refresh token".to_string(),
+            )));
+        }
+    };
 
     let user = find_user_by_id(&state.db, user_id)
         .await
@@ -527,7 +530,7 @@ pub async fn update_me(
     path = "/api/v1/me/password",
     request_body = ChangePasswordRequest,
     responses(
-        (status = 200, description = "Password changed successfully", body = ApiResponse<serde_json::Value>),
+        (status = 200, description = "Password changed; carries a fresh token pair when other sessions were revoked", body = ApiResponse<PasswordChangedDto>),
         (status = 401, description = "Invalid current password", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
@@ -596,21 +599,30 @@ pub async fn change_password(
         .map_err(HttpError::from)?;
 
     // Revoking other sessions on password change is the safe default: a
-    // compromised password must not leave attacker sessions alive.
-    if req.revoke_other_sessions.unwrap_or(true) {
-        let _ = revoke_all_user_sessions(
+    // compromised password must not leave attacker sessions alive. The
+    // revocation also kills the caller's current pair, so a fresh one is
+    // handed back instead of forcing a second login.
+    let tokens = if req.revoke_other_sessions.unwrap_or(true) {
+        revoke_all_user_sessions(
             &mut redis_conn,
             auth.id,
             state.config.auth.access_expiry_minutes * 60,
         )
-        .await;
-    }
+        .await
+        .map_err(HttpError::from)?;
+        // Stamped one second past the revocation cut, which compares whole
+        // seconds; otherwise the fresh pair would be born revoked.
+        Some(issue_token_pair(&state, &mut redis_conn, &user, now_secs() + 1).await?)
+    } else {
+        None
+    };
 
     Ok((
         StatusCode::OK,
-        Json(ApiResponse::success(serde_json::json!({
-            "message": "Password changed successfully"
-        }))),
+        Json(ApiResponse::success(PasswordChangedDto {
+            message: "Password changed successfully".to_string(),
+            tokens,
+        })),
     )
         .into_response())
 }

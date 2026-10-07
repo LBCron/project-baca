@@ -1,6 +1,6 @@
 //! Fault injection and graceful degradation.
 
-mod common;
+use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -112,4 +112,44 @@ async fn test_reliability_oversized_request_id_handling() {
         Uuid::parse_str(returned).is_ok(),
         "oversized client id must be replaced by a server UUID, got {returned}"
     );
+}
+
+/// Signup fails closed when the mail relay is unreachable: no 201 without a
+/// deliverable code, and the OTP cooldown must not block the retry.
+#[tokio::test]
+async fn test_signup_fails_closed_when_smtp_unreachable() {
+    let harness = TestHarness::with_config(|c| {
+        c.email.smtp_host = "127.0.0.1".to_string();
+        c.email.smtp_port = 1;
+    })
+    .await;
+    if harness.live_only().await.is_none() {
+        panic!("live Postgres + Redis required (db-up)");
+    }
+    let email = format!("smtp_down_{}@example.com", uuid::Uuid::new_v4());
+    let signup = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header("cf-connecting-ip", "203.0.113.250")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "display_name": "Relay Down",
+                    "email": email,
+                    "password": "RelayDown123!"
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let (resp, body) = harness.send_json_request(signup()).await;
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
+
+    // Immediate retry hits the relay again instead of the 60 s cooldown.
+    let (resp, body) = harness.send_json_request(signup()).await;
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
 }

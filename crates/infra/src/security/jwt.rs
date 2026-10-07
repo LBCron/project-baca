@@ -33,14 +33,28 @@ pub fn generate_access_token(
     expiry_minutes: u64,
 ) -> Result<String, AppError> {
     let now = Utc::now().timestamp() as usize;
-    let exp = now + (expiry_minutes as usize * 60);
+    generate_access_token_issued_at(user_id, email, role, secret, expiry_minutes, now)
+}
+
+/// Signs an access token with an explicit `iat`. Revocation compares whole
+/// seconds (`iat <= revoked_before`), so a pair minted right after revoking
+/// a user's sessions is stamped one second ahead to outlive the cut.
+pub fn generate_access_token_issued_at(
+    user_id: Uuid,
+    email: &str,
+    role: &str,
+    secret: &str,
+    expiry_minutes: u64,
+    issued_at: usize,
+) -> Result<String, AppError> {
+    let exp = issued_at + (expiry_minutes as usize * 60);
 
     let claims = Claims {
         sub: user_id,
         email: email.to_string(),
         role: role.to_string(),
         exp,
-        iat: now,
+        iat: issued_at,
         jti: Uuid::new_v4(),
     };
 
@@ -174,50 +188,107 @@ fn refresh_key(token: &str) -> String {
     format!("refresh_token:{}", token_hash(token))
 }
 
-/// Validates an active refresh token, revokes it, and issues a rotated refresh token.
-/// Reuse of an already-rotated token is treated as theft: the whole token
-/// family for that user is revoked and the caller gets 401.
+fn rotated_key(token_hash: &str) -> String {
+    format!("rotated_refresh_token:{token_hash}")
+}
+
+/// Redis key holding the successor of a just-rotated token for
+/// [`ROTATION_GRACE_SECS`]. Public so tests can expire the window early.
+pub fn rotation_grace_key(token: &str) -> String {
+    format!("rotation_grace:{}", token_hash(token))
+}
+
+/// Window after a rotation during which the consumed token still yields the
+/// same successor. Two tabs or a retried request refreshing at once must not
+/// be mistaken for theft; beyond it a replay revokes the whole family.
+pub const ROTATION_GRACE_SECS: u64 = 30;
+
+/// Result of presenting a refresh token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshOutcome {
+    /// Token accepted: the owner and the refresh token to hand back.
+    Rotated {
+        user_id: Uuid,
+        refresh_token: String,
+    },
+    /// A token rotated out before the grace window was presented again.
+    Replayed { user_id: Uuid },
+}
+
+/// Consumes an active refresh token atomically and issues its successor.
+/// GETDEL guarantees a single winner among concurrent presenters; losers are
+/// resolved against the rotation record (grace successor or replay).
 pub async fn validate_and_rotate_refresh_token(
     redis: &mut redis::aio::MultiplexedConnection,
     old_token: &str,
     expiry_days: u64,
-) -> Result<(Uuid, String), AppError> {
-    let old_key = refresh_key(old_token);
-    let user_id_str: Option<String> = redis.get(&old_key).await.map_err(|e| {
-        AppError::Internal(format!("Failed to retrieve refresh token from Redis: {e}"))
-    })?;
+) -> Result<RefreshOutcome, AppError> {
+    let old_hash = token_hash(old_token);
+    let owner: Option<String> = redis::cmd("GETDEL")
+        .arg(refresh_key(old_token))
+        .query_async(redis)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!("Failed to consume refresh token in Redis: {e}"))
+        })?;
 
-    let user_id_str = match user_id_str {
-        Some(s) => s,
-        None => {
-            // Unknown token: either never issued or already rotated. Reuse of
-            // a dead token is indistinguishable here from a bogus one, so the
-            // caller decides whether to trigger family revocation.
-            return Err(AppError::Unauthorized(
-                "Invalid or expired refresh token".to_string(),
-            ));
-        }
+    let Some(owner) = owner else {
+        return resolve_consumed_token(redis, &old_hash).await;
     };
 
-    let user_id = Uuid::parse_str(&user_id_str).map_err(|_| {
+    let user_id = Uuid::parse_str(&owner).map_err(|_| {
         AppError::Unauthorized("Corrupted user ID in refresh token session".to_string())
     })?;
 
-    // Invalidate the old token (rotation enforcement) and remember the
-    // rotation so a replayed (stolen) copy triggers family revocation.
-    let _: () = redis.del(&old_key).await.unwrap_or(());
     let user_set_key = format!("user_refresh_tokens:{user_id}");
-    let _: Result<(), _> = redis.srem(&user_set_key, token_hash(old_token)).await;
-    let rotated_key = format!("rotated_refresh_token:{}", token_hash(old_token));
-    let _: Result<(), _> = redis
-        .set_ex(&rotated_key, user_id.to_string(), expiry_days * 86400)
-        .await;
+    let _: Result<(), _> = redis.srem(&user_set_key, &old_hash).await;
 
-    // Generate and persist new refresh token
     let new_token = generate_refresh_token();
+    let _: Result<(), _> = redis
+        .set_ex(
+            rotated_key(&old_hash),
+            user_id.to_string(),
+            expiry_days * 86400,
+        )
+        .await;
+    let _: Result<(), _> = redis
+        .set_ex(
+            rotation_grace_key(old_token),
+            &new_token,
+            ROTATION_GRACE_SECS,
+        )
+        .await;
     store_refresh_token(redis, &new_token, user_id, expiry_days).await?;
 
-    Ok((user_id, new_token))
+    Ok(RefreshOutcome::Rotated {
+        user_id,
+        refresh_token: new_token,
+    })
+}
+
+/// A token absent from the live set was never issued, was rotated inside the
+/// grace window (hand back the same successor), or was rotated earlier.
+async fn resolve_consumed_token(
+    redis: &mut redis::aio::MultiplexedConnection,
+    old_hash: &str,
+) -> Result<RefreshOutcome, AppError> {
+    let rotated_owner: Option<String> = redis.get(rotated_key(old_hash)).await.unwrap_or(None);
+    let Some(user_id) = rotated_owner.and_then(|s| Uuid::parse_str(&s).ok()) else {
+        return Err(AppError::Unauthorized(
+            "Invalid or expired refresh token".to_string(),
+        ));
+    };
+    let successor: Option<String> = redis
+        .get(format!("rotation_grace:{old_hash}"))
+        .await
+        .unwrap_or(None);
+    Ok(match successor {
+        Some(refresh_token) => RefreshOutcome::Rotated {
+            user_id,
+            refresh_token,
+        },
+        None => RefreshOutcome::Replayed { user_id },
+    })
 }
 
 /// Revokes an active refresh token from Redis
@@ -281,25 +352,6 @@ pub async fn revoke_family_on_reuse(
 ) -> Result<(), AppError> {
     revoke_refresh_family(redis, user_id).await?;
     invalidate_user_tokens(redis, user_id, access_token_max_expiry_secs).await
-}
-
-/// Whether a refresh token was rotated out (replay = suspected theft).
-pub async fn is_known_rotated_token(
-    redis: &mut redis::aio::MultiplexedConnection,
-    token: &str,
-) -> bool {
-    let rotated_key = format!("rotated_refresh_token:{}", token_hash(token));
-    redis.exists(&rotated_key).await.unwrap_or(false)
-}
-
-/// Owner recorded at rotation time, for family revocation on replay.
-pub async fn user_id_of_rotated_token(
-    redis: &mut redis::aio::MultiplexedConnection,
-    token: &str,
-) -> Option<Uuid> {
-    let rotated_key = format!("rotated_refresh_token:{}", token_hash(token));
-    let id_str: Option<String> = redis.get(&rotated_key).await.unwrap_or(None);
-    id_str.and_then(|s| Uuid::parse_str(&s).ok())
 }
 
 /// Revokes all refresh tokens for a user except the specified one

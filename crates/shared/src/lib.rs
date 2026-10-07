@@ -209,6 +209,17 @@ pub struct ChangePasswordRequest {
     pub revoke_other_sessions: Option<bool>,
 }
 
+/// Outcome of a password change. `tokens` is present when other sessions were
+/// revoked, so the caller can replace its own now-invalid pair without a
+/// second login.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PasswordChangedDto {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<TokenResponse>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GuestProgressRecord {

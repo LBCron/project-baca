@@ -51,7 +51,7 @@ pub async fn upload_book(
     auth_user: AuthUser,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, HttpError> {
-    require_admin(&auth_user).map_err(HttpError)?;
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
 
     // A caller-controlled job id would let anyone read arbitrary job hashes,
     // so validate the path parameter strictly on the read side.
@@ -240,7 +240,7 @@ pub async fn ingestion_status(
     auth_user: AuthUser,
     Path(job_id): Path<String>,
 ) -> Result<impl IntoResponse, HttpError> {
-    require_admin(&auth_user).map_err(HttpError)?;
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
 
     let job_id = job_id.trim();
     if Uuid::parse_str(job_id).is_err() {
@@ -285,7 +285,7 @@ pub async fn dropoff_analytics(
     auth_user: AuthUser,
     Query(query): Query<DropoffQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
-    require_admin(&auth_user).map_err(HttpError)?;
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
 
     get_book_by_id(&state.db, query.book_id)
         .await

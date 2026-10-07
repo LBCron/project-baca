@@ -14,9 +14,9 @@ use shared::{
 use std::sync::Arc;
 use validator::Validate;
 
-/// Minimum seconds between two rewarded heartbeats for the same user+book.
-/// Replay bursts inside the window are rejected so scripts cannot inflate
-/// XP, streaks, or badges with cheap 1-second heartbeats.
+/// Minimum seconds between two rewarded heartbeats per user. Streaks and XP
+/// are per user, so the gate is too: alternating books must not multiply
+/// the credit, and bursts inside the window are rejected outright.
 pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
 
 /// Logs reading seconds, evaluates the streak, and awards XP.
@@ -40,11 +40,12 @@ pub async fn record_heartbeat(
     req.validate().map_err(HttpError::from)?;
 
     // Anti-XP-farm gate lives here (route owns Redis; the repository owns
-    // Postgres). Redis down fails open to availability: abuse still costs a
-    // valid session per hit and the streak math caps daily gains.
+    // Postgres and clamps the credited seconds). Redis down fails open to
+    // availability: abuse still costs a valid session per hit and the
+    // streak math caps daily gains.
     if let Ok(mut redis_conn) = state.get_redis_conn().await {
         use redis::AsyncCommands;
-        let farm_key = format!("heartbeat:min_interval:{}:{}", auth.id, req.book_id);
+        let farm_key = format!("heartbeat:min_interval:{}", auth.id);
         let fresh: bool = redis_conn.set_nx(&farm_key, "1").await.unwrap_or(true);
         if fresh {
             let _: Result<(), _> = redis_conn
