@@ -188,7 +188,7 @@ pub fn AdminPage() -> impl IntoView {
                 }.into_any(),
                 _ => view! {
                     <div class="empty-state">
-                        <img src="/assets/admin-sorting-pigeonholes.png" alt=""/>
+                        <img src="/assets/admin-sorting-pigeonholes.webp" alt=""/>
                         <p>{move || lang.get().text("admin_forbidden")}</p>
                         <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
                     </div>

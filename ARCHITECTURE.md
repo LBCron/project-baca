@@ -125,7 +125,8 @@ project-baca/
 * **Reading surfaces:** Paper `#F9F6F0`/`#2B2625`/`#9D5A3C`, Sepia `#EFE4CF`, Espresso `#1F1916`, chosen in the reader's type sheet.
 * **Typography:** `EB Garamond` display (`--font-display`), `Newsreader` reading body (`--font-reading`), `Plus Jakarta Sans` interface labels (`--font-ui`); fleuron `❖` as ornament; chapter numerals in roman.
 * **Shape and motion:** 20px card radius, pill controls, 44px touch targets; fade-up on mount, sheet slide-in, page-turn fade, all disabled under `prefers-reduced-motion`.
-* **Illustrations:** Classic pen-and-ink engravings in `assets/illustrations/`, shown as paper plates over the dark shell.
+* **Illustrations:** Classic pen-and-ink engravings in `assets/illustrations/` (PNG originals, WebP copies shipped by Trunk), shown as paper plates over the dark shell; the home hero carries one static plate.
+* **Responsive rules:** phones under 768px get the greeting-first home, the bottom tab bar, bottom sheets, and the book action dock; wider screens get the editorial hero, header navigation, centered dialogs, and inline actions. Safe-area insets apply on every edge; the reader paginates in a fixed-height flex column (one column, two from 1024px, measure capped at 1440px).
 
 ## 7. Infrastructure Services (`docker-compose.yml`)
 

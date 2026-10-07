@@ -1,10 +1,13 @@
-//! Home: hero with illustration plates, continue reading, search and catalog.
+//! Home: a greeting and the current book on phones, an editorial hero on
+//! wide screens; then search, quick filters, the catalog, and the
+//! "how it works" band.
 
 use crate::api;
-use crate::components::book_card::{BookCard, SkeletonCard};
+use crate::components::book_card::{BookCard, Cover, SkeletonCard};
 use crate::components::icons;
-use crate::components::progress::ProgressRing;
+use crate::components::progress::{ProgressBar, ProgressRing};
 use crate::components::session::use_session;
+use crate::format::roman;
 use crate::i18n::use_lang;
 use crate::storage;
 use leptos::prelude::*;
@@ -13,53 +16,44 @@ use leptos_router::hooks::use_query_map;
 use shared::{BookCatalogQuery, BookSearchQuery, BookSummaryDto, GuestProgressRecord};
 use std::time::Duration;
 
-/// (source, alt, caption) for the rotating hero plates. Captions are Latin
-/// plate titles, in keeping with the brand name.
-const PLATES: [(&str, &str, &str); 5] = [
-    (
-        "/assets/library-bookshelf-ladder.png",
-        "Reader climbing a library ladder",
-        "Plate I \u{2014} Bibliotheca",
-    ),
-    (
-        "/assets/cozy-reader-armchair-owl.png",
-        "Reader in an armchair with tea and an owl",
-        "Plate II \u{2014} Lectio",
-    ),
-    (
-        "/assets/manuscript-inspection-clothesline.png",
-        "Writer drying manuscript pages on a line",
-        "Plate III \u{2014} Manuscripta",
-    ),
-    (
-        "/assets/admin-sorting-pigeonholes.png",
-        "Archivist sorting mail into pigeonholes",
-        "Plate IV \u{2014} Archivum",
-    ),
-    (
-        "/assets/retro-rocket-discovery.png",
-        "Victorian explorers in a retro rocket",
-        "Plate V \u{2014} Inventio",
-    ),
-];
-
+const PLATE_SRC: &str = "/assets/library-bookshelf-ladder.webp";
 const PAGE_SIZE: u64 = 20;
 const SHORT_READ_MINUTES: i32 = 120;
+const RAIL_SIZE: usize = 8;
+const THEME_CHIP_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Filter {
+enum LanguageFilter {
     All,
     Indonesian,
     English,
+}
+
+impl LanguageFilter {
+    fn code(self) -> Option<String> {
+        match self {
+            LanguageFilter::Indonesian => Some("id".to_string()),
+            LanguageFilter::English => Some("en".to_string()),
+            LanguageFilter::All => None,
+        }
+    }
+}
+
+/// Hero chip filters, applied on the client over the loaded page.
+#[derive(Clone, PartialEq, Eq)]
+enum Quick {
+    Theme(String),
     Short,
 }
 
-impl Filter {
-    fn language(self) -> Option<String> {
+impl Quick {
+    fn keeps(&self, book: &BookSummaryDto) -> bool {
         match self {
-            Filter::Indonesian => Some("id".to_string()),
-            Filter::English => Some("en".to_string()),
-            _ => None,
+            Quick::Theme(theme) => book.primary_theme.eq_ignore_ascii_case(theme),
+            Quick::Short => {
+                book.estimated_reading_minutes > 0
+                    && book.estimated_reading_minutes <= SHORT_READ_MINUTES
+            }
         }
     }
 }
@@ -73,6 +67,31 @@ struct Resume {
     chapter_title: String,
     percent: f32,
     cover_url: String,
+}
+
+fn greeting_key(hour: u32) -> &'static str {
+    match hour {
+        4..=10 => "greeting_morning",
+        11..=14 => "greeting_afternoon",
+        15..=17 => "greeting_evening",
+        _ => "greeting_night",
+    }
+}
+
+/// Distinct themes of the loaded books, in catalog order.
+fn theme_chips(books: &[BookSummaryDto]) -> Vec<String> {
+    let mut themes: Vec<String> = Vec::new();
+    for book in books {
+        let theme = book.primary_theme.trim();
+        if theme.is_empty() || themes.iter().any(|t| t.eq_ignore_ascii_case(theme)) {
+            continue;
+        }
+        themes.push(theme.to_string());
+        if themes.len() == THEME_CHIP_LIMIT {
+            break;
+        }
+    }
+    themes
 }
 
 fn search_hit_to_summary(r: shared::BookSearchResultDto) -> BookSummaryDto {
@@ -93,6 +112,82 @@ fn search_hit_to_summary(r: shared::BookSearchResultDto) -> BookSummaryDto {
     }
 }
 
+/// The current book: a compact row with a progress ring on phones, a wide
+/// card with the cover, a progress bar, and two actions on larger screens.
+#[component]
+fn ResumeCard(resume: Resume, wide: bool) -> impl IntoView {
+    let (lang, _) = use_lang();
+    let read_href = format!(
+        "/read/{}?chapter={}",
+        resume.book_id, resume.chapter_number
+    );
+    let recap_href = format!("{read_href}&recap=1");
+    let percent = resume.percent;
+    let chapter_no = resume.chapter_number;
+    let chapter_title = resume.chapter_title.clone();
+    let title = resume.title.clone();
+    let author = resume.author.clone();
+    let cover_url = resume.cover_url.clone();
+    let chapter_line = move || {
+        format!(
+            "{} {} \u{00B7} {}",
+            lang.get().text("chapter"),
+            roman(chapter_no),
+            chapter_title
+        )
+    };
+    if wide {
+        view! {
+            <article class="resume-card resume-wide">
+                <div class="resume-thumb"><Cover title=title.clone() cover_url=cover_url/></div>
+                <div class="resume-meta">
+                    <small>{chapter_line}</small>
+                    <h3 class="title">{title}</h3>
+                    <small>{move || format!("{author} \u{00B7} {}", lang.get().text_with("percent_done", "n", &format!("{percent:.0}")))}</small>
+                    <ProgressBar percent=Signal::derive(move || percent) label=Signal::derive(move || lang.get().text("reading_progress"))/>
+                </div>
+                <div class="resume-actions">
+                    <a href=read_href class="btn btn-primary">{move || lang.get().text("resume")}</a>
+                    {(chapter_no > 1).then(move || view! {
+                        <a href=recap_href class="btn btn-ghost">{move || lang.get().text("recap_last")}</a>
+                    })}
+                </div>
+            </article>
+        }
+        .into_any()
+    } else {
+        view! {
+            <a href=read_href class="resume-card">
+                <ProgressRing percent=Signal::derive(move || percent)/>
+                <div class="resume-meta">
+                    <small>{chapter_line}</small>
+                    <span class="title">{title}</span>
+                    <small>{author}</small>
+                </div>
+                <span class="play" aria-hidden="true">{icons::play()}</span>
+            </a>
+        }
+        .into_any()
+    }
+}
+
+#[component]
+fn RailCard(book: BookSummaryDto) -> impl IntoView {
+    let (lang, _) = use_lang();
+    let href = format!("/book/{}", book.id);
+    let minutes = book.estimated_reading_minutes;
+    let language = book.language.to_uppercase();
+    view! {
+        <a href=href class="rail-card">
+            <Cover title=book.title.clone() cover_url=book.cover_url.clone()/>
+            <span class="rail-title">{book.title.clone()}</span>
+            <span class="rail-meta">
+                {move || if minutes > 0 { format!("{language} \u{00B7} {}", lang.get().duration(minutes)) } else { language.clone() }}
+            </span>
+        </a>
+    }
+}
+
 #[component]
 pub fn HomePage() -> impl IntoView {
     let (lang, _) = use_lang();
@@ -106,10 +201,10 @@ pub fn HomePage() -> impl IntoView {
     let (loading, set_loading) = signal(true);
     let (query, set_query) = signal(String::new());
     let (generation, set_generation) = signal(0u32);
-    let (filter, set_filter) = signal(Filter::All);
+    let (filter, set_filter) = signal(LanguageFilter::All);
+    let (quick, set_quick) = signal(None::<Quick>);
     let (resume, set_resume) = signal(None::<Resume>);
-    let (slide, set_slide) = signal(0usize);
-    let (paused, set_paused) = signal(false);
+    let hour = js_sys::Date::new_0().get_hours();
 
     let load_page = move |reset: bool| {
         let gen = generation.get_untracked() + 1;
@@ -120,7 +215,7 @@ pub fn HomePage() -> impl IntoView {
             set_exhausted.set(false);
         }
         let cur = if reset { None } else { cursor.get_untracked() };
-        let language = filter.get_untracked().language();
+        let language = filter.get_untracked().code();
         spawn_local(async move {
             let page = api::catalog(&BookCatalogQuery {
                 cursor: cur.as_deref().and_then(|c| c.parse::<uuid::Uuid>().ok()),
@@ -185,10 +280,28 @@ pub fn HomePage() -> impl IntoView {
         );
     };
 
-    let pick_filter = move |f: Filter| {
+    let on_submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let value = query.get_untracked().trim().to_string();
+        if value.len() >= 2 {
+            run_search(value);
+        }
+    };
+
+    let pick_filter = move |f: LanguageFilter| {
         set_filter.set(f);
         set_query.set(String::new());
         load_page(true);
+    };
+
+    let pick_quick = move |q: Quick| {
+        set_quick.update(|current| {
+            *current = if current.as_ref() == Some(&q) {
+                None
+            } else {
+                Some(q)
+            }
+        });
     };
 
     load_page(true);
@@ -213,40 +326,28 @@ pub fn HomePage() -> impl IntoView {
         });
     });
 
-    Effect::new(move || {
-        let reduced = web_sys::window()
-            .and_then(|w| {
-                w.match_media("(prefers-reduced-motion: reduce)")
-                    .ok()
-                    .flatten()
-            })
-            .map(|m| m.matches())
-            .unwrap_or(false);
-        if reduced {
-            set_paused.set(true);
-            return;
-        }
-        set_interval(
-            move || {
-                if !paused.get_untracked() {
-                    set_slide.update(|s| *s = (*s + 1) % PLATES.len());
-                }
-            },
-            Duration::from_millis(7000),
-        );
-    });
-
     let visible = move || {
         let all = books.get();
-        if filter.get() == Filter::Short {
-            all.into_iter()
-                .filter(|b| {
-                    b.estimated_reading_minutes > 0
-                        && b.estimated_reading_minutes <= SHORT_READ_MINUTES
-                })
-                .collect::<Vec<_>>()
+        match quick.get() {
+            Some(q) => all.into_iter().filter(|b| q.keeps(b)).collect::<Vec<_>>(),
+            None => all,
+        }
+    };
+    let chips = move || theme_chips(&books.get());
+    let headline = move || {
+        if resume.get().is_some() {
+            ("headline_resume_a", "headline_resume_b")
         } else {
-            all
+            ("headline_fresh_a", "headline_fresh_b")
+        }
+    };
+    let short_active = move || quick.get() == Some(Quick::Short);
+    let language_chip = move |f: LanguageFilter, key: &'static str| {
+        let active = move || filter.get() == f;
+        view! {
+            <button class="chip" class:active=active aria-pressed=active on:click=move |_| pick_filter(f)>
+                {move || lang.get().text(key)}
+            </button>
         }
     };
 
@@ -254,12 +355,23 @@ pub fn HomePage() -> impl IntoView {
         <div class="container">
             <section class="hero">
                 <div class="hero-copy">
-                    <div class="kicker">{move || lang.get().text("hero_sub")}</div>
-                    <h1 class="display hero-heading">
-                        {move || lang.get().text("hero_head_a")}<em>{move || lang.get().text("hero_head_b")}</em>
-                    </h1>
-                    <p class="lede">{move || lang.get().text("hero_desc")}</p>
-                    <form class="search-bar" role="search" on:submit=|ev| ev.prevent_default()>
+                    <div class="hero-pitch wide-only">
+                        <div class="kicker">{move || lang.get().text("hero_sub")}</div>
+                        <h1 class="display hero-heading">
+                            {move || lang.get().text("hero_head_a")}<em>{move || lang.get().text("hero_head_b")}</em>
+                        </h1>
+                        <p class="lede">{move || lang.get().text("hero_desc")}</p>
+                    </div>
+                    <div class="greeting narrow-only">
+                        <span class="greeting-time">{move || lang.get().text(greeting_key(hour))}</span>
+                        <h1 class="display hero-heading">
+                            {move || lang.get().text(headline().0)}<em>{move || lang.get().text(headline().1)}</em>
+                        </h1>
+                    </div>
+                    {move || resume.get().map(|r| view! {
+                        <div class="narrow-only"><ResumeCard resume=r wide=false/></div>
+                    })}
+                    <form class="search-bar" role="search" on:submit=on_submit>
                         {icons::search()}
                         <label class="visually-hidden" for="catalog-search">{move || lang.get().text("search_cta")}</label>
                         <input
@@ -270,74 +382,64 @@ pub fn HomePage() -> impl IntoView {
                             prop:value=move || query.get()
                             on:input=on_search
                         />
+                        <button type="submit" class="btn btn-primary search-submit">{move || lang.get().text("search_cta")}</button>
                     </form>
-                    <div class="chip-row" role="group" aria-label=move || lang.get().text("catalog")>
-                        <button class="chip" class:active=move || filter.get() == Filter::All aria-pressed=move || filter.get() == Filter::All on:click=move |_| pick_filter(Filter::All)>{move || lang.get().text("chip_all")}</button>
-                        <button class="chip" class:active=move || filter.get() == Filter::Indonesian aria-pressed=move || filter.get() == Filter::Indonesian on:click=move |_| pick_filter(Filter::Indonesian)>{move || lang.get().text("chip_id")}</button>
-                        <button class="chip" class:active=move || filter.get() == Filter::English aria-pressed=move || filter.get() == Filter::English on:click=move |_| pick_filter(Filter::English)>{move || lang.get().text("chip_en")}</button>
-                        <button class="chip" class:active=move || filter.get() == Filter::Short aria-pressed=move || filter.get() == Filter::Short on:click=move |_| pick_filter(Filter::Short)>{move || lang.get().text("chip_short")}</button>
+                    <div class="chip-row" role="group" aria-label=move || lang.get().text("theme_filter")>
+                        {move || chips().into_iter().map(|theme| {
+                            let q = Quick::Theme(theme.clone());
+                            let active = {
+                                let q = q.clone();
+                                move || quick.get().as_ref() == Some(&q)
+                            };
+                            view! {
+                                <button class="chip" class:active=active.clone() aria-pressed=active on:click=move |_| pick_quick(q.clone())>{theme}</button>
+                            }
+                        }).collect::<Vec<_>>()}
+                        <button class="chip" class:active=short_active aria-pressed=short_active on:click=move |_| pick_quick(Quick::Short)>
+                            {move || lang.get().text("chip_short")}
+                        </button>
                     </div>
+                    {move || (!books.get().is_empty()).then(|| view! {
+                        <section class="picks narrow-only" aria-labelledby="picks-title">
+                            <div class="section-head">
+                                <h2 id="picks-title" class="section-title">{move || lang.get().text("picks")}</h2>
+                                <a href="#katalog" class="section-link">{move || lang.get().text("see_all")}</a>
+                            </div>
+                            <div class="book-rail">
+                                {books.get().into_iter().take(RAIL_SIZE).map(|b| view! { <RailCard book=b/> }).collect::<Vec<_>>()}
+                            </div>
+                        </section>
+                    })}
                 </div>
-                <div
-                    class="hero-art"
-                    on:mouseenter=move |_| set_paused.set(true)
-                    on:mouseleave=move |_| set_paused.set(false)
-                    on:focusin=move |_| set_paused.set(true)
-                    on:focusout=move |_| set_paused.set(false)
-                >
-                    <div>
-                        <div class="plate">
-                            {move || {
-                                let (src, alt, caption) = PLATES[slide.get()];
-                                view! {
-                                    <img src=src alt=alt class="hero-slide"/>
-                                    <div class="plate-caption"><span>{caption}</span><span aria-hidden="true">"\u{2756}"</span></div>
-                                }
-                            }}
-                        </div>
-                        <div class="hero-dots" role="tablist" aria-label="Hero art">
-                            {PLATES.iter().enumerate().map(|(i, _)| {
-                                let active = move || slide.get() == i;
-                                view! {
-                                    <button
-                                        role="tab"
-                                        aria-selected=active
-                                        aria-label=format!("Plate {}", i + 1)
-                                        class="hero-dot"
-                                        class:active=active
-                                        on:click=move |_| set_slide.set(i)
-                                    />
-                                }
-                            }).collect::<Vec<_>>()}
-                        </div>
-                    </div>
+                <div class="hero-art wide-only">
+                    <figure class="plate">
+                        <img src=PLATE_SRC alt=move || lang.get().text("plate_alt") class="hero-slide" width="640" height="640"/>
+                        <figcaption class="plate-caption">
+                            <span>{move || lang.get().text("plate_caption")}</span>
+                            <span aria-hidden="true">"\u{2756}"</span>
+                        </figcaption>
+                    </figure>
                 </div>
             </section>
 
-            {move || resume.get().map(|r| {
-                let href = format!("/read/{}?chapter={}", r.book_id, r.chapter_number);
-                let percent = r.percent;
-                view! {
-                    <section class="section" style="margin-bottom: 40px">
-                        <div class="section-head">
-                            <h2 class="section-title">{move || lang.get().text("continue_reading")}</h2>
-                        </div>
-                        <a href=href class="resume-card">
-                            <ProgressRing percent=Signal::derive(move || percent)/>
-                            <div class="resume-meta">
-                                <small>{move || format!("{} {} \u{00B7} {}", lang.get().text("chapter"), r.chapter_number, r.chapter_title)}</small>
-                                <span class="title">{r.title.clone()}</span>
-                                <small>{r.author.clone()}</small>
-                            </div>
-                            <span class="play" aria-hidden="true">{icons::play()}</span>
-                        </a>
-                    </section>
-                }
+            {move || resume.get().map(|r| view! {
+                <section class="section wide-only" aria-labelledby="resume-title">
+                    <div class="section-head">
+                        <h2 id="resume-title" class="section-title">{move || lang.get().text("continue_reading")}</h2>
+                        <a href="/me" class="section-link">{move || lang.get().text("see_shelf")}</a>
+                    </div>
+                    <ResumeCard resume=r wide=true/>
+                </section>
             })}
 
-            <section id="katalog">
-                <div class="section-head">
-                    <h2 class="section-title">{move || lang.get().text("catalog")}</h2>
+            <section id="katalog" aria-labelledby="catalog-title">
+                <div class="section-head catalog-head">
+                    <h2 id="catalog-title" class="section-title">{move || lang.get().text("catalog")}</h2>
+                    <div class="chip-row" role="group" aria-label=move || lang.get().text("language")>
+                        {language_chip(LanguageFilter::All, "chip_all")}
+                        {language_chip(LanguageFilter::Indonesian, "chip_id")}
+                        {language_chip(LanguageFilter::English, "chip_en")}
+                    </div>
                 </div>
                 <div class="book-grid">
                     {move || visible().into_iter().map(|b| view! { <BookCard book=b/> }).collect::<Vec<_>>()}
@@ -345,12 +447,12 @@ pub fn HomePage() -> impl IntoView {
                 </div>
                 {move || (!loading.get() && visible().is_empty()).then(|| view! {
                     <div class="empty-state">
-                        <img src="/assets/retro-rocket-discovery.png" alt=""/>
+                        <img src="/assets/retro-rocket-discovery.webp" alt="" width="768" height="512"/>
                         <p>{move || lang.get().text("no_results")}</p>
                     </div>
                 })}
                 {move || (!exhausted.get() && !books.get().is_empty()).then(|| view! {
-                    <div style="display: flex; justify-content: center; margin-top: 24px">
+                    <div class="load-more">
                         <button class="btn btn-ghost" on:click=move |_| load_page(false) disabled=move || loading.get()>
                             {move || if loading.get() { lang.get().text("loading") } else { lang.get().text("load_more") }}
                         </button>
@@ -360,9 +462,9 @@ pub fn HomePage() -> impl IntoView {
         </div>
 
         <section id="cara-kerja" class="band">
-            <div class="container" style="display: flex; flex-direction: column; gap: 28px">
+            <div class="container band-inner">
                 <div class="fleuron" aria-hidden="true">"\u{2756}"</div>
-                <h2 class="display" style="text-align: center; font-size: clamp(1.8rem, 5vw, 2.4rem)">
+                <h2 class="display band-title">
                     {move || lang.get().text("how_head_a")}<em>{move || lang.get().text("how_head_b")}</em>
                 </h2>
                 <div class="features">
@@ -400,12 +502,10 @@ async fn latest_guest_resume() -> Option<Resume> {
         .ok()?;
     let latest = records
         .into_iter()
-        .max_by_key(|r| r.last_read_at.map(|t| t.timestamp()).unwrap_or(0))?;
+        .filter(|r| !r.is_finished.unwrap_or(false))
+        .max_by_key(|r| r.last_read_at)?;
     let book = api::book_detail(&latest.book_id.to_string()).await.ok()?;
-    let chapter = book
-        .chapters
-        .iter()
-        .find(|c| c.id == latest.last_chapter_id)?;
+    let chapter = book.chapters.iter().find(|c| c.id == latest.last_chapter_id)?;
     Some(Resume {
         book_id: book.id.to_string(),
         title: book.title,

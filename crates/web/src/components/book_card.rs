@@ -21,24 +21,19 @@ pub fn cover_tint(title: &str) -> &'static str {
 pub fn Cover(
     #[prop(into)] title: String,
     #[prop(into)] cover_url: String,
-    #[prop(optional, into)] badge: Option<&'static str>,
+    #[prop(optional)] badge: Option<String>,
 ) -> impl IntoView {
     let tint = cover_tint(&title);
     let has_image = !cover_url.trim().is_empty();
-    // A cover that fails to load falls back to the typographic cover rather
-    // than a blank plate.
-    let (broken, set_broken) = signal(false);
-    let show_image = move || has_image && !broken.get();
-    let alt = title.clone();
-    let fallback_title = title.clone();
+    // The typographic plate always renders beneath the image, so a cover
+    // that is slow or fails to load shows the title instead of a blank
+    // rectangle, without any load or error handler.
     view! {
         <div class="cover" style=format!("--cover-tint: {tint}")>
-            {move || (!show_image()).then(|| view! { <span>{fallback_title.clone()}</span> })}
-            {move || show_image().then(|| view! {
-                <img src=cover_url.clone() alt=alt.clone() loading="lazy" on:error=move |_| set_broken.set(true)/>
-            })}
+            <span>{title}</span>
+            {has_image.then(|| view! { <img src=cover_url alt="" loading="lazy" decoding="async"/> })}
             {badge.map(|label| view! {
-                <span class="cover-badge" aria-label=label>{icons::download()}</span>
+                <span class="cover-badge" role="img" aria-label=label>{icons::download()}</span>
             })}
         </div>
     }

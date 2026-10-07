@@ -99,6 +99,12 @@ pub const FONT_SIZE_MAX: u8 = 24;
 /// Line height stored in tenths (16 = 1.6).
 pub const LINE_HEIGHT_MIN: u8 = 15;
 pub const LINE_HEIGHT_MAX: u8 = 20;
+/// The three leading presets offered in the reader, as (tenths, label key).
+pub const LEADING_PRESETS: [(u8, &str); 3] = [
+    (15, "leading_tight"),
+    (17, "leading_normal"),
+    (19, "leading_loose"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReaderPrefs {

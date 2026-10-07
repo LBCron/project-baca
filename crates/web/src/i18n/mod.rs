@@ -43,7 +43,45 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("chip_short", "Di bawah 2 jam", "Under 2 hours"),
     ("continue_reading", "Lanjutkan bacaanmu", "Pick up where you left off"),
     ("resume", "Lanjutkan", "Resume"),
-    ("recap_prev", "Rekap bab sebelumnya", "Recap earlier chapters"),
+    (
+        "recap_range",
+        "Rekap Bab {range} tanpa bocoran",
+        "Recap of Chapter {range}, spoiler-free",
+    ),
+    ("greeting_morning", "Selamat pagi", "Good morning"),
+    ("greeting_afternoon", "Selamat siang", "Good afternoon"),
+    ("greeting_evening", "Selamat sore", "Good evening"),
+    ("greeting_night", "Selamat malam", "Good evening"),
+    ("headline_resume_a", "Mau lanjut ", "Pick up "),
+    ("headline_resume_b", "yang kemarin?", "where you left off?"),
+    ("headline_fresh_a", "Mau membaca ", "What shall we "),
+    ("headline_fresh_b", "apa hari ini?", "read today?"),
+    ("plate_caption", "Plat I \u{2014} Perpustakaan", "Plate I \u{2014} The Library"),
+    (
+        "plate_alt",
+        "Pembaca memanjat tangga perpustakaan, ilustrasi etsa pena",
+        "A reader climbing a library ladder, pen-and-ink engraving",
+    ),
+    ("theme_filter", "Tema", "Themes"),
+    ("see_shelf", "Lihat rak", "See the shelf"),
+    ("percent_done", "{n}% selesai", "{n}% read"),
+    ("recap_last", "Rekap bab lalu", "Recap so far"),
+    ("share_book", "Bagikan buku", "Share this book"),
+    ("share_copied", "Tautan disalin.", "Link copied."),
+    ("font_smaller", "Perkecil huruf", "Smaller type"),
+    ("font_larger", "Perbesar huruf", "Larger type"),
+    ("leading_tight", "Rapat", "Tight"),
+    ("leading_normal", "Normal", "Normal"),
+    ("leading_loose", "Renggang", "Loose"),
+    ("reader_since", "Pembaca sejak {date}", "Reader since {date}"),
+    ("xp", "{n} XP", "{n} XP"),
+    ("quotes_all", "Semua ({n})", "All ({n})"),
+    ("saved_count", "{n} tersimpan luring", "{n} saved offline"),
+    (
+        "no_offline",
+        "Belum ada buku tersimpan. Ketuk ikon unduh di halaman buku untuk menyimpannya.",
+        "No saved books yet. Tap the download icon on a book page to keep one here.",
+    ),
     ("picks", "Pilihan minggu ini", "This week's picks"),
     ("see_all", "Semua", "All"),
     ("load_more", "Muat lebih banyak", "Load more"),
@@ -331,6 +369,33 @@ impl Lang {
             (h, 0) => format!("~{h} {}", self.text("hours")),
             (h, m) => format!("~{h} {} {m} {}", self.text("hours"), self.text("minutes")),
         }
+    }
+
+    /// Three-letter month name in the interface language (1 = January).
+    pub fn month_short(self, month: u32) -> &'static str {
+        const ID: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des",
+        ];
+        const EN: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let index = month.clamp(1, 12) as usize - 1;
+        match self {
+            Lang::Id => ID[index],
+            Lang::En => EN[index],
+        }
+    }
+
+    /// "Okt 2026" or "Oct 2026".
+    pub fn month_year(self, date: chrono::DateTime<chrono::Utc>) -> String {
+        use chrono::Datelike;
+        format!("{} {}", self.month_short(date.month()), date.year())
+    }
+
+    /// "8 Okt 2026" or "8 Oct 2026".
+    pub fn date_short(self, date: chrono::DateTime<chrono::Utc>) -> String {
+        use chrono::Datelike;
+        format!("{} {} {}", date.day(), self.month_short(date.month()), date.year())
     }
 
     pub fn document_lang(self) {

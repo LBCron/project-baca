@@ -36,10 +36,11 @@ def test_offline_save_read_badge(clean_page: Page, book_with_chapters: str):
     book_id = book_with_chapters
     ch_no, _ = _chapter_no(book_id)
     goto(page, f"/book/{book_id}")
-    if page.query_selector("text=Save for offline reading"):
-        page.click("text=Save for offline reading")
+    save = '[aria-label="Save for offline reading"]'
+    if page.query_selector(save):
+        page.click(save)
         page.wait_for_timeout(3000)
-        assert "Saved on this device" in page.inner_text("body")
+        assert page.query_selector('[aria-label="Saved on this device"]') is not None
     # Visit the reader ONLINE first: sw.js caches navigations per-URL, so the
     # offline fallback only works for URLs already in SHELL_CACHE.
     goto(page, f"/read/{book_id}?chapter={ch_no}")

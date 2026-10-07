@@ -36,6 +36,12 @@ fn test_i18n_placeholders_and_durations() {
     assert_eq!(Lang::Id.duration(130), "~2 jam 10 mnt");
     assert_eq!(Lang::En.duration(45), "~45 min");
     assert_eq!(Lang::En.duration(120), "~2 h");
+    let october = chrono::DateTime::parse_from_rfc3339("2026-10-08T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(Lang::Id.month_year(october), "Okt 2026");
+    assert_eq!(Lang::En.date_short(october), "8 Oct 2026");
+    assert_eq!(Lang::Id.month_short(0), "Jan");
 }
 
 /// `Lang::toggle` flips, and the browser language picks the default.

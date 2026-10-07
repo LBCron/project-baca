@@ -1,4 +1,5 @@
-//! Book overview: cover, synopsis, chapter list, offline save, insights.
+//! Book overview: cover, synopsis, chapter list, offline save, share, and
+//! the action dock that leads into the reader and the insight sheets.
 
 use crate::components::book_card::Cover;
 use crate::components::icons;
@@ -36,6 +37,12 @@ async fn resume_chapter(book: &BookDetailDto, authed: bool) -> Option<i32> {
         .iter()
         .find(|c| c.id == chapter_id)
         .map(|c| c.chapter_number)
+}
+
+fn current_url() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().href().ok())
+        .unwrap_or_default()
 }
 
 #[component]
@@ -102,6 +109,32 @@ pub fn BookPage() -> impl IntoView {
         });
     };
 
+    let share = move |_| {
+        let title = book
+            .get_untracked()
+            .map(|b| b.title)
+            .unwrap_or_else(|| "Rotaria".to_string());
+        spawn_local(async move {
+            let url = current_url();
+            if api::share_text(&title, &url).await {
+                return;
+            }
+            if api::copy_text(&url).await {
+                toasts.info(lang.get_untracked().text("share_copied"));
+            } else {
+                toasts.error(lang.get_untracked().text("error_generic"));
+            }
+        });
+    };
+
+    let save_label = move || {
+        if saved.get() {
+            lang.get().text("saved_offline")
+        } else {
+            lang.get().text("save_offline")
+        }
+    };
+
     view! {
         <div class="container">
             {move || match book.get() {
@@ -109,8 +142,12 @@ pub fn BookPage() -> impl IntoView {
                     None => view! {
                         <div class="book-overview" aria-busy="true">
                             <div class="book-hero">
-                                <div class="skeleton" style="width: 124px; aspect-ratio: 2/3"></div>
-                                <div style="flex: 1 1 auto"><div class="skeleton skeleton-line" style="width: 40%"></div><div class="skeleton skeleton-line" style="width: 70%; height: 2em"></div><div class="skeleton skeleton-line" style="width: 50%"></div></div>
+                                <div class="skeleton cover-skeleton"></div>
+                                <div class="book-hero-meta">
+                                    <div class="skeleton skeleton-line" style="width: 40%"></div>
+                                    <div class="skeleton skeleton-line" style="width: 70%; height: 2em"></div>
+                                    <div class="skeleton skeleton-line" style="width: 50%"></div>
+                                </div>
                             </div>
                         </div>
                     }.into_any(),
@@ -126,29 +163,33 @@ pub fn BookPage() -> impl IntoView {
                     let first_chapter = b.chapters.first().map(|c| c.chapter_number).unwrap_or(1);
                     let target = resume_at.get().unwrap_or(first_chapter);
                     let read_href = format!("/read/{}?chapter={}", b.id, target);
-                    let insight_chapter = target;
                     let chapter_count = b.chapters.len();
                     let year = b.publication_year.map(|y| format!(" \u{00B7} {y}")).unwrap_or_default();
                     view! {
                         <section class="book-overview">
-                            <div style="display: flex; justify-content: space-between; align-items: center">
-                                <a href="/" class="btn-icon" aria-label=move || lang.get().text("back_to_catalog")>{icons::back()}</a>
-                                <button
-                                    class="btn-icon"
-                                    aria-label=move || if saved.get() { lang.get().text("saved_offline") } else { lang.get().text("save_offline") }
-                                    aria-pressed=move || saved.get()
-                                    disabled=move || saving.get() || saved.get()
-                                    on:click=save_offline
-                                >
-                                    {move || if saved.get() { icons::check().into_any() } else { icons::download().into_any() }}
-                                </button>
+                            <div class="page-tools">
+                                <a href="/" class="btn-icon plain" aria-label=move || lang.get().text("back_to_catalog")>{icons::back()}</a>
+                                <div class="page-tools-group">
+                                    <button
+                                        class="btn-icon plain"
+                                        aria-label=save_label
+                                        aria-pressed=move || saved.get()
+                                        disabled=move || saving.get() || saved.get()
+                                        on:click=save_offline
+                                    >
+                                        {move || if saved.get() { icons::check().into_any() } else { icons::download().into_any() }}
+                                    </button>
+                                    <button class="btn-icon plain" aria-label=move || lang.get().text("share_book") on:click=share>
+                                        {icons::share()}
+                                    </button>
+                                </div>
                             </div>
                             <div class="book-hero">
                                 <Cover title=b.title.clone() cover_url=b.cover_url.clone()/>
                                 <div class="book-hero-meta">
                                     <div class="kicker">{b.primary_theme.clone()}</div>
                                     <h1 class="display">{b.title.clone()}</h1>
-                                    <p class="book-author" style="font-size: 0.95rem">{format!("{}{year}", b.author)}</p>
+                                    <p class="book-author">{format!("{}{year}", b.author)}</p>
                                     <div class="meta-row">
                                         <span>{move || lang.get().duration(total_minutes)}</span>
                                         <span>{move || lang.get().text_with("chapters_count", "n", &chapter_count.to_string())}</span>
@@ -160,8 +201,8 @@ pub fn BookPage() -> impl IntoView {
                             {(!b.tags.is_empty()).then(|| view! {
                                 <div class="chip-row">{b.tags.iter().map(|t| view! { <span class="tag">{format!("#{}", t.replace(' ', ""))}</span> }).collect::<Vec<_>>()}</div>
                             })}
-                            <div class="book-actions">
-                                <a href=read_href class="btn btn-primary">
+                            <div class="book-dock">
+                                <a href=read_href class="btn btn-primary btn-lg">
                                     <span>{move || match resume_at.get() {
                                         Some(n) => format!("{} {}", lang.get().text("continue_chapter"), roman(n)),
                                         None => lang.get().text("start_reading"),
@@ -172,14 +213,10 @@ pub fn BookPage() -> impl IntoView {
                                     <button class="btn btn-ghost" on:click=move |_| quotes_open.set(true)>{icons::search()}<span>{move || lang.get().text("quote_finder")}</span></button>
                                     <button class="btn btn-ghost" on:click=move |_| cards_open.set(true)>{icons::cards()}<span>{move || lang.get().text("atomic_cards")}</span></button>
                                 </div>
-                                <button class="btn btn-soft" on:click=save_offline disabled=move || saving.get() || saved.get()>
-                                    {icons::download()}
-                                    <span>{move || if saved.get() { lang.get().text("saved_offline") } else if saving.get() { lang.get().text("saving") } else { lang.get().text("save_offline") }}</span>
-                                </button>
                             </div>
                             <QuoteFinder book_id=b.id.to_string() show=quotes_open/>
-                            <AtomicCards book_id=b.id.to_string() chapter=insight_chapter show=cards_open/>
-                            <div>
+                            <AtomicCards book_id=b.id.to_string() chapter=target show=cards_open/>
+                            <div class="chapters">
                                 <div class="section-head">
                                     <h2 class="section-title">{move || lang.get().text("chapters")}</h2>
                                     {move || resume_at.get().map(|n| view! { <span class="form-hint">{format!("{}: {} {}", lang.get().text("last_read"), lang.get().text("chapter"), roman(n))}</span> })}
@@ -196,8 +233,10 @@ pub fn BookPage() -> impl IntoView {
                                                 <a href=href>
                                                     <span class="numeral">{roman(number)}</span>
                                                     <span class="label">{c.title.clone()}</span>
+                                                    <span class="meta">
+                                                        {move || if is_done() { icons::check().into_any() } else { lang.get().duration(minutes).into_any() }}
+                                                    </span>
                                                 </a>
-                                                <span class="meta">{move || if is_done() { "\u{2713}".to_string() } else { lang.get().duration(minutes) }}</span>
                                             </li>
                                         }
                                     }).collect::<Vec<_>>()}

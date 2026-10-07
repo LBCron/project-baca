@@ -1,4 +1,5 @@
-//! Bottom tab bar for phones; hidden from 768px up by the stylesheet.
+//! Bottom tab bar for phones; hidden from 768px up by the stylesheet and
+//! absent on book pages, where the action dock takes its place.
 
 use crate::components::icons;
 use crate::i18n::use_lang;
@@ -10,9 +11,10 @@ pub fn TabBar() -> impl IntoView {
     let (lang, _) = use_lang();
     let location = use_location();
     let current = move |path: &str| (location.pathname.get() == path).then_some("page");
+    let on_book_page = move || location.pathname.get().starts_with("/book/");
 
     view! {
-        <nav class="tabbar" aria-label="Primary">
+        <nav class="tabbar" aria-label="Primary" class:docked=on_book_page>
             <a href="/" class="tab" aria-current=move || current("/")>
                 {icons::home()}
                 <span>{move || lang.get().text("nav_home")}</span>

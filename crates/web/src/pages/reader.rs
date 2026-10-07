@@ -11,9 +11,7 @@ use crate::components::toast::use_toasts;
 use crate::format::{reading_minutes, roman};
 use crate::i18n::use_lang;
 use crate::storage::{self, OfflineChapterRecord};
-use crate::theme::{
-    ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LINE_HEIGHT_MAX, LINE_HEIGHT_MIN,
-};
+use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LEADING_PRESETS};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_params_map, use_query_map};
@@ -108,14 +106,6 @@ async fn stored_position(book: uuid::Uuid, authed: bool) -> Option<(uuid::Uuid, 
     }
 }
 
-fn swatch_color(theme: ReadingTheme) -> &'static str {
-    match theme {
-        ReadingTheme::Paper => "#F9F6F0",
-        ReadingTheme::Sepia => "#EFE4CF",
-        ReadingTheme::Espresso => "#1F1916",
-    }
-}
-
 #[component]
 fn TypeSheet(prefs: RwSignal<ReaderPrefs>) -> impl IntoView {
     let (lang, _) = use_lang();
@@ -128,8 +118,6 @@ fn TypeSheet(prefs: RwSignal<ReaderPrefs>) -> impl IntoView {
     };
     let at_smallest_font = move || prefs.get().font_size <= FONT_SIZE_MIN;
     let at_largest_font = move || prefs.get().font_size >= FONT_SIZE_MAX;
-    let at_tightest_leading = move || prefs.get().line_height <= LINE_HEIGHT_MIN;
-    let at_loosest_leading = move || prefs.get().line_height >= LINE_HEIGHT_MAX;
     view! {
         <section class="type-sheet" aria-label=move || lang.get().text("reader_settings")>
             <div class="sheet-grip" aria-hidden="true"></div>
@@ -138,8 +126,8 @@ fn TypeSheet(prefs: RwSignal<ReaderPrefs>) -> impl IntoView {
                     let t = *t;
                     let active = move || prefs.get().theme == t;
                     view! {
-                        <button class="swatch" class:active=active role="radio" aria-checked=active on:click=move |_| adjust(&|p| p.theme = t)>
-                            <span class="dot" style=format!("background: {}", swatch_color(t))></span>
+                        <button class="swatch" data-swatch=t.attr() class:active=active role="radio" aria-checked=active on:click=move |_| adjust(&|p| p.theme = t)>
+                            <span class="dot" aria-hidden="true"></span>
                             {move || lang.get().text(t.label_key())}
                         </button>
                     }
@@ -148,21 +136,25 @@ fn TypeSheet(prefs: RwSignal<ReaderPrefs>) -> impl IntoView {
             <div class="type-row">
                 <span>{move || lang.get().text("font_size")}</span>
                 <div class="stepper">
-                    <button aria-label="A-" style="font-size: 0.85rem" disabled=at_smallest_font on:click=move |_| adjust(&|p| p.font_size -= 1)>"A"</button>
+                    <button class="step-small" aria-label=move || lang.get().text("font_smaller") disabled=at_smallest_font on:click=move |_| adjust(&|p| p.font_size -= 1)>"A"</button>
                     <span class="divider" aria-hidden="true"></span>
-                    <span class="value" aria-live="polite">{move || format!("{}px", prefs.get().font_size)}</span>
-                    <span class="divider" aria-hidden="true"></span>
-                    <button aria-label="A+" style="font-size: 1.3rem" disabled=at_largest_font on:click=move |_| adjust(&|p| p.font_size += 1)>"A"</button>
+                    <button class="step-large" aria-label=move || lang.get().text("font_larger") disabled=at_largest_font on:click=move |_| adjust(&|p| p.font_size += 1)>"A"</button>
                 </div>
+                <span class="visually-hidden" aria-live="polite">{move || format!("{}px", prefs.get().font_size)}</span>
             </div>
             <div class="type-row">
                 <span>{move || lang.get().text("line_height")}</span>
-                <div class="stepper">
-                    <button aria-label="-" disabled=at_tightest_leading on:click=move |_| adjust(&|p| p.line_height -= 1)>{icons::lines(0)}</button>
-                    <span class="divider" aria-hidden="true"></span>
-                    <span class="value" aria-live="polite">{move || prefs.get().line_height_css()}</span>
-                    <span class="divider" aria-hidden="true"></span>
-                    <button aria-label="+" disabled=at_loosest_leading on:click=move |_| adjust(&|p| p.line_height += 1)>{icons::lines(2)}</button>
+                <div class="leading-options" role="radiogroup" aria-label=move || lang.get().text("line_height")>
+                    {LEADING_PRESETS.iter().enumerate().map(|(i, (tenths, key))| {
+                        let tenths = *tenths;
+                        let key = *key;
+                        let active = move || prefs.get().line_height == tenths;
+                        view! {
+                            <button class="leading-opt" class:active=active role="radio" aria-checked=active aria-label=move || lang.get().text(key) on:click=move |_| adjust(&|p| p.line_height = tenths)>
+                                {icons::lines(i as u8)}
+                            </button>
+                        }
+                    }).collect::<Vec<_>>()}
                 </div>
             </div>
         </section>
@@ -198,7 +190,8 @@ pub fn ReaderPage() -> impl IntoView {
     let (streak, set_streak) = signal(None::<i32>);
     let (queued, set_queued) = signal(0usize);
     let (save_generation, set_save_generation) = signal(0u32);
-    let recap_open = RwSignal::new(false);
+    let wants_recap = use_query_map().get_untracked().get("recap").is_some();
+    let recap_open = RwSignal::new(wants_recap && start_chapter > 1);
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let touch_start = StoredValue::new(None::<i32>);
 
@@ -555,11 +548,15 @@ pub fn ReaderPage() -> impl IntoView {
                     touch_start.set_value(None);
                 }
             >
-                {move || (chapter_no.get() > 1).then(|| view! {
-                    <button class="recap-chip" on:click=move |_| recap_open.set(true)>
-                        {icons::recap()}
-                        <span>{move || lang.get().text("recap_prev")}</span>
-                    </button>
+                {move || (chapter_no.get() > 1).then(|| {
+                    let last = chapter_no.get() - 1;
+                    let range = if last == 1 { roman(1) } else { format!("I\u{2013}{}", roman(last)) };
+                    view! {
+                        <button class="recap-chip" on:click=move |_| recap_open.set(true)>
+                            {icons::recap()}
+                            <span>{lang.get().text_with("recap_range", "range", &range)}</span>
+                        </button>
+                    }
                 })}
                 <div
                     node_ref=viewport_ref

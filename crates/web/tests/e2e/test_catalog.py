@@ -1,17 +1,16 @@
-"""Catalog flows: hero plates, i18n toggle + persist, search, overview, sheets."""
+"""Catalog flows: hero plate, i18n toggle + persist, search, overview, sheets."""
 from playwright.sync_api import Page, expect
 
 from conftest import assert_no_page_errors, goto
 
 
-def test_hero_carousel_rotates(clean_page: Page):
+def test_hero_plate_is_static(clean_page: Page):
     page = clean_page
     goto(page, "/")
-    slide1 = page.get_attribute(".hero-slide", "src")
-    page.wait_for_timeout(8000)
-    slide2 = page.get_attribute(".hero-slide", "src")
-    assert slide1 != slide2, "carousel must rotate within ~7s"
-    assert len(page.query_selector_all(".hero-dot")) == 5
+    src = page.get_attribute(".hero-slide", "src")
+    assert src and src.endswith("library-bookshelf-ladder.webp"), src
+    assert page.query_selector(".hero-dot") is None, "no carousel controls"
+    assert page.query_selector(".plate-caption") is not None
     assert_no_page_errors(page)
 
 

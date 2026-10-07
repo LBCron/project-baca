@@ -222,11 +222,19 @@ fn InsightText(#[prop(into)] title: String, text: Option<String>) -> impl IntoVi
 pub fn AtomicCards(book_id: String, chapter: i32, show: RwSignal<bool>) -> impl IntoView {
     let (lang, _) = use_lang();
     let (cards, set_cards) = signal(None::<Result<serde_json::Value, ()>>);
-    spawn_local(async move {
-        match api::atomic_cards(&book_id, &chapter.to_string()).await {
-            Ok(dto) => set_cards.set(Some(Ok(dto.cards))),
-            Err(_) => set_cards.set(Some(Err(()))),
+    let book = StoredValue::new(book_id);
+    // Fetched the first time the sheet opens, not on every page view.
+    Effect::new(move || {
+        if !show.get() || cards.get_untracked().is_some() {
+            return;
         }
+        let id = book.get_value();
+        spawn_local(async move {
+            match api::atomic_cards(&id, &chapter.to_string()).await {
+                Ok(dto) => set_cards.set(Some(Ok(dto.cards))),
+                Err(_) => set_cards.set(Some(Err(()))),
+            }
+        });
     });
     view! {
         <Sheet show=show title=Signal::derive(move || format!("{} \u{2014} {} {chapter}", lang.get().text("atomic_cards"), lang.get().text("chapter")))>
@@ -247,11 +255,18 @@ pub fn AtomicCards(book_id: String, chapter: i32, show: RwSignal<bool>) -> impl 
 pub fn CatchupRecap(book_id: String, chapter: i32, show: RwSignal<bool>) -> impl IntoView {
     let (lang, _) = use_lang();
     let (recap, set_recap) = signal(None::<Result<serde_json::Value, ()>>);
-    spawn_local(async move {
-        match api::chapter_recap(&book_id, &chapter.to_string()).await {
-            Ok(dto) => set_recap.set(Some(Ok(dto.recap))),
-            Err(_) => set_recap.set(Some(Err(()))),
+    let book = StoredValue::new(book_id);
+    Effect::new(move || {
+        if !show.get() || recap.get_untracked().is_some() {
+            return;
         }
+        let id = book.get_value();
+        spawn_local(async move {
+            match api::chapter_recap(&id, &chapter.to_string()).await {
+                Ok(dto) => set_recap.set(Some(Ok(dto.recap))),
+                Err(_) => set_recap.set(Some(Err(()))),
+            }
+        });
     });
     view! {
         <Sheet show=show title=Signal::derive(move || lang.get().text("recap_title"))>

@@ -3,6 +3,7 @@
 use crate::api;
 use crate::components::book_card::Cover;
 use crate::components::icons;
+use crate::components::progress::ProgressBar;
 use crate::components::session::use_session;
 use crate::components::toast::use_toasts;
 use crate::i18n::{use_lang, Lang};
@@ -16,11 +17,11 @@ fn GuestShelf() -> impl IntoView {
     let (lang, _) = use_lang();
     let session = use_session();
     view! {
-        <div class="empty-state" style="padding-top: 48px">
-            <img src="/assets/cozy-reader-armchair-owl.png" alt=""/>
+        <div class="empty-state guest-shelf">
+            <img src="/assets/cozy-reader-armchair-owl.webp" alt="" width="640" height="640"/>
             <h1 class="section-title">{move || lang.get().text("shelf_title")}</h1>
             <p>{move || lang.get().text("guest_shelf")}</p>
-            <div class="sheet-actions" style="justify-content: center">
+            <div class="sheet-actions centered">
                 <button class="btn btn-primary" on:click=move |_| session.open_sheet()>{move || lang.get().text("sign_in")}</button>
                 <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
             </div>
@@ -37,9 +38,9 @@ fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
     view! {
         <section class="streak-card" aria-label="Streak">
             <div class="flame" aria-hidden="true">{icons::flame()}</div>
-            <div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 6px">
+            <div class="streak-body">
                 <span class="count">{move || lang.get().text_with("streak_days", "n", &days.to_string())}</span>
-                <small>{move || if today_done { format!("{} XP \u{00B7} {}", streak.total_xp, lang.get().duration((streak.total_reading_seconds / 60) as i32)) } else { lang.get().text("streak_hint") }}</small>
+                <small>{move || if today_done { format!("{} \u{00B7} {}", lang.get().text_with("xp", "n", &streak.total_xp.to_string()), lang.get().duration((streak.total_reading_seconds / 60) as i32)) } else { lang.get().text("streak_hint") }}</small>
                 <div class="week-dots" aria-hidden="true">
                     {(0..7).map(|i| {
                         let on = i < lit;
@@ -112,17 +113,17 @@ fn SessionsPanel() -> impl IntoView {
             <h2 class="section-title">{move || lang.get().text("sessions")}</h2>
             <form class="settings-list" on:submit=change_password>
                 <label class="field">
-                    {move || lang.get().text("current_password")}
+                    <span>{move || lang.get().text("current_password")}</span>
                     <input class="input" type="password" autocomplete="current-password" required prop:value=move || current_pw.get() on:input=move |ev| set_current_pw.set(event_target_value(&ev))/>
                 </label>
                 <label class="field">
-                    {move || lang.get().text("new_password")}
+                    <span>{move || lang.get().text("new_password")}</span>
                     <input class="input" type="password" autocomplete="new-password" required minlength="8" maxlength="128" prop:value=move || new_pw.get() on:input=move |ev| set_new_pw.set(event_target_value(&ev))/>
                     <span class="form-hint">{move || lang.get().text("auth_password_hint")}</span>
                 </label>
-                <label class="field" style="flex-direction: row; align-items: center; gap: 10px">
+                <label class="field check">
                     <input type="checkbox" prop:checked=move || revoke_others.get() on:change=move |ev| set_revoke_others.set(event_target_checked(&ev))/>
-                    {move || lang.get().text("revoke_others")}
+                    <span>{move || lang.get().text("revoke_others")}</span>
                 </label>
                 <div class="sheet-actions">
                     <button type="submit" class="btn btn-primary" disabled=move || busy.get()>{move || lang.get().text("change_password")}</button>
@@ -161,6 +162,7 @@ pub fn ProfilePage() -> impl IntoView {
     let (badges, set_badges) = signal(Vec::<UserBadgeDto>::new());
     let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
     let (offline_books, set_offline_books) = signal(Vec::<BookDetailDto>::new());
+    let (active, set_active) = signal(None::<(uuid::Uuid, f32)>);
 
     Effect::new(move || {
         if !session.authed.get() {
@@ -175,6 +177,9 @@ pub fn ProfilePage() -> impl IntoView {
             }
             if let Ok(saved) = api::my_quotes().await {
                 set_quotes.set(saved);
+            }
+            if let Ok(Some(progress)) = api::active_progress().await {
+                set_active.set(Some((progress.book_id, progress.completion_percentage)));
             }
         });
     });
@@ -194,19 +199,37 @@ pub fn ProfilePage() -> impl IntoView {
         });
     };
 
+    let subtitle = move || {
+        let since = session
+            .profile
+            .get()
+            .map(|p| {
+                lang.get()
+                    .text_with("reader_since", "date", &lang.get().month_year(p.created_at))
+            })
+            .unwrap_or_default();
+        match streak.get() {
+            Some(s) => format!(
+                "{since} \u{00B7} {}",
+                lang.get().text_with("xp", "n", &s.total_xp.to_string())
+            ),
+            None => since,
+        }
+    };
+
     view! {
         <div class="container">
             {move || if !session.authed.get() {
                 view! { <GuestShelf/> }.into_any()
             } else {
                 view! {
-                    <div style="display: flex; flex-direction: column; gap: 28px; padding-top: 20px">
+                    <div class="profile">
                         <header class="profile-head">
-                            <div style="display: flex; align-items: center; gap: 12px; min-width: 0">
+                            <div class="profile-identity">
                                 <div class="avatar" aria-hidden="true">{move || session.initial()}</div>
-                                <div style="min-width: 0">
-                                    <h1 class="section-title" style="font-size: 1.4rem">{move || session.profile.get().map(|p| p.display_name).unwrap_or_default()}</h1>
-                                    <p class="form-hint">{move || session.profile.get().map(|p| format!("{} {}", lang.get().text("member_since"), p.created_at.format("%b %Y"))).unwrap_or_default()}</p>
+                                <div class="profile-name">
+                                    <h1 class="display">{move || session.profile.get().map(|p| p.display_name).unwrap_or_default()}</h1>
+                                    <p class="form-hint">{subtitle}</p>
                                 </div>
                             </div>
                             <a href="#akun" class="btn-icon" aria-label=move || lang.get().text("sessions")>{icons::settings()}</a>
@@ -214,25 +237,29 @@ pub fn ProfilePage() -> impl IntoView {
 
                         {move || match streak.get() {
                             Some(s) => view! { <StreakCard streak=s/> }.into_any(),
-                            None => view! { <div class="skeleton" style="height: 110px"></div> }.into_any(),
+                            None => view! { <div class="skeleton streak-skeleton"></div> }.into_any(),
                         }}
 
-                        <section>
+                        <section aria-labelledby="shelf-title">
                             <div class="section-head">
-                                <h2 class="section-title">{move || lang.get().text("offline_books")}</h2>
-                                <span class="form-hint">{move || offline_books.get().len()}</span>
+                                <h2 id="shelf-title" class="section-title">{move || lang.get().text("shelf_title")}</h2>
+                                <span class="form-hint">{move || lang.get().text_with("saved_count", "n", &offline_books.get().len().to_string())}</span>
                             </div>
                             {move || if offline_books.get().is_empty() {
-                                view! { <p class="form-hint">{move || lang.get().text("save_offline")}</p> }.into_any()
+                                view! { <p class="form-hint">{move || lang.get().text("no_offline")}</p> }.into_any()
                             } else {
                                 view! {
-                                    <div class="book-grid">
+                                    <div class="shelf-grid">
                                         {offline_books.get().into_iter().map(|b| {
                                             let href = format!("/book/{}", b.id);
+                                            let book_id = b.id;
+                                            let percent = move || active.get().filter(|(id, _)| *id == book_id).map(|(_, p)| p);
                                             view! {
-                                                <a href=href class="book-card">
-                                                    <Cover title=b.title.clone() cover_url=b.cover_url.clone() badge="offline"/>
-                                                    <div><h3 class="book-title">{b.title.clone()}</h3><p class="book-author">{b.author.clone()}</p></div>
+                                                <a href=href class="shelf-item" aria-label=b.title.clone()>
+                                                    <Cover title=b.title.clone() cover_url=b.cover_url.clone() badge=lang.get_untracked().text("saved_offline")/>
+                                                    {move || percent().map(|p| view! {
+                                                        <ProgressBar percent=Signal::derive(move || p) label=Signal::derive(move || lang.get().text("reading_progress")) thin=true/>
+                                                    })}
                                                 </a>
                                             }
                                         }).collect::<Vec<_>>()}
@@ -241,8 +268,8 @@ pub fn ProfilePage() -> impl IntoView {
                             }}
                         </section>
 
-                        <section>
-                            <div class="section-head"><h2 class="section-title">{move || lang.get().text("badges")}</h2></div>
+                        <section aria-labelledby="badges-title">
+                            <div class="section-head"><h2 id="badges-title" class="section-title">{move || lang.get().text("badges")}</h2></div>
                             {move || if badges.get().is_empty() {
                                 view! { <p class="form-hint">{move || lang.get().text("no_badges")}</p> }.into_any()
                             } else {
@@ -261,8 +288,13 @@ pub fn ProfilePage() -> impl IntoView {
                             }}
                         </section>
 
-                        <section>
-                            <div class="section-head"><h2 class="section-title">{move || lang.get().text("saved_quotes")}</h2></div>
+                        <section aria-labelledby="quotes-title">
+                            <div class="section-head">
+                                <h2 id="quotes-title" class="section-title">{move || lang.get().text("saved_quotes")}</h2>
+                                {move || (!quotes.get().is_empty()).then(|| view! {
+                                    <span class="form-hint">{move || lang.get().text_with("quotes_all", "n", &quotes.get().len().to_string())}</span>
+                                })}
+                            </div>
                             {move || if quotes.get().is_empty() {
                                 view! { <p class="form-hint">{move || lang.get().text("no_quotes")}</p> }.into_any()
                             } else {
@@ -273,7 +305,7 @@ pub fn ProfilePage() -> impl IntoView {
                                             let href = format!("/book/{}", q.book_id);
                                             view! {
                                                 <li class="quote-row">
-                                                    <div class="quote-meta"><span>{q.created_at.format("%d %b %Y").to_string()}</span><span aria-hidden="true">"\u{2756}"</span></div>
+                                                    <div class="quote-meta"><span>{move || lang.get().date_short(q.created_at)}</span><span aria-hidden="true">"\u{2756}"</span></div>
                                                     <blockquote>{q.quote_text.clone()}</blockquote>
                                                     <div class="quote-actions">
                                                         <button class="btn btn-primary" on:click=move |_| share(text.clone())>{icons::share()}<span>{move || lang.get().text("quote_share")}</span></button>

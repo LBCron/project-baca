@@ -60,7 +60,7 @@ pub fn SiteHeader() -> impl IntoView {
                         }.into_any()
                     } else {
                         view! {
-                            <button class="btn btn-primary header-signin" on:click=move |_| session.open_sheet()>
+                            <button class="btn btn-light header-signin" on:click=move |_| session.open_sheet()>
                                 {move || lang.get().text("sign_in")}
                             </button>
                         }.into_any()
