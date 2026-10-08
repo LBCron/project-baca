@@ -12,7 +12,7 @@ leptos_router = { version = "0.7.7" }
 leptos_meta = { version = "0.7.7" }
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Storage", "MediaQueryList", "File", "FileList", "FormData", "Blob", "Navigator", "ShareData", "Clipboard", "KeyboardEvent", "NodeList", "CssStyleDeclaration", "VisibilityState", "History", "TouchEvent", "TouchList", "Touch", "Location", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Storage", "MediaQueryList", "File", "FileList", "FormData", "Blob", "Navigator", "ShareData", "Clipboard", "KeyboardEvent", "NodeList", "CssStyleDeclaration", "VisibilityState", "History", "TouchEvent", "TouchList", "Touch", "Location", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "DomRect", "DomRectList", "HtmlCollection", "Node", "DomTokenList", "PointerEvent", "Selection"] }
 serde = { workspace = true }
 chrono = { workspace = true }
 gloo-net = { version = "0.7.0", features = ["http"] }

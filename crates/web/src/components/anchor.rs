@@ -4,7 +4,7 @@
 
 use web_sys::{ScrollBehavior, ScrollIntoViewOptions, ScrollLogicalPosition};
 
-fn prefers_reduced_motion() -> bool {
+pub fn prefers_reduced_motion() -> bool {
     web_sys::window()
         .and_then(|w| {
             w.match_media("(prefers-reduced-motion: reduce)")

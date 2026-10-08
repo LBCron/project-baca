@@ -119,7 +119,7 @@ def test_reader_paginates_long_chapter(browser: Browser, book_with_chapters: str
         assert metrics["viewportHeight"] < height, f"{name}: viewport must leave room for bar and footer"
         assert metrics["columns"] == (2 if width >= 1024 else 1), f"{name}: column count {metrics}"
         status = page.inner_text(".reader-status")
-        assert "1 " in status or "1 of" in status or "Halaman 1" in status, status
+        assert status.startswith(("Page 1 ", "Pages 1", "Halaman 1")), status
         page.click(".reader-zone-next")
         page.wait_for_timeout(400)
         assert page.evaluate("document.querySelector('.reader-viewport').scrollLeft") == page.evaluate(

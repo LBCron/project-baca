@@ -103,6 +103,7 @@ html {
 /* Anchored sections stop short of the sticky header. */
 #katalog,
 #cara-kerja,
+#daftar-bab,
 #akun {
     scroll-margin-top: calc(var(--header-height) + var(--safe-top) + var(--space-3));
 }
@@ -1588,15 +1589,20 @@ img {
     padding-top: var(--space-12);
 }
 
-/* Reader */
+/* Reader: a book on a desk. The stage carries the desk tone, the frame is
+   paper, and the chapter flows through CSS columns inside the frame. */
 
 .reader {
-    --r-bg: #F9F6F0;
+    --r-stage: #ECE6DA;
+    --r-page: #FBF8F2;
+    --r-edge: #E3DAC9;
     --r-text: #2B2625;
     --r-muted: #645A56;
     --r-accent: #9D5A3C;
+    --r-accent-text: #7C3A27;
     --r-border: #E3DAC9;
     --r-elevated: #FFFDF8;
+    --r-ink: 43, 38, 37;
     height: 100vh;
     height: 100dvh;
     overflow: hidden;
@@ -1604,28 +1610,35 @@ img {
     flex-direction: column;
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
-    background: var(--r-bg);
+    background: var(--r-stage);
     color: var(--r-text);
     font-family: var(--font-ui);
     transition: background-color var(--dur-base), color var(--dur-base);
 }
 
 .reader[data-reading="sepia"] {
-    --r-bg: #EFE4CF;
+    --r-stage: #E3D5BA;
+    --r-page: #F2E8D3;
+    --r-edge: #D8C7A6;
     --r-text: #3A2E24;
     --r-muted: #6E5F51;
     --r-accent: #8B4A2F;
+    --r-accent-text: #6E3A24;
     --r-border: #D8C7A6;
     --r-elevated: #F6EEDC;
 }
 
 .reader[data-reading="espresso"] {
-    --r-bg: #1F1916;
+    --r-stage: #15110F;
+    --r-page: #26201C;
+    --r-edge: #3A302A;
     --r-text: #E9E2D6;
     --r-muted: #B9AE9E;
     --r-accent: #E08A62;
+    --r-accent-text: #E08A62;
     --r-border: #362C27;
     --r-elevated: #29211C;
+    --r-ink: 0, 0, 0;
 }
 
 .reader-bar {
@@ -1634,10 +1647,10 @@ img {
     justify-content: space-between;
     gap: var(--space-2);
     padding: calc(var(--space-2) + var(--safe-top)) var(--space-3) var(--space-2);
-    border-bottom: 1px solid var(--r-border);
     position: relative;
     z-index: 20;
     flex: 0 0 auto;
+    transition: opacity var(--dur-base);
 }
 
 .reader-bar .btn-icon {
@@ -1655,25 +1668,39 @@ img {
     align-items: center;
     gap: 2px;
     min-width: 0;
+    min-height: 44px;
+    justify-content: center;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-pill);
     text-align: center;
+    color: inherit;
 }
 
 .reader-title .kicker {
-    color: var(--r-accent);
+    color: var(--r-accent-text);
     font-size: 0.7rem;
 }
 
 .reader-title .label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-family: var(--font-display);
     font-size: 1rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 60vw;
+    max-width: 52vw;
+}
+
+.reader-title .label svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    color: var(--r-muted);
+    opacity: 0.8;
 }
 
 .reader-tools {
     display: flex;
+    align-items: center;
     gap: var(--space-1);
 }
 
@@ -1682,47 +1709,70 @@ img {
     font-size: 1.25rem;
 }
 
-.reader-stage {
-    position: relative;
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-}
-
 .recap-chip {
-    align-self: flex-start;
-    margin: var(--space-3) var(--space-5) 0;
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-    min-height: 38px;
-    padding: 0 var(--space-4);
+    min-height: 40px;
+    min-width: 44px;
+    padding: 0 var(--space-3);
     border-radius: var(--radius-pill);
     background: var(--r-elevated);
     border: 1px solid var(--r-border);
     color: var(--r-accent);
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     font-weight: 600;
-    position: relative;
-    z-index: 10;
     cursor: pointer;
+    justify-content: center;
 }
 
 .recap-chip svg {
     width: 14px;
     height: 14px;
+    flex: 0 0 auto;
+}
+
+.recap-chip span {
+    display: none;
+}
+
+/* The stage centers the frame and takes every pointer gesture; the page
+   edges stay clear so a mouse can still select text in the middle. */
+.reader-stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    padding: var(--space-1) var(--space-2) var(--space-2);
+    touch-action: none;
+}
+
+.book {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 1440px;
+    overflow: hidden;
+    background: var(--r-page);
+    border-radius: 10px;
+    box-shadow:
+        3px 3px 0 color-mix(in srgb, var(--r-page) 70%, var(--r-edge)),
+        6px 6px 0 var(--r-edge),
+        0 18px 40px rgba(var(--r-ink), 0.16);
 }
 
 /* Pages are CSS columns: the gap equals twice the side padding so one page
    stride is exactly the viewport width, whatever the column count. */
 .reader-viewport {
-    flex: 1 1 auto;
-    min-height: 0;
+    position: absolute;
+    inset: 0;
     overflow: hidden;
-    padding: var(--space-4) var(--space-6) var(--space-3);
-    column-gap: calc(var(--space-6) * 2);
+    padding: 40px 22px 34px;
+    column-gap: calc(22px * 2);
     column-fill: auto;
+    border-radius: 10px;
     font-family: var(--font-reading);
     font-size: var(--reader-font-size, 19px);
     line-height: var(--reader-line-height, 1.75);
@@ -1731,6 +1781,237 @@ img {
 
 .reader-viewport.turning {
     opacity: 0.35;
+}
+
+.reader-viewport.clone {
+    right: auto;
+    bottom: auto;
+    height: 100%;
+    transition: none;
+    pointer-events: none;
+}
+
+.page-head,
+.folio {
+    position: absolute;
+    pointer-events: none;
+    color: var(--r-muted);
+    font-family: var(--font-ui);
+}
+
+.page-head {
+    top: 13px;
+    max-width: 46%;
+    font-size: 0.62rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.page-head-left {
+    display: none;
+    left: 22px;
+}
+
+.page-head-right {
+    right: 22px;
+    text-align: right;
+}
+
+.folio {
+    bottom: 9px;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    font-family: var(--font-display);
+    font-size: 0.8rem;
+}
+
+.folio-right,
+.spine {
+    display: none;
+}
+
+.reader.spread .reader-viewport {
+    padding: 44px 56px 36px;
+    column-gap: calc(56px * 2);
+}
+
+.reader.spread .page-head-left {
+    left: 56px;
+}
+
+.reader.spread .page-head-right {
+    right: 56px;
+}
+
+.reader.spread .folio-left {
+    width: 50%;
+}
+
+.reader.spread .folio-right {
+    display: block;
+    left: 50%;
+    width: 50%;
+}
+
+.reader.spread .spine {
+    display: block;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(50% - 30px);
+    width: 60px;
+    pointer-events: none;
+    background: linear-gradient(
+        90deg,
+        rgba(var(--r-ink), 0) 0%,
+        rgba(var(--r-ink), 0.06) 42%,
+        rgba(var(--r-ink), 0.14) 50%,
+        rgba(var(--r-ink), 0.06) 58%,
+        rgba(var(--r-ink), 0) 100%
+    );
+}
+
+/* A folded corner says the page can be turned. */
+.corner {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 28px;
+    height: 28px;
+    pointer-events: none;
+    border-radius: 0 0 10px 0;
+    background: linear-gradient(225deg, var(--r-stage) 0 49%, var(--r-edge) 49% 52%, var(--r-elevated) 52% 100%);
+    box-shadow: -2px -2px 6px rgba(var(--r-ink), 0.12);
+}
+
+/* Edge controls: visible arrows beside the frame on wide screens, silent
+   full-height targets over the frame margins elsewhere. */
+.reader-zone {
+    position: absolute;
+    top: 20%;
+    bottom: 20%;
+    width: 28px;
+    z-index: 6;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--r-muted);
+    opacity: 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.reader-zone svg {
+    width: 20px;
+    height: 20px;
+}
+
+.reader-zone-prev {
+    left: 0;
+}
+
+.reader-zone-next {
+    right: 0;
+}
+
+.reader-zone:focus-visible {
+    opacity: 1;
+    outline-offset: -4px;
+}
+
+/* Paper turn: strips hinged on the spine, each a flat quad in a shared
+   3D context, with a shadow cast on the page beneath. */
+.flip-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    pointer-events: none;
+    perspective: 2200px;
+    perspective-origin: 50% 50%;
+    transform-style: preserve-3d;
+}
+
+.flip-hold {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    overflow: hidden;
+    background: var(--r-page);
+}
+
+.flip-cast {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 3;
+    opacity: 0;
+}
+
+.flip-cast.left {
+    left: 0;
+    width: 50%;
+    background: linear-gradient(270deg, rgba(var(--r-ink), 0.5), rgba(var(--r-ink), 0) 70%);
+}
+
+.flip-cast.right {
+    left: 50%;
+    width: 50%;
+    background: linear-gradient(90deg, rgba(var(--r-ink), 0.5), rgba(var(--r-ink), 0) 70%);
+}
+
+.flip-cast.full {
+    left: 0;
+    width: 100%;
+    background: linear-gradient(90deg, rgba(var(--r-ink), 0.45), rgba(var(--r-ink), 0) 60%);
+}
+
+.flip-leaf {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 4;
+    transform: translateZ(0.6px);
+    transform-style: preserve-3d;
+}
+
+.flip-strip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    transform-style: preserve-3d;
+    will-change: transform;
+}
+
+.flip-face {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    background: var(--r-page);
+}
+
+.flip-face.rear {
+    transform: rotateY(180deg);
+}
+
+.flip-face.blank,
+.flip-hold.blank {
+    background: linear-gradient(90deg, color-mix(in srgb, var(--r-page) 92%, #000) 0%, var(--r-page) 45%);
+}
+
+.flip-tint {
+    position: absolute;
+    inset: 0;
+    background: rgb(var(--r-ink));
+    opacity: 0;
+    pointer-events: none;
 }
 
 .chapter-body {
@@ -1755,6 +2036,16 @@ img {
     line-height: 0.8;
     padding: 0.08em 0.1em 0 0;
     color: var(--r-accent);
+}
+
+/* A column clone that starts mid-chapter has no opening paragraph. */
+.chapter-body.clone > p:first-of-type::first-letter {
+    float: none;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    padding: 0;
+    color: inherit;
 }
 
 .chapter-body h1,
@@ -1790,35 +2081,40 @@ img {
     height: auto;
 }
 
-.reader-zone {
+/* Closing page after the last chapter. */
+.finale {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    z-index: 5;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
+    inset: 0;
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-4);
+    padding: var(--space-6);
+    text-align: center;
+    border-radius: 10px;
+    background: var(--r-page);
+    font-family: var(--font-ui);
+    animation: sheet-in var(--dur-slow) var(--ease-out);
 }
 
-.reader-zone:focus-visible {
-    outline-offset: -4px;
+.finale img {
+    width: min(40vw, 200px);
+    height: auto;
 }
 
-.reader-zone-prev {
-    left: 0;
-    width: 22%;
+.finale h2 {
+    margin: 0;
+    font-size: clamp(1.4rem, 3vw, 2rem);
+    color: var(--r-text);
 }
 
-.reader-zone-next {
-    right: 0;
-    width: 22%;
-}
-
-.reader-zone-menu {
-    left: 22%;
-    right: 22%;
+.finale p {
+    margin: 0;
+    max-width: 44ch;
+    color: var(--r-muted);
+    line-height: 1.5;
 }
 
 .reader-footer {
@@ -1829,6 +2125,13 @@ img {
     flex-direction: column;
     gap: 6px;
     padding: var(--space-2) var(--space-5) calc(var(--space-4) + var(--safe-bottom));
+    transition: opacity var(--dur-base);
+}
+
+/* A tap in the middle of the page dims the bars for undisturbed reading. */
+.reader.dim .reader-bar,
+.reader.dim .reader-footer {
+    opacity: 0.28;
 }
 
 .reader-footer .progress-bar {
@@ -2676,6 +2979,28 @@ select.input {
         --gutter: var(--space-8);
     }
 
+    .recap-chip span {
+        display: inline;
+    }
+
+    .reader-stage {
+        padding: var(--space-2) var(--space-4) var(--space-4);
+    }
+
+    .reader-viewport {
+        padding: 44px 40px 36px;
+        column-gap: calc(40px * 2);
+    }
+
+    .page-head-left {
+        display: block;
+        left: 40px;
+    }
+
+    .page-head-right {
+        right: 40px;
+    }
+
     .site-header-inner {
         min-height: var(--header-height);
         gap: var(--space-4);
@@ -2842,10 +3167,6 @@ select.input {
         font-size: 1.25rem;
     }
 
-    .reader-viewport {
-        padding: var(--space-8) var(--space-16) var(--space-4);
-        column-gap: calc(var(--space-16) * 2);
-    }
 
     .type-sheet {
         inset: auto var(--space-6) var(--space-6) auto;
@@ -2872,6 +3193,39 @@ select.input {
 /* Desktop */
 
 @media (min-width: 1024px) {
+    .reader-stage {
+        padding: var(--space-3) 60px var(--space-4);
+    }
+
+    .reader-zone {
+        top: 50%;
+        bottom: auto;
+        width: 44px;
+        height: 44px;
+        margin-top: -22px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--r-edge);
+        opacity: 0.6;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: opacity var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
+    }
+
+    .reader-zone:hover {
+        opacity: 1;
+        color: var(--r-accent);
+        background: var(--r-elevated);
+    }
+
+    .reader-zone-prev {
+        left: 8px;
+    }
+
+    .reader-zone-next {
+        right: 8px;
+    }
+
     .book-grid {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
@@ -2884,14 +3238,6 @@ select.input {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
-    /* Two columns of book-width measure; wider screens get margins, not
-       longer lines. The stride still equals the viewport's own width. */
-    .reader-viewport {
-        width: 100%;
-        max-width: 1440px;
-        margin: 0 auto;
-        padding: var(--space-10) var(--space-16) var(--space-4);
-    }
 }
 
 /* Wide desktops: five covers per row keep each cover at book size. */

@@ -233,7 +233,7 @@ pub fn BookPage() -> impl IntoView {
                             </div>
                             <QuoteFinder book_id=b.id.to_string() show=quotes_open/>
                             <AtomicCards book_id=b.id.to_string() chapter=target show=cards_open/>
-                            <div class="chapters">
+                            <div class="chapters" id="daftar-bab">
                                 <div class="section-head">
                                     <h2 class="section-title">{move || lang.get().text("chapters")}</h2>
                                     {move || resume_at.get().map(|n| view! { <span class="form-hint">{format!("{}: {} {}", lang.get().text("last_read"), lang.get().text("chapter"), roman(n))}</span> })}

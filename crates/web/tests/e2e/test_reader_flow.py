@@ -17,7 +17,7 @@ def test_reader_body_and_type_sheet(clean_page: Page, book_with_chapters: str):
     page.wait_for_timeout(500)
     body = page.inner_text(".chapter-body") if page.query_selector(".chapter-body") else ""
     assert len(body) > 0, "chapter body must render"
-    assert "Page 1 of" in page.inner_text(".reader-status")
+    assert page.inner_text(".reader-status").startswith(("Page 1 of", "Pages 1"))
     page.click(".reader-tools .btn-type")
     page.wait_for_timeout(400)
     assert page.query_selector(".type-sheet") is not None
