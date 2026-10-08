@@ -59,3 +59,19 @@ def test_overview_and_sheets(clean_page: Page, book_with_chapters: str):
     expect(page.locator(".sheet")).to_have_count(0)
     expect(page.get_by_role("button", name="Find a quote")).to_be_focused()
     assert_no_page_errors(page)
+
+
+def test_home_catalog_shows_two_rows_then_everything(clean_page: Page):
+    page = clean_page
+    page.set_viewport_size({"width": 390, "height": 844})
+    goto(page, "/")
+    cards = page.locator(".book-grid .book-card")
+    total = int(page.evaluate("async () => (await (await fetch('http://localhost:8080/api/v1/books?limit=100')).json()).data.length"))
+    if total <= 4:
+        expect(page.get_by_role("button", name="See the whole catalog")).to_have_count(0)
+        return
+    expect(cards).to_have_count(4)
+    page.get_by_role("button", name="See the whole catalog").click()
+    page.wait_for_timeout(400)
+    assert cards.count() > 4
+    assert_no_page_errors(page)

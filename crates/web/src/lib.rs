@@ -31,8 +31,10 @@ fn NotFound() -> impl IntoView {
     let (lang, _) = i18n::use_lang();
     view! {
         <div class="container empty-state" style="padding-top: 64px">
-            <p>{move || lang.get().text("not_found")}</p>
-            <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
+            <img src="/assets/retro-rocket-discovery.webp" alt="" width="768" height="512"/>
+            <h1 class="section-title">{move || lang.get().text("page_missing")}</h1>
+            <p>{move || lang.get().text("page_missing_hint")}</p>
+            <a href="/" class="btn btn-primary">{move || lang.get().text("back_to_catalog")}</a>
         </div>
     }
 }

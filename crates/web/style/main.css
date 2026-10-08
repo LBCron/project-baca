@@ -1589,6 +1589,25 @@ img {
     padding-top: var(--space-12);
 }
 
+.empty-state.compact {
+    padding: var(--space-5) var(--space-4);
+    gap: var(--space-2);
+}
+
+.empty-state.compact img {
+    width: 120px;
+}
+
+.empty-state .section-title {
+    margin: 0;
+    color: var(--text);
+}
+
+.load-more .btn svg {
+    width: 16px;
+    height: 16px;
+}
+
 /* Reader: a book on a desk. The stage carries the desk tone, the frame is
    paper, and the chapter flows through CSS columns inside the frame. */
 

@@ -335,7 +335,10 @@ fn ManuscriptsPanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
                 {move || rows.get().into_iter().map(|row| view! { <ManuscriptRow row=row on_updated=on_updated/> }).collect::<Vec<_>>()}
             </ul>
             {move || (!loading.get() && rows.get().is_empty()).then(|| view! {
-                <p class="form-hint">{move || lang.get().text("no_manuscripts")}</p>
+                <div class="empty-state compact">
+                    <img src="/assets/manuscript-inspection-clothesline.webp" alt="" width="640" height="640"/>
+                    <p>{move || lang.get().text("no_manuscripts")}</p>
+                </div>
             })}
             {move || (!exhausted.get()).then(|| view! {
                 <div class="load-more">
@@ -383,7 +386,10 @@ fn QueuePanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
                 <span class="form-hint">{move || entries.get().len()}</span>
             </div>
             {move || (loaded.get() && entries.get().is_empty()).then(|| view! {
-                <p class="form-hint">{move || lang.get().text("dlq_empty")}</p>
+                <div class="empty-state compact">
+                    <img src="/assets/manuscript-inspection-clothesline.webp" alt="" width="640" height="640"/>
+                    <p>{move || lang.get().text("dlq_empty")}</p>
+                </div>
             })}
             <ul class="manuscript-list">
                 {move || entries.get().into_iter().map(|entry| {

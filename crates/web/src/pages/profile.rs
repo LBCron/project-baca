@@ -384,7 +384,14 @@ pub fn ProfilePage() -> impl IntoView {
                             {move || if !loaded.get() {
                                 view! { <div class="skeleton skeleton-card" aria-busy="true"></div> }.into_any()
                             } else if offline_books.get().is_empty() {
-                                view! { <p class="form-hint">{move || lang.get().text("no_offline")}</p> }.into_any()
+                                view! {
+                                    <div class="empty-state compact">
+                                        <img src="/assets/admin-sorting-pigeonholes.webp" alt="" width="640" height="640"/>
+                                        <p class="section-title">{move || lang.get().text("shelf_empty_title")}</p>
+                                        <p>{move || lang.get().text("shelf_empty_body")}</p>
+                                        <a href="/" class="btn btn-primary">{move || lang.get().text("browse_catalog")}</a>
+                                    </div>
+                                }.into_any()
                             } else {
                                 view! {
                                     <div class="shelf-grid">

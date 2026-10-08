@@ -19,6 +19,8 @@ use std::time::Duration;
 
 const PLATE_SRC: &str = "/assets/library-bookshelf-ladder.webp";
 const PAGE_SIZE: u64 = 20;
+/// Rows of covers shown before "see the whole catalog".
+const CATALOG_PREVIEW_ROWS: usize = 2;
 const SHORT_READ_MINUTES: i32 = 120;
 const RAIL_SIZE: usize = 8;
 const THEME_CHIP_LIMIT: usize = 4;
@@ -93,6 +95,26 @@ fn theme_chips(books: &[BookSummaryDto]) -> Vec<String> {
         }
     }
     themes
+}
+
+/// Cover columns at a viewport width, mirroring the grid breakpoints.
+fn catalog_columns(width: f64) -> usize {
+    if width >= 1440.0 {
+        5
+    } else if width >= 1024.0 {
+        4
+    } else if width >= 640.0 {
+        3
+    } else {
+        2
+    }
+}
+
+fn window_width() -> f64 {
+    web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1280.0)
 }
 
 fn search_hit_to_summary(r: shared::BookSearchResultDto) -> BookSummaryDto {
@@ -198,6 +220,8 @@ pub fn HomePage() -> impl IntoView {
     let (exhausted, set_exhausted) = signal(false);
     let (loading, set_loading) = signal(true);
     let (load_error, set_load_error) = signal(false);
+    let (show_all, set_show_all) = signal(false);
+    let (viewport_width, set_viewport_width) = signal(window_width());
     let (query, set_query) = signal(String::new());
     let (generation, set_generation) = signal(0u32);
     let (filter, set_filter) = signal(LanguageFilter::All);
@@ -321,6 +345,11 @@ pub fn HomePage() -> impl IntoView {
         }
     };
 
+    let resized = window_event_listener(leptos::ev::resize, move |_| {
+        set_viewport_width.set(window_width());
+    });
+    on_cleanup(move || resized.remove());
+
     let back_online = window_event_listener(leptos::ev::online, move |_| {
         if load_error.try_get_untracked() == Some(true) {
             load_page(true);
@@ -373,6 +402,25 @@ pub fn HomePage() -> impl IntoView {
             None => all,
         }
     };
+    // The home catalog is a two-row preview; searching, filtering, or asking
+    // for the whole catalog shows every loaded book with paging.
+    let browsing = move || {
+        show_all.get()
+            || quick.get().is_some()
+            || !query.get().trim().is_empty()
+            || filter.get() != LanguageFilter::All
+    };
+    let preview_cap = move || CATALOG_PREVIEW_ROWS * catalog_columns(viewport_width.get());
+    let shown = move || {
+        let all = visible();
+        if browsing() {
+            all
+        } else {
+            all.into_iter().take(preview_cap()).collect()
+        }
+    };
+    let preview_truncated =
+        move || !browsing() && (visible().len() > preview_cap() || !exhausted.get());
     let chips = move || theme_chips(&books.get());
     let headline = move || {
         if resume.get().is_some() {
@@ -482,7 +530,7 @@ pub fn HomePage() -> impl IntoView {
                     </div>
                 </div>
                 <div class="book-grid">
-                    {move || visible().into_iter().map(|b| view! { <BookCard book=b/> }).collect::<Vec<_>>()}
+                    {move || shown().into_iter().map(|b| view! { <BookCard book=b/> }).collect::<Vec<_>>()}
                     {move || (loading.get() && books.get().is_empty()).then(|| (0..8).map(|_| view! { <SkeletonCard/> }).collect::<Vec<_>>())}
                 </div>
                 {move || load_error.get().then(|| view! {
@@ -497,7 +545,15 @@ pub fn HomePage() -> impl IntoView {
                         <p>{move || lang.get().text("no_results")}</p>
                     </div>
                 })}
-                {move || (!exhausted.get() && !books.get().is_empty()).then(|| view! {
+                {move || preview_truncated().then(|| view! {
+                    <div class="load-more">
+                        <button class="btn btn-ghost" on:click=move |_| set_show_all.set(true)>
+                            <span>{move || lang.get().text("see_all_catalog")}</span>
+                            {icons::arrow_right()}
+                        </button>
+                    </div>
+                })}
+                {move || (browsing() && !exhausted.get() && !books.get().is_empty()).then(|| view! {
                     <div class="load-more">
                         <button class="btn btn-ghost" on:click=move |_| load_page(false) disabled=move || loading.get()>
                             {move || if loading.get() { lang.get().text("loading") } else { lang.get().text("load_more") }}

@@ -123,3 +123,9 @@ make test-web-full     # + visual goldens + axe a11y + firefox smoke
 2. **Missing WASM Target:** Run `rustup target add wasm32-unknown-unknown`.
 3. **MinIO Connection Error:** Ensure buckets (`baca-epubs`, `baca-covers`) exist — the server creates them idempotently at startup; uploads fail closed with 500 when storage is unreachable.
 4. **Redis Streams Group:** The worker auto-initializes the consumer group using `XGROUP CREATE` fallback.
+
+## Reader gestures
+
+* **Turn a page:** drag anywhere on a touch screen, or from the outer 22% of the page with a mouse; release past the middle (or flick) to finish, release early to fall back. Tap the outer edges, use the edge arrows on wide screens, or press Space / Shift+Space, the arrow keys, PageUp / PageDown; Home and End jump within the chapter.
+* **Read undisturbed:** tap the middle of the page to dim the bars; tap again to bring them back. The chapter title in the top bar opens the chapter list on the book page.
+* **Reduced motion:** when the system asks for reduced motion the page changes with a short crossfade and no paper animation.
