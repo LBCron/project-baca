@@ -1,86 +1,47 @@
----
-type: Technical Architecture Specification
-title: "Project Baca — Distributed Worker, Ingestion & Scaling Architecture"
-description: "Distributed compute architecture for EPUB ingestion, Redis Streams queues, Dual-Mode Embeddings, and horizontal scaling."
-tags: [distributed, worker, ingestion, redis-streams, embedding, gemini, fastembed, scalability, okf]
----
+# Ingestion Worker and Queue
 
-# DISTRIBUTED.md — Distributed Processing & Ingestion Pipeline
+## 1. Topology
 
-Distributed architecture, asynchronous queue management, and horizontal scaling strategy for **Project Baca**.
+Axum publishes one message per EPUB upload. Python workers consume it through the consumer group `ingestion-workers` on `stream:epub_ingestion`, write to PostgreSQL and the covers bucket, and report progress to a Redis hash the curator desk polls. Workers are stateless; run more processes to scale.
 
-## 1. Processing Topology
+## 2. Message contract
 
-Clear separation between stateless HTTP API nodes and background compute workers:
+- Stream fields: `book_id`, `storage_path` (`raw-epubs/<book_id>.epub`), `job_id`, `timestamp`.
+- Job hash `job:{id}`: `status` (`queued`, `parsing`, `chunking`, `embedding`, `summarizing`, `published`, or `failed`), `progress` 0 to 100, `book_id`, `storage_path`, `created_at`, `updated_at`, optional `error` and `attempts`. TTL 7 days. Read by `GET /api/v1/admin/jobs/{id}`.
+- Dead letters: `stream:epub_ingestion:dlq`, listed by `GET /api/v1/admin/dlq` and replayed by `POST /api/v1/admin/dlq/{id}/replay` under the original job id.
 
-```text
-+-------------------+       +-------------------+       +-------------------+       +-----------------------+
-|  Web/PWA Client   | ----> |  Caddy Edge Gate  | ----> |  Axum API Server  | ----> |  Redis 7 Streams      |
-|  (Leptos WASM)    | <==== |  HTTP/3 QUIC Edge | <---- |  (Stateless Node) |       |  Stream: stream:epub_ingestion |
-+-------------------+       +-------------------+       +-------------------+       +-----------------------+
+## 3. Pipeline per message
 
-                                                                    |
-                                                                    v
-+-----------------------+       +-------------------+       +-----------------------+
-|  Dual-Mode Embedding  | <==== |  Python Ingestion | <==== |  Consumer Group:      |
-|  - Gemini API (Cloud) |       |  Worker Instances |       |  ingestion-workers    |
-|  - FastEmbed CPU (ARM)| ====> |  (Horizontal Pods)|       |  - Auto-claim pending |
-+-----------------------+       +-------------------+       +-----------------------+
-                                          |
-                                          v
-                                +-------------------+
-                                |  PostgreSQL 17    |
-                                |  + pgvector HNSW  |
-                                |  + MinIO / S3 R2  |
-                                +-------------------+
+1. Download the EPUB; zip guard (per-file size, compression ratio, ZipSlip paths).
+2. Parse OPF and spine; extract the cover and convert it to WebP with Pillow (original bytes kept on failure) as `covers/<book_id>.<ext>`.
+3. Sanitize XHTML: allowlisted tags, scripts, styles, and handlers removed, decoded character references re-escaped on output; detect scene breaks; count words.
+4. Chunk about 400 words per piece, tails under 50 merged, with CFI ranges.
+5. Embed in batches (768 dimensions) with `EMBEDDING_MODEL_NAME`. The `fastembed` provider is a stub that errors descriptively; production needs `GEMINI_API_KEY`.
+6. Generate atomic cards and the spoiler-free recap per chapter with `LLM_MODEL_NAME` (default `gemini-flash-latest`). Recap input is the key concepts of chapters 1 to n-1 plus the current chapter text inside a 12k-character budget (current chapter keeps at least 4k, oldest summaries drop first). Rows upsert on `uq_tldr_cache`.
+7. Insert chapters and chunks, set the book `published`, `XACK`.
+
+## 4. Reliability
+
+- At-least-once delivery: `XACK` only after success; entries idle longer than `RECLAIM_IDLE_MS` (default 300000) are reclaimed with `XAUTOCLAIM`.
+- Three attempts per message; afterwards the entry moves to the dead-letter stream with its error and is acknowledged, so one corrupt file never stalls the queue. Replays are idempotent thanks to the `tldr_cache` upsert.
+- Gemini calls retry transient failures up to three times with quadratic backoff (1 s, 4 s, 9 s, up to 20% jitter), honour `Retry-After` (capped at 60 s), and fail at once on 4xx other than 429. Timeouts: 60 s for embeddings, 120 s for generation. Logs carry the job id and model, never the key, which travels in `x-goog-api-key`.
+- The Redis socket timeout (30 s) exceeds the `XREADGROUP` block window, so long polls return empty instead of raising.
+- A cover failure never fails the job.
+
+## 5. Operations
+
+```bash
+make worker-install    # uv venv + requirements
+make worker            # long-running consumer
+make worker-once       # one message, then exit
+make worker-test       # 16 unit tests, no services
+make worker-test-live  # dead-letter end-to-end, needs make db-up
 ```
 
-## 2. Asynchronous EPUB Ingestion Pipeline
+Environment: the same names as `.env` plus `LLM_MODEL_NAME` and `RECLAIM_IDLE_MS`.
 
-Public domain manuscript ingestion executes in 5 isolated phases:
+## 6. Scaling notes
 
-1. **Upload & Object Storage:**
-   - Admin uploads `.epub` file via `/api/v1/admin/books/upload`.
-   - Axum validates file magic bytes, saves raw EPUB to `raw-epubs/<book_id>.epub` in S3/MinIO, and pushes event to Redis Stream `stream:epub_ingestion`.
-2. **Parsing & Sanitization (Python Worker):**
-   - Worker consumes task from `ingestion-workers` consumer group via `XREADGROUP`.
-   - Validates OPF metadata, extracts cover image to `baca-covers/`, and cleans HTML (stripping malicious tags, inline scripts, and styling).
-3. **Scene-based & Semantic Chunking:**
-   - Splits chapter text into semantic chunks (~400 words, tail merged below 50) at natural paragraph/scene boundaries.
-   - Computes DOM CFI for precise reader deep-linking.
-4. **Batch Vectorization via Dual-Mode Embeddings (768-dim):**
-   - **Cloud Mode (Default):** Google GenAI API (`gemini-embedding-2`, default `EMBEDDING_MODEL_NAME`). Generates 768-dimensional embeddings without local GPU requirements.
-   - **Local / Offline Mode:** CPU-optimized ONNX runtime via `fastembed` (supports ARM64 NEON / Apple Silicon). Low RAM usage (<150 MB) and small footprint (~60 MB). NOTE: FastEmbed provider is currently an unbundled stub that errors descriptively — production embeddings require a valid `GEMINI_API_KEY`.
-   - Standard 768 dimensions cut PostgreSQL HNSW index memory consumption in half compared to 1536-dimensional models.
-5. **Bulk Insert & Indexing:**
-   - Bulk inserts chunk records and vectors into `book_chunks`.
-   - Updates book status to `published` in `books`.
-
-## 3. Scoped Vector Search Strategy
-
-Vector search memory scales with corpus size. Project Baca uses a scoped search pattern:
-
-* **Scoped Search Pattern (`WHERE book_id = $1`):**
-  - Rather than searching the entire multi-book corpus, semantic quote searches are scoped to the active book:
-    ```sql
-    SELECT id, chapter_id, content, cfi_range, 1 - (embedding <=> $2) AS similarity
-    FROM book_chunks
-    WHERE book_id = $1
-    ORDER BY embedding <=> $2
-    LIMIT 5;
-    ```
-  - Isolating searches keeps HNSW memory overhead minimal while scaling to hundreds of thousands of chunks on disk.
-
-## 4. Fault Tolerance & Queue Reliability
-
-1. **Message Acknowledgment:** Tasks are only removed from the pending list after worker calls `XACK`.
-2. **Dead Worker Recovery:** Crashed jobs past `RECLAIM_IDLE_MS` (default 300000 ms) are reclaimed via `XAUTOCLAIM`.
-3. **Dead-Letter Queue (DLQ):** Corrupt files failing after 3 retries move to `stream:epub_ingestion:dlq` for curator inspection without stalling the main queue; `POST /api/v1/admin/dlq/{id}/replay` re-queues one entry under its original job id.
-4. **Transient Gemini failures:** every embedding and generation call retries up to three times with quadratic backoff (1 s, 4 s, 9 s, up to 20% jitter), honouring `Retry-After` when the API sends one (capped at 60 s); client errors (4xx other than 429) fail at once. Logs carry the job id and model, never the key.
-5. **Recap context:** the spoiler-free recap for chapter *n* is built from the key concepts of chapters 1..n-1 plus the current chapter text, trimmed to the 12k-character prompt budget (current chapter keeps at least 4k; the oldest summaries drop first).
-
-## 5. Horizontal Scaling Roadmap (Phase 2)
-
-* **Worker Autoscaling:** Scale Python worker pods based on queue length (`XLEN stream:epub_ingestion`) via Kubernetes KEDA.
-* **Read Replicas:** Route FTS catalog queries to PostgreSQL read replicas, preserving the primary database for write transactions and reading progress updates.
-* **Edge Caching:** Cache sanitized HTML chapters at Cloudflare edge locations (7-day TTL) for sub-20ms reader access globally.
+- Vector search is scoped per book (`WHERE book_id = $1` over the HNSW index), so index memory follows the active book rather than the corpus.
+- Add consumers to add throughput; autoscaling can key on `XLEN stream:epub_ingestion`.
+- Not done yet: stream trimming (`XTRIM`) and read replicas for catalog queries. Tracked in `knowledge/tasks`.

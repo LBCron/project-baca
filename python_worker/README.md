@@ -1,57 +1,32 @@
 # Ingestion Worker (`python_worker/`)
 
-background pipeline: consumes `stream:epub_ingestion` via the
-`ingestion-workers` consumer group — download → parse/sanitize → chunk →
-embed → summarize/publish. Progress is reported to the `job:{id}` Redis hash
-read by `GET /api/v1/admin/jobs/{id}`.
+Consumes `stream:epub_ingestion` through the `ingestion-workers` consumer group: download, parse and sanitize, chunk, embed, summarize, publish. Progress goes to the `job:{id}` Redis hash read by `GET /api/v1/admin/jobs/{id}`. Full contract and reliability rules: [DISTRIBUTED.md](../DISTRIBUTED.md).
 
-## Setup
+## Setup and run
 
 ```bash
 cd python_worker
-uv venv .venv
-uv pip install -r requirements.txt
-```
-
-## Run
-
-```bash
-# Long-running consumer (production-like)
+uv venv .venv && uv pip install -r requirements.txt
 set -a && . ../.env && set +a
-.venv/bin/python worker.py
-
-# Single message then exit (tests, backfill, debugging)
-.venv/bin/python worker.py --once
+.venv/bin/python worker.py          # long-running consumer
+.venv/bin/python worker.py --once   # one message, then exit
 ```
 
-## Unit tests (no services required)
+From the repo root: `make worker-install`, `make worker`, `make worker-once`.
+
+## Tests
 
 ```bash
-.venv/bin/python -m unittest test_worker -v
+.venv/bin/python -m unittest test_worker -v          # 16 unit tests, no services
+RECLAIM_IDLE_MS=0 .venv/bin/python -m unittest test_worker_live -v   # needs Redis and Postgres
 ```
 
 ## Environment
 
-Same names as the repo `.env`: `REDIS_URL`, `DATABASE_URL`, `S3_ENDPOINT`,
-`S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`,
-`S3_BUCKET_COVERS`, `GEMINI_API_KEY`, `EMBEDDING_MODEL_NAME`,
-`EMBEDDING_DIMENSION`, plus `LLM_MODEL_NAME` (default `gemini-flash-latest`).
+Same names as the repo `.env`: `REDIS_URL`, `DATABASE_URL`, `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `GEMINI_API_KEY`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSION`; worker only: `LLM_MODEL_NAME` (default `gemini-flash-latest`), `RECLAIM_IDLE_MS` (default 300000).
 
-## Job lifecycle
+## Notes
 
-Stream message fields: `book_id`, `storage_path`, `job_id`, `timestamp`.
-Job hash `job:{id}` fields: `status` (`queued → parsing → chunking →
-embedding → summarizing → published`, or `failed`), `progress` (0–100),
-`book_id`, `storage_path`, `created_at`, `updated_at`, optional `error`,
-`attempts`. Hashes expire after 7 days. Jobs failing 3 attempts move to
-`stream:epub_ingestion:dlq` and are acknowledged. Idle pending entries are
-reclaimed via `XAUTOCLAIM` after 5 minutes (dead-worker recovery).
-
-## Notes & deviations
-
-* Covers are converted to WebP via Pillow; on conversion failure the original
-  bytes are stored instead (ingestion never dies on a cover).
-* Embeddings and summaries call the Gemini REST API directly over stdlib
-  `urllib` (no extra dependency). Error bodies are surfaced verbatim.
-* The Rust one-shot `crates/infra/examples/backfill_chunks.rs` covers the
-  pre-Task-05 stub catalog; this worker is the streaming replacement.
+- Covers convert to WebP with Pillow; on failure the original bytes are stored. A cover never fails a job.
+- Gemini is called over stdlib `urllib` with retries (1 s, 4 s, 9 s, jitter, `Retry-After`); error bodies are sanitized before logging and the key is never logged.
+- Three failed attempts move a message to `stream:epub_ingestion:dlq`; curators replay it from the desk.

@@ -1,183 +1,106 @@
-# Project Baca: Architecture Blueprint & Technical Design
+# Architecture
 
-Technical architecture, polyglot monorepo structure, Rust-friendly Domain-Driven Design (DDD), AI/NLP pipeline, infrastructure layout, and core engineering invariants for **Project Baca**.
-
-## 1. Product Vision
-
-1. **Deep Reading Experience (Kindle & Apple Books Style):** Clean typography, reflowable layout, tap-to-turn pagination, distraction-free reading, and offline-first storage via IndexedDB.
-2. **Atomic Insights & Quote Discovery (Blinkist & Deepstash Style):** Chapter-level atomic insight cards, spoiler-free recap of previous chapters, and scoped quote finder on book overview pages.
-3. **Public Domain Catalog:** Curated, legal catalog from open sources (Standard Ebooks, Project Gutenberg, Wikisource).
-
-## 2. Polyglot Monorepo Structure
+## 1. Crates and layering
 
 ```text
-project-baca/
-├── Cargo.toml                       # Workspace manifest (Rust)
-├── Makefile                         # Developer automation (dev, test, migrations)
-├── docker-compose.yml               # PostgreSQL 17 pgvector, Redis, MinIO, Mailpit
-├── README.md                        # Project overview and quickstart
-├── ARCHITECTURE.md                  # Monorepo architecture blueprint (this document)
-├── PROJECT_LOG.md                   # Operational sprint backlog and milestones
-├── AGENTS.md                        # AI coding agent operational guidelines
-├── CLAUDE.md                        # Claude Code guidelines
-├── MEMORY.md                        # Architectural Decision Records (ADRs)
-├── GEMINI.md                        # Antigravity & Gemini guidelines
-├── GUIDE.md                         # Developer guide and local setup
-├── DISTRIBUTED.md                   # Ingestion worker and distributed architecture
-├── CHANGELOG.md                     # SemVer release history
-├── NOTICE.md                        # Legal and public domain notices
-│
-├── .agents/                         # Persistent AI agent rules and workflows
-│   ├── rules/                       # okf_memory.md, graphify.md
-│   └── workflows/                   # graphify.md
-│
-├── assets/                          # Design assets and illustrations
-│   ├── README.md
-│   ├── illustrations/               # Pen-and-ink engravings
-│   └── references/                  # UI references
-│
-├── knowledge/                       # Canonical specifications (OKF v0.2 SSOT)
-│   ├── index.md                     # Master catalog
-│   ├── prd.md                       # Product Requirements Document
-│   ├── erd.md                       # Database schema and index matrix
-│   ├── ux-flow.md                   # Interaction design and wireframes
-│   ├── frd.md                       # Functional Requirements Document
-│   ├── srs.md                       # System Requirements Specification
-│   ├── log.md                       # Chronological audit trail
-│   └── tasks/                       # Milestone execution specifications
-│
-├── migrations/                      # Paired SQL migrations (.up.sql & .down.sql)
-│
-├── crates/                          # Rust workspace crates (domain, shared, infra, server, web)
-│   ├── domain/                      # Pure business rules and invariants, zero I/O
-│   ├── shared/                      # DTOs, validation, and API contracts (Axum & WASM)
-│   ├── infra/                       # Database pool (SeaORM), Redis, MinIO client
-│   ├── server/                      # HTTP API gateway (Axum REST, OpenAPI, Auth)
-│   └── web/                         # Client frontend (Leptos 0.7 WASM PWA)
-│
-├── python_worker/                   # Python AI ingestion and NLP worker
+crates/domain    pure rules, no I/O: Percentage, BookStatus lifecycle, streak, badges, progress merge
+crates/shared    DTOs, validation, error contract; compiled native and to WebAssembly
+crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, MinIO, SMTP (lettre), Gemini client
+crates/server    Axum router, middleware, handlers, OpenAPI (utoipa)
+crates/web       Leptos 0.7 client-side app, Trunk build, service worker
+python_worker    ingestion consumer (see DISTRIBUTED.md)
+migrations       paired .up.sql / .down.sql (7 pairs, 13 tables)
 ```
 
-## 3. Domain Core (`crates/domain`)
+Dependency direction: `server` -> `infra` -> `domain`; `shared` is used by all. Repositories call domain functions for rule evaluation; `server` never imports `domain`. Repository traits are not introduced until a second implementation exists.
 
-* **Owns cross-context invariants, zero I/O:** `Percentage` (0.0-100.0, finished at 100), `BookStatus` lifecycle (`draft -> processing -> published`, `archived` from any active state), `advance_streak` transition rules, `eligible_badges` matrix, `merge_percentage` (guest-to-cloud `GREATEST` without SQL). Dependencies limited to `shared` (error contract), `chrono`, `thiserror`.
-* **Ports deferred per YAGNI:** repository traits (e.g., `trait BookRepository`) stay out until a second consumer needs the same model with different meaning (ADR-18 trigger). Repositories live in `crates/infra/src/repositories/` and call domain functions for rule evaluation.
-* **Layering:** `server` (handlers/DTOs) -> `infra` (adapters/SeaORM) -> `domain` (rules). `server` must not depend on `domain` directly.
-* **Shared DTOs (`crates/shared`):** Single contract definitions compiled to native code for Axum and WebAssembly for Leptos.
+## 2. Request path
 
-## 4. Ingestion Pipeline & Semantic AI Architecture
+Caddy terminates TLS and HTTP/3, serves the SPA from `dist/` with security headers and an immutable cache for hashed assets, proxies `/api/*` to Axum, and strips every client-address header except `X-Forwarded-For`, which it overwrites.
 
-```text
-1. INGESTION PIPELINE
-   [Admin Upload EPUB] -> [Axum API] -> Store raw EPUB to S3/MinIO
-                                │
-                                ▼
-                       [Redis Streams Queue]
-                                │
-                                ▼
-                       [Python NLP Worker]
-                         ├── Parse EPUB XHTML per chapter
-                         ├── Clean HTML & detect scene breaks
-                         ├── Extract metadata, cover, & calculate word count
-                         ├── Split text into chunks (~300-500 words)
-                         ├── Generate embeddings (Google GenAI / FastEmbed 768-dim)
-                         └── Persist to PostgreSQL 17 pgvector (book_chunks)
+Axum layers, outermost first: tracing, CORS (`CORS_ALLOWED_ORIGINS`), server-minted `x-request-id`, security headers. Per-router limiters on one Redis fixed-window engine (`middleware/rate_limit.rs`): auth 20/min per IP; AI 10/min per user or guest IP; public reads `PUBLIC_RATE_LIMIT_PER_MINUTE` per IP on books, covers, insights, and gamification when the value is above 0. The admin router raises the body limit to 50 MB plus 64 KiB; the upload handler enforces 50 MB while streaming. Redis outage on auth or AI paths answers 503 (fail closed).
 
-2. CATALOG SEARCH (PostgreSQL 17 FTS + pg_trgm)
-   [User: Query "Sherlock" or "Adventure"]
-             │
-             ▼
-   [Axum: GET /api/books?q=sherlock&lang=en]
-             │
-             ▼
-   [PostgreSQL GIN FTS + Trigram Index] (<5ms latency)
-   * Typo-tolerant lexical search without Elasticsearch JVM overhead.
+## 3. API surface
 
-3. SCOPED QUOTE FINDER (PostgreSQL 17 pgvector HNSW)
-   [User: "Find quote about love and sacrifice"]
-             │
-             ▼
-   [Axum: POST /api/books/{id}/quotes/search]
-             │
-             ▼
-   [PostgreSQL HNSW Vector Query] (<10ms latency)
-     WHERE book_id = $1 ORDER BY embedding <=> $query_vector LIMIT 5;
+All paths below are under `/api/v1` unless noted. Responses use `{ "success": true, "data": ... }` or `{ "success": false, "error": { "code", "message", "details" } }`; codes: `BAD_REQUEST`, `VALIDATION_FAILED`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `AI_RATE_LIMITED`, `DATABASE_ERROR`, `INTERNAL_ERROR`, `EXTERNAL_SERVICE_ERROR` (502), `SERVICE_UNAVAILABLE` (503).
 
-4. ATOMIC INSIGHT CARDS & CATCH-UP RECAP
-   [User: Open chapter or click "Recap Previous Chapters"]
-             │
-             ▼
-   [Check tldr_cache in PostgreSQL]
-     ├── Cache Hit: Return cached summary instantly (0 token cost)
-     └── Cache Miss: Worker generates atomic cards via LLM
-```
+| Method and path | Auth | Notes |
+|---|---|---|
+| `GET /health` (root) | none | 503 `degraded` when the process has no database connection |
+| `GET /health` | none | Postgres and Redis status |
+| `POST /auth/signup`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh` | none | auth limiter; signup 502 when SMTP is down, 60 s cooldown per email, 10/h per IP; OTP: three wrong codes lock for 5 min (429, `Retry-After`) |
+| `POST /auth/logout`, `/auth/revoke-all?keep_current=` | bearer | logout blacklists the session's last access token; revoke-all drops other devices |
+| `GET`, `PATCH`, `DELETE /me` | bearer | profile; delete revokes first, then cascades |
+| `PUT /me/password` | bearer | revokes other sessions and returns a fresh token pair |
+| `GET /me/sessions`, `DELETE /me/sessions/{id}` | bearer | per-device sessions, caller flagged |
+| `GET /me/badges`, `GET /me/streak` | bearer | gamification standing |
+| `GET /books`, `/books/search`, `/books/{id}`, `/books/{id}/chapters/{n}`, `/books/{id}/offline-bundle` | none | published books only; cursor paging; `q` capped at 200 chars, filters at column width |
+| `GET /covers/{file}` | none | `<uuid>` plus webp, jpg, jpeg, or png from the covers bucket, `Cache-Control: public, max-age=31536000, immutable` |
+| `GET /books/{id}/chapters/{ref}/atomic-cards`, `.../recap` | none | `ref` is a chapter number or chapter UUID; 404 for unpublished books |
+| `POST /books/{id}/quotes/search` | optional bearer | AI limiter; HNSW cosine search scoped `WHERE book_id = $1` |
+| `POST /quotes/save`, `POST /quotes/save-batch`, `GET /quotes`, `GET /quotes/{id}/card` | bearer | duplicate save returns the existing row with 200 `saved:false`; batch up to 50 with per-item outcome; card is owner-only SVG |
+| `GET /progress/active`, `PUT /progress/{book_id}`, `POST /progress/merge` | bearer | merge is transactional, capped at 100 records, `GREATEST` percentage |
+| `POST /activity/heartbeat` | bearer | one rewarded heartbeat per user per 60 s (atomic `SET NX EX`), credit clamped to 90 s |
+| `GET /badges` | none | badge catalog |
+| `GET /admin/books`, `POST /admin/books/upload`, `PATCH /admin/books/{id}`, `GET /admin/jobs/{id}`, `GET /admin/dlq`, `POST /admin/dlq/{id}/replay`, `GET /admin/analytics/drop-off` | bearer, role `admin` re-read from the user row | upload: `.epub`, 50 MB, 202 with job id and a stream event; status changes follow `BookStatus::can_transition_to` (409 otherwise) |
+| `/swagger-ui`, `/api-docs/openapi.json` (root) | none | not mounted when `APP_ENV=production`; no edge route |
 
-## 5. Frontend Leptos WASM & PWA Architecture
+Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias no longer exists.
 
-* **Shell and reader split:** `ShellLayout` (header, phone tab bar, auth sheet, toasts) wraps `/`, `/book/:id`, `/me`, `/admin`; `/read/:id` renders without chrome. Root contexts: one language signal (`i18n::provide_lang`), `Session` (token, profile, sheet state), `Toasts`, and the shell theme (`theme::ShellTheme`).
-* **Paginated reader:** chapter HTML flows into CSS columns whose gap equals twice the side padding, so one page stride is exactly the viewport width (one column, two from 1024px) inside a paper frame with running heads and folios (`pages/reader/mod.rs`, geometry in `pages/reader/layout.rs`). Turns are paper (`pages/reader/flip.rs`): the leaving page becomes strips hinged on the spine, each holding a one-column clone of the flow, moved by a damped spring from the pointer or a tap; reduced motion falls back to a crossfade. Input: drag anywhere on touch, from the page edges with a mouse, edge arrows, tap zones, Space, arrows, Home/End. The position is anchored to the first visible paragraph (`p-N`), saved debounced after each turn (account via `PUT /progress/{book}`, guest via IndexedDB), and heartbeats report real elapsed seconds once a minute while the tab is visible.
-* **Offline Storage:** Downloaded chapters and book metadata stored in browser IndexedDB via `rexie`; the reader and shelf fall back to them when the network is gone.
-* **Reactive i18n (`[ ID | EN ]`):** Table-driven dictionary in `crates/web/src/i18n/mod.rs` (register: literate, "kamu"); default follows the browser language, persisted as `rotaria_lang`. Reader preferences persist as `rotaria_reader_prefs`, the shell theme as `rotaria_theme` (applied by `boot.js` before first paint).
+## 4. Security model
 
-## 6. Visual Design Identity (Vintage Literary, two surfaces)
+- Passwords: Argon2id (19 MiB, 2 iterations). OTP: six digits, SHA-256 in Redis, 10 min TTL, three attempts then a 5 min lock.
+- Tokens: HS256 access token (1440 min in dev, 60 min in production compose); refresh token stored as a SHA-256 hash with a session record (device label, IP prefix, last access `jti`), rotated atomically (`GETDEL`, 30 s grace for concurrent tabs); a replayed token revokes the family including access tokens. Logout and per-device revocation blacklist the last access `jti`.
+- Lockouts: 5 failures per (email, IP) and 20 per email lock login for 15 min; unverified accounts behave like a wrong password.
+- Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted.
+- Headers: the API sets HSTS, `nosniff`, frame denial, referrer policy, COOP and CORP, a permissions policy, its own CSP, and `Cache-Control: no-store` on `/auth/*` and on every bearer response. Caddy sets the SPA headers, including a CSP with `script-src 'self' 'wasm-unsafe-eval'` and no inline scripts (a Trunk post-build hook moves the bootstrap into a hashed `boot-*.js`).
+- Data exposure: draft and archived books are invisible on every public route; validation errors name the field without echoing the value; logs mask connection strings, recipients, OTPs, and the Gemini key (sent in `x-goog-api-key`).
+- Known gaps are tracked in `knowledge/tasks` (launch gate, non-root containers, signup 409 disclosure, stream trimming).
 
-* **Espresso shell:** `--bg: #1F1916`, elevated `#29211C`, border `#362C27`, text `#F0EAE1`, clay accent `#CE734E`; Paper shell available via the header toggle (`data-theme="paper"`).
-* **Reading surfaces:** Paper `#F9F6F0`/`#2B2625`/`#9D5A3C`, Sepia `#EFE4CF`, Espresso `#1F1916`, chosen in the reader's type sheet.
-* **Typography:** `EB Garamond` display (`--font-display`), `Newsreader` reading body (`--font-reading`), `Plus Jakarta Sans` interface labels (`--font-ui`); fleuron `❖` as ornament; chapter numerals in roman.
-* **Shape and motion:** 20px card radius, pill controls, 44px touch targets; fade-up on mount, sheet slide-in, page-turn fade, all disabled under `prefers-reduced-motion`.
-* **Illustrations:** Classic pen-and-ink engravings in `assets/illustrations/` (PNG originals, WebP copies shipped by Trunk), shown as paper plates over the dark shell; the home hero carries one static plate.
-* **Curator desk:** `/admin` (role `admin`, re-checked against the user row) shows manuscripts in every status, the ingestion queue with its dead letters, and the drop-off funnel; status changes go through the domain lifecycle (`BookStatus::can_transition_to`).
-* **Sessions:** refresh tokens live in Redis as hashes with a `session:{hash}` record (device label, IP prefix, last access `jti`); readers list and revoke devices from the shelf, and "sign out other devices" keeps the caller without a global revocation stamp.
-* **Responsive rules:** phones under 768px get the greeting-first home, the bottom tab bar, bottom sheets, and the book action dock; wider screens get the editorial hero, header navigation, centered dialogs, and inline actions. Safe-area insets apply on every edge; the reader paginates in a fixed-height flex column (one column, two from 1024px, measure capped at 1440px).
+## 5. Web app (`crates/web`)
 
-## 7. Infrastructure Services (`docker-compose.yml`)
+- Routes: `/`, `/book/:id`, `/me`, `/admin`, and `/__gallery` (component stories for tests) under `ShellLayout` (header, phone tab bar, auth sheet, toasts); `/read/:id` renders without chrome; unknown paths show the 404 page.
+- Root contexts: language (`i18n::provide_lang`, table-driven ID/EN dictionary, browser default, persisted `rotaria_lang`), `Session` (tokens, profile, sheet state), `Toasts` (deduped, errors as `role=alert`), `ShellTheme` (system scheme by default, `rotaria_theme` once toggled, `theme-color` meta follows; `boot.js` applies it before first paint).
+- API client (`api/mod.rs`): gloo-net, 401 single-flight refresh, offline detection, pending-write queue drained on `online` and login, `asset_url` turns stored cover keys into `/api/v1/covers/{file}`.
+- Storage: IndexedDB through rexie, `project_baca_db` v3 (guest progress, offline books and chapters, pending sync, local quotes). Reader and shelf fall back to it offline.
+- Service worker (`sw.js`): `rotaria-shell-v2` precaches `/` and serves it for unvisited deep links offline; `rotaria-assets-v2` caches hashed assets and prunes stale ones; `/api/*` is never cached.
+- Design: Espresso shell (`#1F1916`, clay `#CE734E`) with a Paper shell toggle; reading themes Paper, Sepia, Espresso; EB Garamond display, Newsreader body, Plus Jakarta Sans labels; 44 px targets; motion disabled under `prefers-reduced-motion`. Illustrations ship as WebP from `assets/illustrations`.
+- Responsive: under 768 px the tab bar, bottom sheets, and the book action dock; from 768 px header navigation and dialogs; catalog columns 2 / 3 / 4 / 5 at under 640 / 1024 / 1440 / wider; home shows two catalog rows until "see the whole catalog".
 
-1. **PostgreSQL 17 + pgvector (Port 5433):** Relational tables and HNSW vector index.
-2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
-3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
-4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing. The server sends through `lettre`; `SMTP_SECURITY=none` for Mailpit, `starttls` with credentials for a real relay.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses; the CSP allows no inline scripts because a Trunk `post_build` hook (`scripts/externalize_inline_scripts.py`) moves the generated bootstrap into a hashed `boot-*.js`. In production Caddy writes `X-Forwarded-For` from the real peer and strips every other client-address header before the API sees the request; the server reads only `TRUSTED_IP_HEADER` (default `x-forwarded-for`) and only because `TRUST_PROXY_HEADERS=true`. Swagger has no edge route. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
+### Reader (`pages/reader/`)
 
+- `layout.rs`: the chapter flows into CSS columns one page wide; the column gap equals twice the side padding, so one page stride is the viewport width. Two columns from 1024 px, measure capped at 1440 px.
+- `flip.rs`: a page turn rebuilds the leaving page as strips hinged on the spine (8 on a spread, 6 on a single page). Each strip holds a clone that reproduces exactly one column (spacer plus the elements intersecting that column), so a turn costs a page of layout, not a chapter. A damped spring drives the angle (drag k 900, zeta 1.0; release k 240, zeta 0.86); release past 90 degrees or a flick above 160 degrees per second completes, otherwise the page falls back; the last page resists at 22 degrees. Frames write only `transform` and `opacity`; no signals update per frame.
+- `mod.rs`: pointer gestures (touch drags anywhere, mouse from the outer 22%, gestures starting on controls ignored), keys (arrows, Space, PageUp/Down, Home, End, Escape), center tap dims the bars, position anchored to the first visible paragraph (`p-N`) and saved debounced (account via `PUT /progress/{book}`, guest via IndexedDB), heartbeat once a minute while visible, finale card after the last page. Reduced motion uses a 140 ms crossfade.
 
-## 8. Data Layer, Migrations, and Automation
+## 6. Ingestion and AI
 
-* **SeaORM:** Async Tokio/SQLx-based ORM in `crates/infra` providing type-safe queries and compatibility with `pgvector` and `pg_trgm`.
-* **Paired SQL Migrations (`migrations/`):** Schema changes managed via explicit `<timestamp>_<name>.up.sql` and `<timestamp>_<name>.down.sql` scripts.
-* **Makefile Automation:** Centralized command runners (`make dev-server`, `make dev-web`, `make migrate-up`, `make test-all`).
-* **API Documentation (`utoipa`):** Compile-time checked OpenAPI 3.1 schema serving Swagger UI at `/swagger-ui` outside production (not mounted at all when `APP_ENV=production`).
-* **Structured Observability:** Tracing with automatic `x-request-id` propagation and NDJSON format via `LOG_FORMAT=json`.
-* **Test Layout:** Functional suites are modules of one binary, `crates/server/tests/it` (smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability); `performance_test` and `load_stress_test` stay separate so parallel functional tests cannot skew latency assertions. Debug builds keep `line-tables-only` debuginfo for workspace code and none for dependencies. Every test registers the rows it seeds (`TestHarness::track_*`) and ends with `harness.cleanup()`, so the shared dev database holds the same row counts before and after a run; `make purge-test-debris` sweeps survivors of panicked runs and `make seed-dev` restores a small, human-looking catalog.
-* **Rate Limiting:** One Redis fixed-window engine (`middleware/rate_limit.rs`) behind three policies: auth (20/min per IP), AI search (10/min per user or guest IP), and public reads including covers (`PUBLIC_RATE_LIMIT_PER_MINUTE`, off in dev, 600 in production compose). The client address comes from the single `TRUSTED_IP_HEADER` when `TRUST_PROXY_HEADERS=true`, otherwise every direct client shares one bucket.
-* **Covers:** the worker stores `cover_url = covers/<book uuid>.<ext>` (a key in the covers bucket); `GET /api/v1/covers/{file}` streams it from storage with a one-year immutable cache policy, 404 for any name outside `<uuid>.(webp|jpg|jpeg|png)`.
-* **Health:** `GET /health` is the liveness probe (503 `degraded` when the process has no database connection, which the compose healthcheck treats as unhealthy); `GET /api/v1/health` pings Postgres and Redis.
+Upload stores the EPUB in MinIO and publishes to `stream:epub_ingestion`; the worker writes chapters, 768-dimensional chunks, covers, and `tldr_cache` rows, then publishes the book. Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped to the book. Catalog search uses a partial GIN index (FTS and trigram) over published books. Details in [DISTRIBUTED.md](DISTRIBUTED.md).
 
-## 9. Development Intelligence Architecture (Quad-Layer System One)
+## 7. Data
 
-* **Layer 0 (Jev / Laya):** Fast reflex gate (<0.2ms) for intent routing and shell safety guardrails.
-* **Layer 1 (Graphify):** Codebase AST and symbol graph in `graphify-out/`.
-* **Layer 2 (OKF Vault v0.2):** Specifications in `knowledge/` serving as single source of truth.
-* **Layer 3 (GBrain):** Cross-session persistent memory in PostgreSQL 17 pgvector.
+- Paired migrations in `migrations/`; schema and index matrix in `knowledge/erd.md`.
+- Hot indexes: partial GIN FTS and trigram `WHERE status = 'published'`, HNSW cosine on `book_chunks.embedding`, foreign-key B-trees, zero-sort catalog index on `(publication_year DESC NULLS LAST, id)`.
+- Covers: the worker stores `covers/<book uuid>.<ext>` in the covers bucket and `books.cover_url` holds that key.
+- `tldr_cache` has a unique key per (chapter, kind); replays upsert.
 
-## 10. Core Engineering Invariants
+## 8. Deployment
 
-1. **ROBUST:**
-   - Zero panics in production Rust code (`unwrap()` and `expect()` prohibited in `crates/server`, `crates/domain`, `crates/infra`, `crates/shared`, `crates/web`). Errors handled through `Result<T, AppError>`.
-   - Foreign key cascading constraints and check constraints enforced in PostgreSQL.
-   - Graceful offline fallback in Leptos WASM via IndexedDB.
-2. **SCALABLE:**
-   - Stateless Axum backend enabling horizontal scaling.
-   - Scoped semantic search per book (`WHERE book_id = $1`).
-   - Partial GIN index filtering only active books (`WHERE status = 'published'`).
-3. **EASY TO MAINTAIN:**
-   - Modular crate boundaries (`domain`, `shared`, `infra`, `server`, `web`).
-   - Paired reversible SQL migrations.
-   - Centralized Makefile automation.
-4. **DRY (Don't Repeat Yourself):**
-   - Shared DTOs and validation rules in `crates/shared`.
-   - Unified reactive i18n dictionary.
-5. **KISS (Keep It Simple, Stupid):**
-   - "Postgres for Everything": Relational data, FTS with Trigrams, and vector search in a single engine. No separate Elasticsearch cluster.
-   - Redis Streams for asynchronous task queues instead of heavyweight brokers (Kafka/RabbitMQ).
-   - Pragmatic, borrow-checker-friendly domain models without unnecessary OOP abstractions.
-6. **YAGNI (You Aren't Gonna Need It):**
-   - Strict focus on MVP requirements: public domain reading, clean typography, atomic summaries, quote discovery, and offline support. Deferring future enhancements until later phases.
+- `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio (internal network only), server, worker, edge (Caddy on 80 and 443 TCP and UDP). Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
+- `make build` compiles release binaries and the WASM bundle with `API_BASE_URL` baked in.
+- The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
+- Observability: tracing with `x-request-id` on every span; `LOG_FORMAT=json` for NDJSON.
+
+## 9. Tests
+
+Functional server suites are modules of one binary (`crates/server/tests/it`); `performance_test` and `load_stress_test` stay separate so parallel tests cannot skew latency assertions. Web tests are a Playwright pyramid in `crates/web/tests` (e2e, component, integration, a11y, visual). Targets and counts: [GUIDE.md](GUIDE.md) section 5.
+
+## 10. Invariants
+
+1. No `unwrap()` or `expect()` on production paths in any crate; errors flow through `Result<T, AppError>`.
+2. Stateless API; scoped vector search; partial indexes on published books.
+3. Clear crate boundaries, paired reversible migrations, Makefile as the single command surface.
+4. One DTO and validation source (`crates/shared`); one i18n dictionary.
+5. Postgres for relational, lexical, and vector data; Redis Streams instead of a broker.
+6. MVP scope only; no abstraction before its second use.
+7. No emoji in code, comments, commits, or docs. The fleuron `❖` is typography.
