@@ -11,6 +11,7 @@ use shared::{
 };
 use std::sync::Arc;
 use uuid::Uuid;
+use validator::Validate;
 
 use crate::{error::HttpError, AppState};
 
@@ -28,6 +29,7 @@ pub async fn list_books(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BookCatalogQuery>,
 ) -> Result<Response, HttpError> {
+    query.validate().map_err(HttpError::from)?;
     let books = infra::list_books(&state.db, &query)
         .await
         .map_err(HttpError::from)?;
@@ -42,13 +44,14 @@ pub async fn list_books(
     params(BookSearchQuery),
     responses(
         (status = 200, description = "Ranked search results", body = ApiResponse<Vec<BookSearchResultDto>>),
-        (status = 400, description = "Query length less than 2 characters")
+        (status = 400, description = "Query outside 2-200 characters or an overlong filter")
     )
 )]
 pub async fn search_books(
     State(state): State<Arc<AppState>>,
     Query(query): Query<BookSearchQuery>,
 ) -> Result<Response, HttpError> {
+    query.validate().map_err(HttpError::from)?;
     let results = infra::search_books(&state.db, &query)
         .await
         .map_err(HttpError::from)?;

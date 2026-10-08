@@ -612,3 +612,85 @@ async fn test_heartbeat_credit_clamped_and_gate_per_user() {
     assert_eq!(json["data"]["daily_threshold_seconds"].as_i64(), Some(300));
     harness.cleanup().await;
 }
+
+/// A book in `status` with one chapter, for visibility checks.
+async fn seed_book_with_chapter(harness: &TestHarness, status: &str) -> (Uuid, Uuid) {
+    let now = Utc::now();
+    let book_id = harness.track_book(Uuid::new_v4());
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set(format!("Visibility {status}")),
+        author: Set("Hidden Author".to_string()),
+        language: Set("id".to_string()),
+        primary_theme: Set("Misteri".to_string()),
+        sub_theme: Set(None),
+        description: Set(String::new()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(100),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Private".to_string()),
+        publication_year: Set(None),
+        status: Set(status.to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("book seed must succeed");
+    let chapter_id = Uuid::new_v4();
+    chapters::ActiveModel {
+        id: Set(chapter_id),
+        book_id: Set(book_id),
+        chapter_number: Set(1),
+        title: Set("Hidden".to_string()),
+        word_count: Set(100),
+        html_content: Set("<p>not for readers yet</p>".to_string()),
+        created_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("chapter seed must succeed");
+    (book_id, chapter_id)
+}
+
+/// Chapters and insights of draft or archived books answer 404 on every
+/// public path, by chapter number and by chapter UUID alike.
+#[tokio::test]
+async fn test_unpublished_books_hide_chapters_and_insights() {
+    let harness = TestHarness::new().await;
+    if harness.live_only().await.is_none() {
+        panic!("live DB required (db-up)");
+    }
+    let (published_id, _) = seed_book_with_chapter(&harness, "published").await;
+    let get = |uri: String| Request::builder().uri(uri).body(Body::empty()).unwrap();
+
+    let resp = harness
+        .send_request(get(format!("/api/v1/books/{published_id}/chapters/1")))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "published control");
+
+    for status in ["draft", "archived"] {
+        let (book_id, chapter_id) = seed_book_with_chapter(&harness, status).await;
+        let hidden = [
+            format!("/api/v1/books/{book_id}/chapters/1"),
+            format!("/api/v1/books/{book_id}/chapters/1/atomic-cards"),
+            format!("/api/v1/books/{book_id}/chapters/{chapter_id}/atomic-cards"),
+            format!("/api/v1/books/{book_id}/chapters/1/recap"),
+            format!("/api/v1/books/{book_id}/chapters/{chapter_id}/recap"),
+            format!("/api/v1/books/{book_id}/offline-bundle"),
+        ];
+        for uri in hidden {
+            let (resp, body) = harness.send_json_request(get(uri.clone())).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "{status} {uri}: {body}"
+            );
+            assert_eq!(body["error"]["code"], "NOT_FOUND", "{status} {uri}");
+        }
+    }
+    harness.cleanup().await;
+}

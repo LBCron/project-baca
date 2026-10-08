@@ -95,6 +95,14 @@ class SanitizeTest(unittest.TestCase):
         self.assertNotIn("<div", clean)
         self.assertIn("plain", clean)
 
+    def test_entity_encoded_markup_stays_inert_text(self):
+        dirty = "<p>&lt;img src=x onerror=alert(1)&gt; &amp; Tom &amp;amp; Jerry</p>"
+        clean = sanitize_html(dirty)
+        self.assertNotIn("<img", clean)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", clean)
+        self.assertIn("&amp; Tom &amp;amp; Jerry", clean)
+        self.assertEqual(extract_text(clean), "<img src=x onerror=alert(1)> & Tom &amp; Jerry")
+
     def test_extract_text_resolves_entities(self):
         self.assertEqual(
             extract_text("<p>A &amp; B</p><script>hidden</script>"),

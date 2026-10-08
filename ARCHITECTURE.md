@@ -135,8 +135,8 @@ project-baca/
 1. **PostgreSQL 17 + pgvector (Port 5433):** Relational tables and HNSW vector index.
 2. **Redis 7 (Port 6380):** Cache, rate limiting, and Redis Streams message broker.
 3. **MinIO (Port 9005, Console 9006):** S3-compatible storage for EPUB files and covers.
-4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing.
-5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses; the CSP allows no inline scripts because a Trunk `post_build` hook (`scripts/externalize_inline_scripts.py`) moves the generated bootstrap into a hashed `boot-*.js`. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
+4. **Mailpit (SMTP 1025, Web UI 8025):** Local transactional email testing. The server sends through `lettre`; `SMTP_SECURITY=none` for Mailpit, `starttls` with credentials for a real relay.
+5. **Caddy Edge Gateway (Port 80/443 TCP & UDP):** Reverse proxy terminating HTTP/3 (QUIC) and HTTP/2 with automatic TLS, emitting `Alt-Svc` headers, and proxying upstream to Axum (8080) and Leptos PWA (3000/dist). Caddy also sets the SPA's security headers (CSP, HSTS, nosniff, frame denial, referrer and permissions policy) since Axum only covers API responses; the CSP allows no inline scripts because a Trunk `post_build` hook (`scripts/externalize_inline_scripts.py`) moves the generated bootstrap into a hashed `boot-*.js`. In production Caddy writes `X-Forwarded-For` from the real peer and strips every other client-address header before the API sees the request; the server reads only `TRUSTED_IP_HEADER` (default `x-forwarded-for`) and only because `TRUST_PROXY_HEADERS=true`. Swagger has no edge route. *(Real-domain `up --build` and `caddy validate` still pending, see `knowledge/tasks`.)*
 
 
 ## 8. Data Layer, Migrations, and Automation
@@ -144,10 +144,12 @@ project-baca/
 * **SeaORM:** Async Tokio/SQLx-based ORM in `crates/infra` providing type-safe queries and compatibility with `pgvector` and `pg_trgm`.
 * **Paired SQL Migrations (`migrations/`):** Schema changes managed via explicit `<timestamp>_<name>.up.sql` and `<timestamp>_<name>.down.sql` scripts.
 * **Makefile Automation:** Centralized command runners (`make dev-server`, `make dev-web`, `make migrate-up`, `make test-all`).
-* **API Documentation (`utoipa`):** Compile-time checked OpenAPI 3.1 schema serving Swagger UI at `/swagger-ui`.
+* **API Documentation (`utoipa`):** Compile-time checked OpenAPI 3.1 schema serving Swagger UI at `/swagger-ui` outside production (not mounted at all when `APP_ENV=production`).
 * **Structured Observability:** Tracing with automatic `x-request-id` propagation and NDJSON format via `LOG_FORMAT=json`.
 * **Test Layout:** Functional suites are modules of one binary, `crates/server/tests/it` (smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability); `performance_test` and `load_stress_test` stay separate so parallel functional tests cannot skew latency assertions. Debug builds keep `line-tables-only` debuginfo for workspace code and none for dependencies. Every test registers the rows it seeds (`TestHarness::track_*`) and ends with `harness.cleanup()`, so the shared dev database holds the same row counts before and after a run; `make purge-test-debris` sweeps survivors of panicked runs and `make seed-dev` restores a small, human-looking catalog.
-* **Rate Limiting:** One Redis fixed-window engine (`middleware/rate_limit.rs`) behind three policies: auth (20/min per IP), AI search (10/min per user or guest IP), and public reads (`PUBLIC_RATE_LIMIT_PER_MINUTE`, off in dev, 600 in production compose).
+* **Rate Limiting:** One Redis fixed-window engine (`middleware/rate_limit.rs`) behind three policies: auth (20/min per IP), AI search (10/min per user or guest IP), and public reads including covers (`PUBLIC_RATE_LIMIT_PER_MINUTE`, off in dev, 600 in production compose). The client address comes from the single `TRUSTED_IP_HEADER` when `TRUST_PROXY_HEADERS=true`, otherwise every direct client shares one bucket.
+* **Covers:** the worker stores `cover_url = covers/<book uuid>.<ext>` (a key in the covers bucket); `GET /api/v1/covers/{file}` streams it from storage with a one-year immutable cache policy, 404 for any name outside `<uuid>.(webp|jpg|jpeg|png)`.
+* **Health:** `GET /health` is the liveness probe (503 `degraded` when the process has no database connection, which the compose healthcheck treats as unhealthy); `GET /api/v1/health` pings Postgres and Redis.
 
 ## 9. Development Intelligence Architecture (Quad-Layer System One)
 

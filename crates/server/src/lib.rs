@@ -7,7 +7,7 @@ pub mod routes;
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
-    http::{HeaderName, HeaderValue, Request, Response, StatusCode},
+    http::{header, HeaderName, HeaderValue, Request, Response, StatusCode},
     middleware as axum_mw,
     response::IntoResponse,
     routing::get,
@@ -81,6 +81,7 @@ impl AppState {
         routes::books::get_book,
         routes::books::get_chapter,
         routes::books::get_offline_bundle,
+        routes::covers::get_cover,
         routes::gamification::record_heartbeat,
         routes::gamification::list_badges,
         routes::gamification::list_user_badges,
@@ -218,8 +219,17 @@ pub async fn security_headers_middleware(
     } else {
         "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     };
+    // Tokens, profiles, and anything answered to a bearer must never land in
+    // a shared cache; a handler that sets its own policy (public assets) wins.
+    let private = req.uri().path().starts_with("/api/v1/auth")
+        || req.headers().contains_key(header::AUTHORIZATION);
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
+    if private {
+        headers
+            .entry(header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static("no-store"));
+    }
     headers.insert(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
@@ -243,10 +253,11 @@ pub async fn security_headers_middleware(
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),
     );
-    headers.insert(
-        HeaderName::from_static("cross-origin-resource-policy"),
-        HeaderValue::from_static("same-origin"),
-    );
+    // Public images opt out per response (the reader may load covers from
+    // another origin in development); everything else stays same-origin.
+    headers
+        .entry(HeaderName::from_static("cross-origin-resource-policy"))
+        .or_insert(HeaderValue::from_static("same-origin"));
     headers.insert(
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
@@ -260,21 +271,29 @@ pub async fn security_headers_middleware(
     response
 }
 
-/// Basic server health check handler
+/// Liveness probe. A process that booted without a database answers 503 so
+/// the orchestrator restarts it instead of routing readers to it.
 #[utoipa::path(
     get,
     path = "/health",
     responses(
-        (status = 200, description = "Basic server health status")
+        (status = 200, description = "Server is up with its database connection"),
+        (status = 503, description = "Server is up but has no database connection")
     ),
     tag = "System & Health"
 )]
-pub async fn health_check() -> impl IntoResponse {
+pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db_attached = !matches!(state.db, DatabaseConnection::Disconnected);
+    let (http_status, status) = if db_attached {
+        (StatusCode::OK, "healthy")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "degraded")
+    };
     (
-        StatusCode::OK,
+        http_status,
         Json(ApiResponse::success(serde_json::json!({
             "service": "project-baca-server",
-            "status": "healthy",
+            "status": status,
             "version": "0.1.0"
         }))),
     )
@@ -306,8 +325,7 @@ pub async fn api_health_check(State(state): State<Arc<AppState>>) -> impl IntoRe
         Json(ApiResponse::success(serde_json::json!({
             "status": if degraded { "degraded" } else { "ok" },
             "postgres": if db_connected { "connected" } else { "disconnected" },
-            "redis": if redis_connected { "connected" } else { "disconnected" },
-            "port": state.config.port()
+            "redis": if redis_connected { "connected" } else { "disconnected" }
         }))),
     )
 }
@@ -324,14 +342,14 @@ pub async fn not_found_handler() -> impl IntoResponse {
     )
 }
 
-/// Swagger UI and OpenAPI JSON. Disabled in production: the spec
+/// Swagger UI and OpenAPI JSON. Not mounted at all in production: the spec
 /// fingerprinting surface stays available in dev/staging only.
-fn swagger_routes(state: &Arc<AppState>) -> SwaggerUi {
+fn swagger_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     if state.config.is_production() {
-        SwaggerUi::new("/swagger-ui-disabled")
-    } else {
-        SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi())
+        return Router::new();
     }
+    Router::new()
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
 
 /// Assembles Axum Router with Swagger UI, sub-routers, and middleware pipeline
@@ -398,6 +416,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .nest("/api/v1/auth", auth_router)
         .nest("/api/v1/me", routes::user_routes())
         .nest("/api/v1/books", public(routes::books_routes()))
+        .nest("/api/v1/covers", public(routes::covers_routes()))
         .nest("/api/v1/progress", routes::progress_routes())
         .nest("/api/v1", public(routes::gamification_routes()))
         .nest("/api/v1/books", quotes_router)

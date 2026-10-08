@@ -45,7 +45,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -67,7 +67,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&wrong_otp_req).unwrap()))
         .unwrap();
@@ -91,7 +91,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&verify_req).unwrap()))
         .unwrap();
@@ -118,7 +118,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&login_req).unwrap()))
         .unwrap();
@@ -188,7 +188,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&refresh_req).unwrap()))
         .unwrap();
@@ -219,7 +219,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&refresh_req).unwrap()))
         .unwrap();
@@ -234,7 +234,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&replay_req).unwrap()))
         .unwrap();
@@ -243,7 +243,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&RefreshTokenRequest {
@@ -259,7 +259,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&LoginRequest {
@@ -287,7 +287,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/logout")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {active_access_token}"))
         .body(Body::from(serde_json::to_vec(&logout_req).unwrap()))
@@ -315,7 +315,7 @@ async fn test_auth_full_lifecycle() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &lifecycle_ip)
+        .header(common::CLIENT_IP_HEADER, &lifecycle_ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&LoginRequest {
@@ -669,7 +669,7 @@ async fn provision_verified_user(
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", ip)
+        .header(common::CLIENT_IP_HEADER, ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -687,7 +687,7 @@ async fn provision_verified_user(
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
-        .header("cf-connecting-ip", ip)
+        .header(common::CLIENT_IP_HEADER, ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&VerifyOtpRequest {
@@ -717,7 +717,7 @@ fn login_req(email: &str, password: &str, ip: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", ip)
+        .header(common::CLIENT_IP_HEADER, ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&LoginRequest {
@@ -746,7 +746,7 @@ async fn test_auth_replay_kills_token_family() {
         Request::builder()
             .method("POST")
             .uri("/api/v1/auth/refresh")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&RefreshTokenRequest {
@@ -806,7 +806,7 @@ async fn test_auth_pair_lockout_five_failures() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/signup")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
             .unwrap();
@@ -822,7 +822,7 @@ async fn test_auth_pair_lockout_five_failures() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/verify-otp")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&VerifyOtpRequest {
@@ -881,7 +881,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/signup")
-            .header("cf-connecting-ip", &ip0)
+            .header(common::CLIENT_IP_HEADER, &ip0)
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
             .unwrap();
@@ -897,7 +897,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/verify-otp")
-            .header("cf-connecting-ip", &ip0)
+            .header(common::CLIENT_IP_HEADER, &ip0)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&VerifyOtpRequest {
@@ -955,7 +955,7 @@ async fn test_auth_signup_ip_cap_eleven_per_hour() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/signup")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
             .unwrap();
@@ -999,7 +999,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &ip)
+        .header(common::CLIENT_IP_HEADER, &ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -1017,7 +1017,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
         Request::builder()
             .method("POST")
             .uri("/api/v1/auth/verify-otp")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&VerifyOtpRequest {
@@ -1065,7 +1065,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
-        .header("cf-connecting-ip", &ip)
+        .header(common::CLIENT_IP_HEADER, &ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&VerifyOtpRequest {
@@ -1102,7 +1102,7 @@ async fn test_auth_password_change_kills_other_session_e2e() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &ip)
+        .header(common::CLIENT_IP_HEADER, &ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -1118,7 +1118,7 @@ async fn test_auth_password_change_kills_other_session_e2e() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/verify-otp")
-        .header("cf-connecting-ip", &ip)
+        .header(common::CLIENT_IP_HEADER, &ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&VerifyOtpRequest {
@@ -1420,7 +1420,7 @@ fn refresh_req(token: &str, ip: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/api/v1/auth/refresh")
-        .header("cf-connecting-ip", ip)
+        .header(common::CLIENT_IP_HEADER, ip)
         .header("content-type", "application/json")
         .body(Body::from(
             serde_json::to_vec(&RefreshTokenRequest {
@@ -1454,7 +1454,7 @@ async fn test_sessions_list_single_revoke_and_keep_current() {
     let laptop_login = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", "203.0.113.77")
+        .header(common::CLIENT_IP_HEADER, "203.0.113.77")
         .header(
             "user-agent",
             "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0",

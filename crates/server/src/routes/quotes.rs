@@ -11,7 +11,7 @@ use axum::{
 use infra::{
     get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
     list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
-    save_quotes_batch as repo_save_quotes_batch, search_quotes_by_embedding, BatchQuoteOutcome,
+    save_quotes_batch as repo_save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome,
 };
 use sea_orm::DatabaseConnection;
 use shared::{
@@ -56,9 +56,7 @@ pub async fn search_book_quotes(
     Path(book_id): Path<Uuid>,
     Json(payload): Json<QuoteSearchRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
-    payload
-        .validate()
-        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+    payload.validate().map_err(HttpError::from)?;
 
     // Fail fast on an unknown book before spending embedding budget on a query
     // that can only return [].
@@ -95,13 +93,16 @@ pub async fn search_book_quotes(
 
 // Saved Quotes Management & Vintage Quote Card
 
-/// Saves a quote for the authenticated user and returns a card URL.
+/// Saves a quote for the authenticated user and returns a card URL. Saving
+/// the same text for the same chapter again returns the existing row with
+/// 200 instead of a second copy.
 #[utoipa::path(
     post,
     path = "/api/v1/quotes/save",
     request_body = SaveQuoteRequest,
     responses(
         (status = 201, description = "Quote saved successfully"),
+        (status = 200, description = "Identical quote already saved; the existing row is returned"),
         (status = 400, description = "Validation error or chapter does not belong to the book"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Unknown book or chapter"),
@@ -115,35 +116,36 @@ pub async fn handle_save_quote(
     auth_user: AuthUser,
     Json(payload): Json<SaveQuoteRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
-    payload
-        .validate()
-        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+    payload.validate().map_err(HttpError::from)?;
 
     let id = Uuid::new_v4();
-    let card_url = card_url_for(id);
 
     validate_quote_target(&state.db, payload.book_id, payload.chapter_id)
         .await
         .map_err(HttpError)?;
 
-    repo_save_quote(
+    let outcome = repo_save_quote(
         &state.db,
         id,
         auth_user.id,
         payload.book_id,
         payload.chapter_id,
         &payload.quote_text,
-        Some(&card_url),
+        Some(&card_url_for(id)),
     )
     .await
     .map_err(HttpError)?;
 
+    let (status, id, saved) = match outcome {
+        QuoteSaveOutcome::Saved(id) => (StatusCode::CREATED, id, true),
+        QuoteSaveOutcome::Duplicate(existing) => (StatusCode::OK, existing, false),
+    };
     Ok((
-        StatusCode::CREATED,
+        status,
         Json(ApiResponse::success(serde_json::json!({
             "id": id,
-            "saved": true,
-            "image_card_url": card_url
+            "saved": saved,
+            "image_card_url": card_url_for(id)
         }))),
     ))
 }
@@ -204,9 +206,7 @@ pub async fn handle_save_quotes_batch(
     auth_user: AuthUser,
     Json(payload): Json<SaveQuotesBatchRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
-    payload
-        .validate()
-        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+    payload.validate().map_err(HttpError::from)?;
 
     let mut outcomes: Vec<Option<SaveQuoteOutcomeDto>> = vec![None; payload.items.len()];
     let mut accepted: Vec<(usize, (Uuid, Uuid, String))> = Vec::new();
@@ -229,8 +229,8 @@ pub async fn handle_save_quotes_batch(
         .map_err(HttpError)?;
     for ((index, _), result) in accepted.iter().zip(written) {
         outcomes[*index] = Some(match result {
-            BatchQuoteOutcome::Saved(id) => outcome(*index, "saved", Some(id), None),
-            BatchQuoteOutcome::Duplicate(id) => outcome(*index, "duplicate", Some(id), None),
+            QuoteSaveOutcome::Saved(id) => outcome(*index, "saved", Some(id), None),
+            QuoteSaveOutcome::Duplicate(id) => outcome(*index, "duplicate", Some(id), None),
         });
     }
 

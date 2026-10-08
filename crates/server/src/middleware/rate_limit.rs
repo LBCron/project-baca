@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use infra::verify_access_token;
+use infra::{verify_access_token, ServerConfig};
 use redis::AsyncCommands;
 use shared::{ApiResponse, AppError};
 use std::net::IpAddr;
@@ -56,39 +56,35 @@ pub fn public_policy(max_requests: u32) -> RateLimitPolicy {
     }
 }
 
-/// Client IP from headers. Proxy headers are honored only when the
-/// deployment sets `TRUST_PROXY_HEADERS=true` (edge overwrites them);
-/// otherwise every direct client shares the fallback bucket.
-pub fn client_ip_from_headers(headers: &HeaderMap, trusted_proxy: bool) -> String {
-    if !trusted_proxy {
-        return "127.0.0.1".to_string();
+/// Address every direct client shares when no trusted header is available.
+const FALLBACK_CLIENT_IP: &str = "127.0.0.1";
+
+/// Client IP from headers. Only the one header named by
+/// `TRUSTED_IP_HEADER` is consulted, and only when the deployment sets
+/// `TRUST_PROXY_HEADERS=true` because its edge overwrites that header. For a
+/// list-valued header such as `x-forwarded-for` the first parseable hop is
+/// the client, since a proxy without upstream trust replaces the list.
+/// Any other address header is ignored, so a client cannot choose its bucket.
+pub fn client_ip_from_headers(headers: &HeaderMap, server: &ServerConfig) -> String {
+    if !server.trust_proxy_headers {
+        return FALLBACK_CLIENT_IP.to_string();
     }
-    let single_valued = ["cf-connecting-ip", "x-real-ip"];
-    for name in single_valued {
-        if let Some(candidate) = headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .filter(|s| s.parse::<IpAddr>().is_ok())
-        {
-            return candidate.to_string();
-        }
-    }
-    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(candidate) = forwarded
-            .split(',')
-            .map(str::trim)
-            .find(|s| s.parse::<IpAddr>().is_ok())
-        {
-            return candidate.to_string();
-        }
-    }
-    "127.0.0.1".to_string()
+    headers
+        .get(server.trusted_ip_header.as_str())
+        .and_then(|v| v.to_str().ok())
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find(|hop| hop.parse::<IpAddr>().is_ok())
+        })
+        .unwrap_or(FALLBACK_CLIENT_IP)
+        .to_string()
 }
 
 /// Client IP for rate limiting (see [`client_ip_from_headers`]).
-pub fn extract_client_ip(req: &Request<Body>, trusted_proxy: bool) -> String {
-    client_ip_from_headers(req.headers(), trusted_proxy)
+pub fn extract_client_ip(req: &Request<Body>, server: &ServerConfig) -> String {
+    client_ip_from_headers(req.headers(), server)
 }
 
 fn set_limit_headers(headers: &mut HeaderMap, limit: i64, remaining: i64, reset: i64) {
@@ -167,7 +163,7 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req, state.config.server.trust_proxy_headers);
+    let ip = extract_client_ip(&req, &state.config.server);
     enforce(&state, AUTH_POLICY, &ip, req, next).await
 }
 
@@ -187,10 +183,7 @@ pub async fn ai_rate_limit_middleware(
         .map(|claims| claims.sub.to_string());
     let subject = match user_id {
         Some(id) => format!("user:{id}"),
-        None => format!(
-            "guest:{}",
-            extract_client_ip(&req, state.config.server.trust_proxy_headers)
-        ),
+        None => format!("guest:{}", extract_client_ip(&req, &state.config.server)),
     };
     enforce(&state, AI_POLICY, &subject, req, next).await
 }
@@ -202,7 +195,7 @@ pub async fn public_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req, state.config.server.trust_proxy_headers);
+    let ip = extract_client_ip(&req, &state.config.server);
     let policy = public_policy(state.config.server.public_rate_limit_per_minute);
     enforce(&state, policy, &ip, req, next).await
 }
@@ -219,20 +212,48 @@ mod tests {
             .expect("valid test request")
     }
 
-    #[test]
-    fn untrusted_mode_ignores_spoofed_headers() {
-        let req = request_with_ip("cf-connecting-ip", "203.0.113.7");
-        assert_eq!(extract_client_ip(&req, false), "127.0.0.1");
+    fn trusting(header: &str) -> ServerConfig {
+        ServerConfig {
+            trust_proxy_headers: true,
+            trusted_ip_header: header.to_string(),
+            ..ServerConfig::default()
+        }
     }
 
     #[test]
-    fn trusted_mode_honors_edge_headers() {
+    fn untrusted_mode_ignores_spoofed_headers() {
         let req = request_with_ip("cf-connecting-ip", "203.0.113.7");
-        assert_eq!(extract_client_ip(&req, true), "203.0.113.7");
-        let forwarded = request_with_ip("x-forwarded-for", "garbage, 198.51.100.4, 10.0.0.1");
-        assert_eq!(extract_client_ip(&forwarded, true), "198.51.100.4");
+        assert_eq!(
+            extract_client_ip(&req, &ServerConfig::default()),
+            FALLBACK_CLIENT_IP
+        );
+    }
+
+    #[test]
+    fn trusted_mode_reads_only_the_configured_header() {
+        let edge = trusting("cf-connecting-ip");
+        let req = request_with_ip("cf-connecting-ip", "203.0.113.7");
+        assert_eq!(extract_client_ip(&req, &edge), "203.0.113.7");
+
+        let spoofed = Request::builder()
+            .uri("/")
+            .header("x-real-ip", "203.0.113.9")
+            .header("x-forwarded-for", "203.0.113.10")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&spoofed, &edge), FALLBACK_CLIENT_IP);
+
         let bare = Request::builder().uri("/").body(Body::empty()).unwrap();
-        assert_eq!(extract_client_ip(&bare, true), "127.0.0.1");
+        assert_eq!(extract_client_ip(&bare, &edge), FALLBACK_CLIENT_IP);
+    }
+
+    #[test]
+    fn forwarded_for_takes_the_first_parseable_hop() {
+        let edge = trusting("x-forwarded-for");
+        let forwarded = request_with_ip("x-forwarded-for", "garbage, 198.51.100.4, 10.0.0.1");
+        assert_eq!(extract_client_ip(&forwarded, &edge), "198.51.100.4");
+        let real_ip_only = request_with_ip("x-real-ip", "198.51.100.4");
+        assert_eq!(extract_client_ip(&real_ip_only, &edge), FALLBACK_CLIENT_IP);
     }
 
     #[test]

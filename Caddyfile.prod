@@ -8,15 +8,22 @@
 {$DOMAIN} {
 	encode gzip
 
-	# Axum REST API + Swagger UI + OpenAPI JSON.
+	# Axum REST API. Swagger UI and the OpenAPI JSON are not mounted in
+	# production, so they get no route here.
+	#
+	# Client address: Caddy has no trusted_proxies configured, so it replaces
+	# X-Forwarded-For with the real peer address; the server reads only that
+	# header (TRUSTED_IP_HEADER=x-forwarded-for). Every other address header a
+	# client may send is stripped so it can never reach the API. If Cloudflare
+	# fronts this host, add trusted_proxies for its ranges and switch
+	# TRUSTED_IP_HEADER to cf-connecting-ip instead of removing it here.
 	handle /api/* {
-		reverse_proxy http://server:8080
-	}
-	handle /swagger-ui* {
-		reverse_proxy http://server:8080
-	}
-	handle /api-docs/* {
-		reverse_proxy http://server:8080
+		reverse_proxy http://server:8080 {
+			header_up -X-Real-IP
+			header_up -CF-Connecting-IP
+			header_up -True-Client-IP
+			header_up -Forwarded
+		}
 	}
 
 	# Leptos WASM SPA (static dist/, no Trunk dev server in prod).
@@ -48,8 +55,9 @@
 	}
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 
-	# header_up Host is preserved by default; trust it behind Cloudflare
-	# only with TRUST_PROXY_HEADERS=true on the server service.
+	# header_up Host is preserved by default. The server trusts the client
+	# address header only because TRUST_PROXY_HEADERS=true on the server
+	# service and this edge is the sole way in.
 	# tls {
 	# 	dns cloudflare {$CF_DNS_TOKEN}
 	# }

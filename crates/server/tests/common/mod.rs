@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Header the harness trusts for the client address. Tests set it to pick a
+/// rate-limit bucket or lockout key the way an edge proxy would.
+pub const CLIENT_IP_HEADER: &str = "cf-connecting-ip";
+
 pub struct TestHarness {
     pub app: Router,
     #[allow(dead_code)]
@@ -40,10 +44,11 @@ impl TestHarness {
     /// that exercise optional features (public rate cap, SMTP outage).
     #[allow(dead_code)]
     pub async fn with_config(adjust: impl FnOnce(&mut AppConfig)) -> Self {
-        // Tests simulate edge-provided IP headers, so proxy trust is on here
+        // Tests simulate the edge-provided IP header, so proxy trust is on here
         // (production keeps the default off unless the edge overwrites headers).
         let mut app_config = AppConfig::from_env().unwrap_or_default();
         app_config.server.trust_proxy_headers = true;
+        app_config.server.trusted_ip_header = CLIENT_IP_HEADER.to_string();
         adjust(&mut app_config);
         let config = Arc::new(app_config);
 

@@ -14,9 +14,9 @@ use axum::{
 };
 use domain::BookStatus;
 use infra::{
-    chapter_dropoff, entities::books, get_book_by_id, get_book_status, get_job_status,
-    list_books_for_admin, list_dlq_entries, publish_ingestion_job, replay_dlq_entry,
-    set_book_status,
+    chapter_dropoff, entities::books, get_book_by_id, get_book_for_admin, get_book_status,
+    get_job_status, list_books_for_admin, list_dlq_entries, publish_ingestion_job,
+    replay_dlq_entry, set_book_status,
 };
 use sea_orm::ActiveModelTrait;
 use sea_orm::Set;
@@ -114,8 +114,7 @@ pub async fn patch_book(
     Json(req): Json<AdminBookPatchRequest>,
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&state, &auth_user).await.map_err(HttpError)?;
-    req.validate()
-        .map_err(|e| HttpError(AppError::ValidationError(e.to_string())))?;
+    req.validate().map_err(HttpError::from)?;
     let next = BookStatus::from_str(&req.status).map_err(|e| HttpError(e.into()))?;
     let current_raw = get_book_status(&state.db, book_id)
         .await
@@ -132,11 +131,9 @@ pub async fn patch_book(
             .await
             .map_err(HttpError)?;
     }
-    let row = list_books_for_admin(&state.db, None, None, 100)
+    let row = get_book_for_admin(&state.db, book_id)
         .await
         .map_err(HttpError)?
-        .into_iter()
-        .find(|r| r.id == book_id)
         .ok_or_else(|| HttpError(AppError::NotFound("Book not found".to_string())))?;
     Ok((StatusCode::OK, Json(ApiResponse::success(row))))
 }

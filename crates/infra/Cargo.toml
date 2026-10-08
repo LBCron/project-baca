@@ -25,4 +25,5 @@ sha2 = { workspace = true }
 jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
+lettre = { workspace = true }
 async-trait = { workspace = true }

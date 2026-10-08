@@ -9,13 +9,15 @@ use axum::{
     Json, Router,
 };
 use infra::{
-    get_chapter_by_number, get_chapter_number, get_chapter_recap as query_chapter_recap,
-    get_tldr_cache,
+    ensure_book_published, get_chapter_by_number, get_chapter_number,
+    get_chapter_recap as query_chapter_recap, get_tldr_cache,
 };
 use shared::{ApiResponse, AppError, AtomicCardsDto, ChapterRecapDto};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Chapter id for a number or UUID reference. Both branches answer 404 for
+/// a book that is not published, so insights of drafts stay unreachable.
 async fn resolve_chapter(
     state: &Arc<AppState>,
     book_id: Uuid,
@@ -25,6 +27,7 @@ async fn resolve_chapter(
         let ch = get_chapter_by_number(&state.db, book_id, num).await?;
         Ok((ch.id, Some(num)))
     } else if let Ok(uuid) = Uuid::parse_str(chapter_ref) {
+        ensure_book_published(&state.db, book_id).await?;
         Ok((uuid, None))
     } else {
         Err(AppError::ValidationError(format!(

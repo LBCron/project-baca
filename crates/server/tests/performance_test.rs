@@ -134,7 +134,10 @@ async fn test_perf_auth_login_latency() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/login")
-            .header("cf-connecting-ip", format!("10.99.1.{}", (i % 250) + 1))
+            .header(
+                common::CLIENT_IP_HEADER,
+                format!("10.99.1.{}", (i % 250) + 1),
+            )
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&login_req).unwrap()))
             .unwrap();
@@ -186,7 +189,7 @@ async fn test_perf_auth_otp_verify_latency() {
             let req = Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/verify-otp")
-                .header("cf-connecting-ip", "10.99.2.250")
+                .header(common::CLIENT_IP_HEADER, "10.99.2.250")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&warm_req).unwrap()))
                 .unwrap();
@@ -214,7 +217,10 @@ async fn test_perf_auth_otp_verify_latency() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/verify-otp")
-            .header("cf-connecting-ip", format!("10.99.2.{}", (i % 250) + 1))
+            .header(
+                common::CLIENT_IP_HEADER,
+                format!("10.99.2.{}", (i % 250) + 1),
+            )
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&verify_req).unwrap()))
             .unwrap();

@@ -10,6 +10,7 @@ mod admin_test;
 mod api_boundary_test;
 mod auth_test;
 mod catalog_test;
+mod covers_test;
 mod database_test;
 mod integration_test;
 mod reliability_test;

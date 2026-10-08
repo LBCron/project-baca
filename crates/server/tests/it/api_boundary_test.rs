@@ -68,7 +68,7 @@ async fn test_api_boundary_malformed_json_payload_rejection() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", "10.0.0.1")
+        .header(common::CLIENT_IP_HEADER, "10.0.0.1")
         .header("content-type", "application/json")
         .body(Body::from(broken_json))
         .unwrap();
@@ -91,7 +91,7 @@ async fn test_api_boundary_empty_body_on_json_endpoint() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", "10.0.0.2")
+        .header(common::CLIENT_IP_HEADER, "10.0.0.2")
         .header("content-type", "application/json")
         .body(Body::empty())
         .unwrap();
@@ -159,7 +159,7 @@ async fn test_api_boundary_field_length_overflow_validation() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", "10.0.0.3")
+        .header(common::CLIENT_IP_HEADER, "10.0.0.3")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
@@ -189,7 +189,7 @@ async fn test_api_boundary_password_min_length_validation() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", "10.0.0.4")
+        .header(common::CLIENT_IP_HEADER, "10.0.0.4")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&payload).unwrap()))
         .unwrap();
@@ -238,5 +238,63 @@ async fn test_api_boundary_authorization_header_schemes() {
             .contains("Bearer expected"),
         "Should inform client that Bearer is required"
     );
+    harness.cleanup().await;
+}
+
+/// Search and filter strings are bounded before they reach the database:
+/// a 201-character query or an oversized filter is a structured 400 that
+/// names the field without echoing the value.
+#[tokio::test]
+async fn test_api_boundary_search_and_filter_length_caps() {
+    let harness = TestHarness::new().await;
+    let get = |uri: String| {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (resp, body) = harness
+        .send_json_request(get(format!("/api/v1/books/search?q={}", "a".repeat(201))))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+    assert!(body["error"]["details"]["q"].is_array());
+    assert!(
+        !body["error"]["message"].as_str().unwrap().contains("aaaa"),
+        "the submitted value is not echoed back"
+    );
+
+    let (resp, body) = harness
+        .send_json_request(get("/api/v1/books/search?q=a".to_string()))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]["details"]["q"].is_array());
+
+    let (resp, body) = harness
+        .send_json_request(get(format!(
+            "/api/v1/books/search?q=ab&language={}",
+            "x".repeat(11)
+        )))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]["details"]["language"].is_array());
+
+    for (filter, max) in [("tag", 50), ("theme", 50), ("language", 10)] {
+        let (resp, body) = harness
+            .send_json_request(get(format!(
+                "/api/v1/books?{filter}={}",
+                "t".repeat(max + 1)
+            )))
+            .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{filter}: {body}");
+        assert!(body["error"]["details"][filter].is_array(), "{filter}");
+    }
+
+    let (resp, body) = harness
+        .send_json_request(get(format!("/api/v1/books/search?q={}", "a".repeat(200))))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
     harness.cleanup().await;
 }

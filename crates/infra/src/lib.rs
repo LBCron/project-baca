@@ -13,7 +13,7 @@ pub mod storage;
 pub use ai::{build_embedding_provider, EmbeddingProvider};
 pub use config::{
     AiConfig, AppConfig, AuthConfig, DatabaseConfig, EmailConfig, RedisConfig, ServerConfig,
-    StorageConfig,
+    SmtpSecurity, StorageConfig,
 };
 pub use email::send_otp_email;
 pub use pool::{init_db_pool, init_redis_client};
@@ -24,14 +24,14 @@ pub use queue::{
 pub use repositories::{
     badge_repository::{list_badges, list_user_badges, seed_default_badges_if_empty},
     book_repository::{
-        chapter_dropoff, get_book_by_id, get_book_status, get_chapter_book_id,
-        get_chapter_by_number, get_chapter_number, get_offline_bundle, list_books,
-        list_books_for_admin, search_books, set_book_status,
+        chapter_dropoff, ensure_book_published, get_book_by_id, get_book_for_admin,
+        get_book_status, get_chapter_book_id, get_chapter_by_number, get_chapter_number,
+        get_offline_bundle, list_books, list_books_for_admin, search_books, set_book_status,
     },
     progress_repository::{get_active_progress, get_streak, record_heartbeat, update_progress},
     quote_repository::{
         get_chapter_recap, get_saved_quote_by_id, get_tldr_cache, list_saved_quotes, save_quote,
-        save_quotes_batch, search_quotes_by_embedding, BatchQuoteOutcome, QuoteSearchRow,
+        save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome, QuoteSearchRow,
         SavedQuoteDto,
     },
     user_repository::{

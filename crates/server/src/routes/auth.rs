@@ -49,7 +49,7 @@ fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    let ip = client_ip_from_headers(headers, state.config.server.trust_proxy_headers);
+    let ip = client_ip_from_headers(headers, &state.config.server);
     SessionMeta {
         device: domain::device_label(user_agent),
         ip_prefix: domain::ip_prefix(&ip),
@@ -182,7 +182,7 @@ pub async fn signup(
 
     // Per-IP signup cap: rotating the local part cannot bypass this, so one
     // client cannot burn SMTP quota or sender reputation at will.
-    let client_ip = client_ip_from_headers(&headers, state.config.server.trust_proxy_headers);
+    let client_ip = client_ip_from_headers(&headers, &state.config.server);
     let ip_key = format!("otp:signup:ip:{client_ip}");
     let ip_count: Result<i64, _> = redis_conn.incr(&ip_key, 1).await;
     if let Ok(c) = ip_count {
@@ -303,7 +303,7 @@ pub async fn login(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let client_ip = client_ip_from_headers(&headers, state.config.server.trust_proxy_headers);
+    let client_ip = client_ip_from_headers(&headers, &state.config.server);
 
     // Lockout check: pair (email, IP) lock after 5 failures, aggregate email
     // lock after 20 — 15 minutes each.
@@ -473,9 +473,17 @@ pub async fn logout(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let _ = revoke_refresh_token(&mut redis_conn, &req.refresh_token).await;
+    // The session record names the access token last issued with this
+    // refresh token; revoking it blacklists that token for its full lifetime.
+    let _ = revoke_refresh_token(
+        &mut redis_conn,
+        &req.refresh_token,
+        state.config.auth.access_expiry_minutes * 60,
+    )
+    .await;
 
-    // Blacklist the access token until its expiry when a header is present.
+    // Blacklist the presented access token too, if any: it may be newer than
+    // the one the session record names.
     if let Some(auth_val) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
             if let Ok(claims) = verify_access_token(token, state.config.jwt_secret()) {

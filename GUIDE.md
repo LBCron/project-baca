@@ -61,6 +61,7 @@ make migrate-status # Show applied migration history
 * **Swagger UI:** Interactive testing UI at `http://localhost:8080/swagger-ui`.
 * **OpenAPI Spec:** Raw JSON spec at `http://localhost:8080/api-docs/openapi.json`.
 * Schema definitions are compiled directly from shared DTOs in `crates/shared`.
+* Both are mounted only outside `APP_ENV=production`; the production edge has no route for them.
 
 ### Structured Logging & Observability
 * **Human-readable text:** Default output for local development.
@@ -68,8 +69,12 @@ make migrate-status # Show applied migration history
 * **Request Correlation:** The `request_id_middleware` mints a fresh UUID `x-request-id` per request (client-supplied values are ignored) across all spans and responses.
 
 ### Server Environment Notes
-* `PUBLIC_RATE_LIMIT_PER_MINUTE` caps unauthenticated catalog and insight reads per IP. Keep `0` locally (dev and in-memory tests share one fallback IP); production compose sets 600.
+* `PUBLIC_RATE_LIMIT_PER_MINUTE` caps unauthenticated catalog, cover, and insight reads per IP. Keep `0` locally (dev and in-memory tests share one fallback IP); production compose sets 600.
+* `TRUST_PROXY_HEADERS` + `TRUSTED_IP_HEADER`: with trust on, the client address is read from that one header only (default `x-forwarded-for`, which Caddy overwrites; `cf-connecting-ip` behind Cloudflare). Every other address header is ignored. The test harness trusts `cf-connecting-ip` and tests set it through `common::CLIENT_IP_HEADER`.
+* `SMTP_SECURITY`: `starttls` (default, the relay must offer STARTTLS; credentials are sent when `SMTP_USER` is set) or `none` (cleartext, Mailpit on 1025). Local `.env` needs `SMTP_SECURITY=none`, or OTP mail to Mailpit fails.
 * Signup fails closed with HTTP 502 when SMTP is unreachable, so Mailpit must be up for the OTP flow.
+* `GET /health` answers 503 with `status: degraded` when the process booted without a database connection; `GET /api/v1/health` reports Postgres and Redis individually.
+* `GET /api/v1/covers/{file}` serves cover images from the covers bucket; `cover_url` on book DTOs holds the stored key (`covers/<book uuid>.webp`) and the reader appends the file name to this route.
 
 ### Ingestion Worker (Python)
 ```bash

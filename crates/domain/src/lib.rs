@@ -64,7 +64,10 @@ pub fn merge_percentage(existing: Option<f32>, incoming: f32) -> f32 {
 
 // Publication lifecycle
 
-/// Legal book publication states.
+/// Legal book publication states. `Processing` names the ingestion phase
+/// between draft and published; the worker reports it on the job record and
+/// never writes it to the book row (the database only stores draft,
+/// published, archived), so no transition leads into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BookStatus {
     Draft,
@@ -106,8 +109,7 @@ impl BookStatus {
         }
         matches!(
             (self, next),
-            (Draft, Processing)
-                | (Processing, Published)
+            (Processing, Published)
                 | (Draft, Archived)
                 | (Processing, Archived)
                 | (Published, Archived)
@@ -318,7 +320,10 @@ mod tests {
     #[test]
     fn book_status_transitions_follow_lifecycle() {
         use BookStatus::{Archived, Draft, Processing, Published};
-        assert!(Draft.can_transition_to(Processing));
+        assert!(
+            !Draft.can_transition_to(Processing),
+            "processing is a job phase, never set on a book"
+        );
         assert!(Processing.can_transition_to(Published));
         assert!(Draft.can_transition_to(Archived));
         assert!(Published.can_transition_to(Archived));

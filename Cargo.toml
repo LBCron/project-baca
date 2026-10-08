@@ -45,6 +45,8 @@ sha2 = "0.10"
 jsonwebtoken = "9.3"
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# Same TLS stack as reqwest (rustls + webpki roots + ring), no OpenSSL.
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }
 async-trait = "0.1"
 mockall = "0.15"
 pretty_assertions = "1.4"

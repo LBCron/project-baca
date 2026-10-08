@@ -53,6 +53,38 @@ async fn test_owasp_security_headers_and_error_handling() {
         resp.headers().get("strict-transport-security").unwrap(),
         "max-age=31536000; includeSubDomains"
     );
+    assert!(
+        resp.headers().get(header::CACHE_CONTROL).is_none(),
+        "public probe carries no private cache policy"
+    );
+
+    // Auth responses and anything answered to a bearer are never cacheable.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"email": "nobody@example.com", "password": "wrong-password"})
+                .to_string(),
+        ))
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(
+        resp.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/books")
+        .header(header::AUTHORIZATION, "Bearer not-a-real-token")
+        .body(Body::empty())
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(
+        resp.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
 
     // Swagger UI needs inline scripts/styles, so its document CSP is relaxed
     // to same-origin + unsafe-inline while every other route stays strict.
@@ -84,7 +116,7 @@ async fn test_owasp_security_headers_and_error_handling() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", unique_test_ip())
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&invalid_signup).unwrap()))
         .unwrap();
@@ -108,7 +140,7 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
     let req = Request::builder()
         .method("GET")
         .uri("/health")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .body(Body::empty())
         .unwrap();
 
@@ -124,7 +156,7 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&dummy_login).unwrap()))
         .unwrap();
@@ -157,7 +189,7 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -170,7 +202,7 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
     let req2 = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
@@ -202,7 +234,7 @@ async fn test_owasp_login_brute_force_lockout() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/login")
-            .header("cf-connecting-ip", &client_ip)
+            .header(common::CLIENT_IP_HEADER, &client_ip)
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&bad_login).unwrap()))
             .unwrap();
@@ -217,7 +249,7 @@ async fn test_owasp_login_brute_force_lockout() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&bad_login).unwrap()))
         .unwrap();
@@ -322,7 +354,7 @@ async fn test_owasp_token_revocation_on_logout() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/logout")
-        .header("cf-connecting-ip", unique_test_ip())
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
         .header("authorization", format!("Bearer {access_token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&logout_req).unwrap()))
@@ -345,6 +377,142 @@ async fn test_owasp_token_revocation_on_logout() {
         .as_str()
         .unwrap()
         .contains("revoked"));
+
+    // Logout with only the refresh token: the session record names the
+    // access token issued with it, so that token dies as well.
+    let now = chrono::Utc::now().timestamp() as usize;
+    let (paired_access, jti) = infra::issue_access_token(
+        test_user_id,
+        "token_revoker@test.local",
+        "reader",
+        harness.state.config.jwt_secret(),
+        15,
+        now,
+    )
+    .unwrap();
+    let paired_refresh = infra::generate_refresh_token();
+    infra::store_refresh_token(
+        &mut redis_conn,
+        &paired_refresh,
+        test_user_id,
+        14,
+        infra::SessionMeta {
+            jti,
+            ..infra::SessionMeta::default()
+        },
+    )
+    .await
+    .unwrap();
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {paired_access}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        harness.send_request(req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/logout")
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&RefreshTokenRequest {
+                refresh_token: paired_refresh,
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(harness.send_request(req).await.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {paired_access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{body}");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("revoked"));
+    harness.cleanup().await;
+}
+
+/// Only the configured edge header picks a rate-limit bucket. Any other
+/// address header a client sends lands it in the shared fallback bucket, and
+/// cannot move a request that does carry the trusted header either.
+#[tokio::test]
+async fn test_untrusted_address_headers_do_not_pick_a_bucket() {
+    let harness = TestHarness::new().await;
+    if harness.live_only().await.is_none() {
+        panic!("live Redis required (db-up)");
+    }
+    let limit = server::middleware::rate_limit::AUTH_POLICY.max_requests;
+    let login = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header("content-type", "application/json")
+    };
+    let body = || {
+        Body::from(
+            serde_json::json!({"email": "nobody@example.com", "password": "wrong-password"})
+                .to_string(),
+        )
+    };
+    let remaining = |resp: &axum::http::Response<Body>| -> i64 {
+        resp.headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("auth responses carry x-ratelimit-remaining")
+    };
+
+    let baseline = harness.send_request(login().body(body()).unwrap()).await;
+    let spoofed_only = harness
+        .send_request(
+            login()
+                .header("x-forwarded-for", unique_test_ip())
+                .header("x-real-ip", unique_test_ip())
+                .body(body())
+                .unwrap(),
+        )
+        .await;
+    assert!(
+        remaining(&spoofed_only) <= remaining(&baseline),
+        "untrusted headers must not open a fresh bucket"
+    );
+
+    let edge_ip = unique_test_ip();
+    let trusted = harness
+        .send_request(
+            login()
+                .header(common::CLIENT_IP_HEADER, &edge_ip)
+                .body(body())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(remaining(&trusted), limit - 1);
+    let trusted_plus_spoof = harness
+        .send_request(
+            login()
+                .header(common::CLIENT_IP_HEADER, &edge_ip)
+                .header("x-forwarded-for", unique_test_ip())
+                .header("x-real-ip", unique_test_ip())
+                .body(body())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        remaining(&trusted_plus_spoof),
+        limit - 2,
+        "spoofed headers must not move a request out of the edge bucket"
+    );
     harness.cleanup().await;
 }
 
@@ -391,7 +559,7 @@ async fn test_owasp_revoke_all_sessions() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/revoke-all")
-        .header("cf-connecting-ip", unique_test_ip())
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
         .header("authorization", format!("Bearer {access_token}"))
         .body(Body::empty())
         .unwrap();
@@ -507,7 +675,7 @@ async fn test_owasp_timing_attack_mitigation_on_login() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header("cf-connecting-ip", &client_ip)
+        .header(common::CLIENT_IP_HEADER, &client_ip)
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&login_req).unwrap()))
         .unwrap();
@@ -534,7 +702,7 @@ async fn test_owasp_structured_validation_error_details() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/signup")
-        .header("cf-connecting-ip", &unique_test_ip())
+        .header(common::CLIENT_IP_HEADER, &unique_test_ip())
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&bad_req).unwrap()))
         .unwrap();
@@ -561,7 +729,7 @@ async fn test_public_rate_limit_caps_catalog_reads_when_configured() {
         Request::builder()
             .method("GET")
             .uri("/api/v1/books?limit=1")
-            .header("cf-connecting-ip", &ip)
+            .header(common::CLIENT_IP_HEADER, &ip)
             .body(Body::empty())
             .unwrap()
     };
@@ -580,7 +748,7 @@ async fn test_public_rate_limit_caps_catalog_reads_when_configured() {
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/progress/active")
-        .header("cf-connecting-ip", &ip)
+        .header(common::CLIENT_IP_HEADER, &ip)
         .body(Body::empty())
         .unwrap();
     let resp = harness.send_request(req).await;

@@ -167,7 +167,10 @@ pub async fn get_chapter_recap(
 
 // Saved Quotes Management & Vintage Quote Card
 
-/// Persist a user-selected quote to `saved_quotes`.
+/// Persists a user-selected quote to `saved_quotes`, or reports the identical
+/// quote the user already keeps for that chapter so a retried save is
+/// idempotent. Two concurrent first saves may both insert; that window is
+/// accepted over a unique index on free text.
 pub async fn save_quote(
     db: &DatabaseConnection,
     id: Uuid,
@@ -176,7 +179,12 @@ pub async fn save_quote(
     chapter_id: Uuid,
     quote_text: &str,
     image_card_url: Option<&str>,
-) -> Result<(), AppError> {
+) -> Result<QuoteSaveOutcome, AppError> {
+    if let Some(existing) =
+        find_saved_quote_duplicate(db, user_id, book_id, chapter_id, quote_text).await?
+    {
+        return Ok(QuoteSaveOutcome::Duplicate(existing));
+    }
     insert_quote(
         db,
         id,
@@ -186,7 +194,8 @@ pub async fn save_quote(
         quote_text,
         image_card_url,
     )
-    .await
+    .await?;
+    Ok(QuoteSaveOutcome::Saved(id))
 }
 
 /// One insert statement shared by the single save and the batch, so both
@@ -256,9 +265,9 @@ async fn find_saved_quote_duplicate<C: ConnectionTrait>(
         .map_err(|e| AppError::Internal(format!("Failed to check saved quote: {e}")))
 }
 
-/// What happened to one quote of a batch.
+/// What happened to one quote: written now, or already on the shelf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BatchQuoteOutcome {
+pub enum QuoteSaveOutcome {
     Saved(Uuid),
     Duplicate(Uuid),
 }
@@ -270,7 +279,7 @@ pub async fn save_quotes_batch(
     user_id: Uuid,
     items: &[(Uuid, Uuid, String)],
     card_url: impl Fn(Uuid) -> String,
-) -> Result<Vec<BatchQuoteOutcome>, AppError> {
+) -> Result<Vec<QuoteSaveOutcome>, AppError> {
     use sea_orm::TransactionTrait;
 
     let txn = db
@@ -282,7 +291,7 @@ pub async fn save_quotes_batch(
         if let Some(existing) =
             find_saved_quote_duplicate(&txn, user_id, *book_id, *chapter_id, text).await?
         {
-            outcomes.push(BatchQuoteOutcome::Duplicate(existing));
+            outcomes.push(QuoteSaveOutcome::Duplicate(existing));
             continue;
         }
         let id = Uuid::new_v4();
@@ -296,7 +305,7 @@ pub async fn save_quotes_batch(
             Some(&card_url(id)),
         )
         .await?;
-        outcomes.push(BatchQuoteOutcome::Saved(id));
+        outcomes.push(QuoteSaveOutcome::Saved(id));
     }
     txn.commit()
         .await

@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import html
 import io
 import json
 import logging
@@ -106,8 +107,10 @@ class _Sanitizer(HTMLParser):
             self.parts.append(f"</{tag}>")
 
     def handle_data(self, data: str) -> None:
+        # convert_charrefs decoded entities into text, so an encoded
+        # ``&lt;img onerror=...&gt;`` would otherwise be re-emitted as live markup.
         if not self.skip_depth:
-            self.parts.append(data)
+            self.parts.append(html.escape(data, quote=False))
 
 
 def sanitize_html(html: str) -> str:

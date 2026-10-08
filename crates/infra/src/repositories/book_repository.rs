@@ -297,15 +297,28 @@ pub async fn get_chapter_number(
     Ok(chapter.map(|c| c.chapter_number))
 }
 
-/// Retrieves single chapter content by chapter number.
+/// 404 unless the book exists and is published. Public reads that address
+/// a book without loading it go through here, so drafts and archived books
+/// stay invisible even to a caller holding their UUID.
+pub async fn ensure_book_published(db: &DatabaseConnection, book_id: Uuid) -> Result<(), AppError> {
+    if get_book_status(db, book_id).await? != "published" {
+        return Err(AppError::NotFound("Book is not published".to_string()));
+    }
+    Ok(())
+}
+
+/// Retrieves single chapter content by chapter number. Only chapters of a
+/// published book resolve; a draft or archived book answers 404.
 pub async fn get_chapter_by_number(
     db: &DatabaseConnection,
     book_id: Uuid,
     chapter_number: i32,
 ) -> Result<ChapterDetailDto, AppError> {
     let chapter = chapters::Entity::find()
+        .inner_join(books::Entity)
         .filter(chapters::Column::BookId.eq(book_id))
         .filter(chapters::Column::ChapterNumber.eq(chapter_number))
+        .filter(books::Column::Status.eq("published"))
         .one(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?
@@ -444,6 +457,30 @@ struct AdminBookRow {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl From<AdminBookRow> for AdminBookRowDto {
+    fn from(r: AdminBookRow) -> Self {
+        Self {
+            id: r.id,
+            title: r.title,
+            author: r.author,
+            language: r.language,
+            status: r.status,
+            chapter_count: r.chapter_count,
+            chunk_count: r.chunk_count,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        }
+    }
+}
+
+/// Columns of one curator row; the listing and the single-row lookup share
+/// it so both shapes stay identical.
+const ADMIN_ROW_SELECT: &str = r#"
+        SELECT b.id, b.title, b.author, b.language, b.status, b.created_at, b.updated_at,
+               (SELECT count(*) FROM chapters c WHERE c.book_id = b.id) AS chapter_count,
+               (SELECT count(*) FROM book_chunks k WHERE k.book_id = b.id) AS chunk_count
+        FROM books b"#;
+
 /// Every book regardless of status, newest first, with chapter and chunk
 /// counts; keyset-paginated on (created_at, id) by the cursor book.
 pub async fn list_books_for_admin(
@@ -452,17 +489,15 @@ pub async fn list_books_for_admin(
     cursor: Option<Uuid>,
     limit: u64,
 ) -> Result<Vec<AdminBookRowDto>, AppError> {
-    let sql = r#"
-        SELECT b.id, b.title, b.author, b.language, b.status, b.created_at, b.updated_at,
-               (SELECT count(*) FROM chapters c WHERE c.book_id = b.id) AS chapter_count,
-               (SELECT count(*) FROM book_chunks k WHERE k.book_id = b.id) AS chunk_count
-        FROM books b
+    let sql = format!(
+        r#"{ADMIN_ROW_SELECT}
         WHERE ($1::varchar IS NULL OR b.status = $1)
           AND ($2::uuid IS NULL
                OR (b.created_at, b.id) < (SELECT created_at, id FROM books WHERE id = $2))
         ORDER BY b.created_at DESC, b.id DESC
         LIMIT $3
-    "#;
+    "#
+    );
     let stmt = Statement::from_sql_and_values(
         sea_orm::DatabaseBackend::Postgres,
         sql,
@@ -476,20 +511,25 @@ pub async fn list_books_for_admin(
         .all(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to list books for admin: {e}")))?;
-    Ok(rows
-        .into_iter()
-        .map(|r| AdminBookRowDto {
-            id: r.id,
-            title: r.title,
-            author: r.author,
-            language: r.language,
-            status: r.status,
-            chapter_count: r.chapter_count,
-            chunk_count: r.chunk_count,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        })
-        .collect())
+    Ok(rows.into_iter().map(AdminBookRowDto::from).collect())
+}
+
+/// One curator row by id, in any status.
+pub async fn get_book_for_admin(
+    db: &DatabaseConnection,
+    book_id: Uuid,
+) -> Result<Option<AdminBookRowDto>, AppError> {
+    let sql = format!("{ADMIN_ROW_SELECT} WHERE b.id = $1");
+    let stmt = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        sql,
+        [sea_orm::Value::from(book_id)],
+    );
+    AdminBookRow::find_by_statement(stmt)
+        .one(db)
+        .await
+        .map(|row| row.map(AdminBookRowDto::from))
+        .map_err(|e| AppError::Database(format!("Failed to load book for admin: {e}")))
 }
 
 /// Current lifecycle status of any book, published or not.

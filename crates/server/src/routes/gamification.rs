@@ -44,14 +44,16 @@ pub async fn record_heartbeat(
     // availability: abuse still costs a valid session per hit and the
     // streak math caps daily gains.
     if let Ok(mut redis_conn) = state.get_redis_conn().await {
-        use redis::AsyncCommands;
+        use redis::{AsyncCommands, ExistenceCheck, SetExpiry, SetOptions};
         let farm_key = format!("heartbeat:min_interval:{}", auth.id);
-        let fresh: bool = redis_conn.set_nx(&farm_key, "1").await.unwrap_or(true);
-        if fresh {
-            let _: Result<(), _> = redis_conn
-                .expire(&farm_key, HEARTBEAT_MIN_INTERVAL_SECS as i64)
-                .await;
-        } else {
+        // One atomic SET NX EX: a crash between a bare SET NX and its EXPIRE
+        // would leave the key immortal and lock the reader out for good.
+        let gate = SetOptions::default()
+            .conditional_set(ExistenceCheck::NX)
+            .with_expiration(SetExpiry::EX(HEARTBEAT_MIN_INTERVAL_SECS));
+        let reply: Result<Option<String>, _> = redis_conn.set_options(&farm_key, "1", gate).await;
+        let fresh = reply.map(|set| set.is_some()).unwrap_or(true);
+        if !fresh {
             let ttl: i64 = redis_conn.ttl(&farm_key).await.unwrap_or(60);
             let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
             return Err(HttpError(AppError::RateLimited { retry_after }));

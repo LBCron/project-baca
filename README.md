@@ -78,7 +78,7 @@ make dev-web
 
 Once running:
 * **Web Reader PWA:** `http://localhost:3000`
-* **REST API & Documentation:** `http://localhost:8080/swagger-ui`
+* **REST API & Documentation:** `http://localhost:8080/swagger-ui` (development only; not mounted in production)
 
 ---
 

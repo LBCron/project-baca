@@ -999,3 +999,32 @@ async fn test_admin_dlq_replay_is_idempotent() {
     let _: () = redis.del(format!("job:{job_id}")).await.unwrap();
     harness.cleanup().await;
 }
+
+/// `processing` is an ingestion job phase, never a book status the database
+/// accepts, so a curator asking for it gets the lifecycle's 409 instead of
+/// a constraint violation, and the row is untouched.
+#[tokio::test]
+async fn test_admin_patch_refuses_processing_status() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let draft_id = seed_status_book(&harness, "draft").await;
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(draft_id, "processing", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
+    assert_eq!(json["error"]["code"], "CONFLICT");
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(draft_id, "banana", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{json}");
+
+    let still_draft = books::Entity::find_by_id(draft_id)
+        .one(&harness.state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_draft.status, "draft");
+    harness.cleanup().await;
+}

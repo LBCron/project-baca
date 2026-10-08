@@ -570,7 +570,7 @@ async fn test_guest_ai_burst_enforcement() {
         let req = Request::builder()
             .method("POST")
             .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
-            .header("cf-connecting-ip", &guest_ip)
+            .header(common::CLIENT_IP_HEADER, &guest_ip)
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
                 serde_json::json!({ "query": "foggy harbor", "limit": 2 }).to_string(),
@@ -1213,5 +1213,62 @@ async fn test_save_quotes_batch_outcomes_cap_and_auth() {
         .send_json_request(batch(serde_json::json!([{ "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": text }]), None))
         .await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
+}
+
+/// Saving the same quote twice keeps one row: the second call answers 200
+/// with the existing id instead of 201 with a duplicate.
+#[tokio::test]
+async fn test_single_quote_save_is_idempotent() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let text = format!("Idempotent quote {}", Uuid::new_v4());
+    let save = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/quotes/save")
+            .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "book_id": seeded.book_id,
+                    "chapter_id": seeded.chapter1_id,
+                    "quote_text": text
+                })
+                .to_string(),
+            ))
+            .expect("Valid request")
+    };
+
+    let (resp, first) = harness.send_json_request(save()).await;
+    assert_eq!(resp.status(), StatusCode::CREATED, "{first}");
+    assert_eq!(first["data"]["saved"], true);
+
+    let (resp, second) = harness.send_json_request(save()).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{second}");
+    assert_eq!(second["data"]["saved"], false);
+    assert_eq!(second["data"]["id"], first["data"]["id"]);
+    assert_eq!(
+        second["data"]["image_card_url"],
+        first["data"]["image_card_url"]
+    );
+
+    let list = Request::builder()
+        .method("GET")
+        .uri("/api/v1/quotes")
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .body(Body::empty())
+        .expect("Valid request");
+    let (resp, json) = harness.send_json_request(list).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let copies = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|q| q["quote_text"] == text)
+        .count();
+    assert_eq!(copies, 1, "exactly one row for the repeated quote");
     harness.cleanup().await;
 }

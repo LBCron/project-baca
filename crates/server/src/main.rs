@@ -118,7 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port()));
     info!("Server listening on http://{}", addr);
-    info!("OpenAPI Swagger UI available on http://{}/swagger-ui", addr);
+    if !config.is_production() {
+        info!("OpenAPI Swagger UI available on http://{}/swagger-ui", addr);
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

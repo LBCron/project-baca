@@ -159,7 +159,7 @@ async fn test_stress_rate_limit_saturation_and_shedding() {
         let req = Request::builder()
             .method("POST")
             .uri("/api/v1/auth/login")
-            .header("cf-connecting-ip", &spammer_ip)
+            .header(common::CLIENT_IP_HEADER, &spammer_ip)
             .header("content-type", "application/json")
             .body(Body::from(payload_bytes))
             .unwrap();
@@ -215,7 +215,7 @@ async fn test_stress_burst_traffic_ip_spread() {
             let req = Request::builder()
                 .method("GET")
                 .uri("/health")
-                .header("cf-connecting-ip", unique_ip)
+                .header(common::CLIENT_IP_HEADER, unique_ip)
                 .body(Body::empty())
                 .unwrap();
 

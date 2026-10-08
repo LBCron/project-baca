@@ -59,6 +59,7 @@ services:
       RUST_LOG: warn
       CORS_ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN}
       TRUST_PROXY_HEADERS: "true"
+      TRUSTED_IP_HEADER: ${TRUSTED_IP_HEADER:-x-forwarded-for}
       PUBLIC_RATE_LIMIT_PER_MINUTE: ${PUBLIC_RATE_LIMIT_PER_MINUTE:-600}
       JWT_SECRET: ${JWT_SECRET:?set a 32+ char secret}
       JWT_ACCESS_EXPIRY_MINUTES: 60
@@ -74,6 +75,7 @@ services:
       S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
       SMTP_HOST: ${SMTP_HOST:?set SMTP}
       SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?set SMTP}

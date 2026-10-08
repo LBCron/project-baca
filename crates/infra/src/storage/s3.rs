@@ -14,6 +14,13 @@ pub struct StorageService {
     bucket_covers: String,
 }
 
+/// One object read back from a bucket with the media type it was stored under.
+#[derive(Debug, Clone)]
+pub struct StoredObject {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
 impl StorageService {
     /// Builds the service from [`StorageConfig`], creating both buckets when
     /// absent (idempotent; concurrent creates resolve to success or
@@ -87,15 +94,32 @@ impl StorageService {
 
     /// Fetches raw bytes for `key` from the EPUB bucket (worker path).
     pub async fn get_epub(&self, key: &str) -> Result<Vec<u8>, AppError> {
-        self.get_object(&self.bucket_epubs.clone(), key).await
+        self.get_object(&self.bucket_epubs.clone(), key)
+            .await
+            .map(|object| object.bytes)
+    }
+
+    /// Fetches a cover image with its stored media type; `NotFound` when the
+    /// key is absent so the web route can answer 404.
+    pub async fn get_cover(&self, key: &str) -> Result<StoredObject, AppError> {
+        self.get_object(&self.bucket_covers.clone(), key).await
     }
 
     /// Best-effort delete from the EPUB bucket (orphan compensation when a
     /// later upload step fails; failures only surface as logs).
     pub async fn delete_epub(&self, key: &str) -> Result<(), AppError> {
+        self.delete_object(&self.bucket_epubs.clone(), key).await
+    }
+
+    /// Removes a cover image (re-ingestion cleanup and test teardown).
+    pub async fn delete_cover(&self, key: &str) -> Result<(), AppError> {
+        self.delete_object(&self.bucket_covers.clone(), key).await
+    }
+
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), AppError> {
         self.client
             .delete_object()
-            .bucket(self.bucket_epubs.clone())
+            .bucket(bucket)
             .key(key)
             .send()
             .await
@@ -122,7 +146,7 @@ impl StorageService {
         Ok(())
     }
 
-    async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>, AppError> {
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<StoredObject, AppError> {
         let output = self
             .client
             .get_object()
@@ -130,12 +154,24 @@ impl StorageService {
             .key(key)
             .send()
             .await
-            .map_err(|e| AppError::Internal(format!("Storage read failed: {e:?}")))?;
-        output
+            .map_err(|e| {
+                let service_error = e.into_service_error();
+                if service_error.is_no_such_key() {
+                    AppError::NotFound("Object not found".to_string())
+                } else {
+                    AppError::Internal(format!("Storage read failed: {service_error:?}"))
+                }
+            })?;
+        let content_type = output.content_type().map(str::to_string);
+        let bytes = output
             .body
             .collect()
             .await
             .map(|data| data.into_bytes().to_vec())
-            .map_err(|e| AppError::Internal(format!("Storage body read failed: {e:?}")))
+            .map_err(|e| AppError::Internal(format!("Storage body read failed: {e:?}")))?;
+        Ok(StoredObject {
+            bytes,
+            content_type,
+        })
     }
 }

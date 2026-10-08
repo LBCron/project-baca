@@ -2,4 +2,4 @@
 
 pub mod s3;
 
-pub use s3::StorageService;
+pub use s3::{StorageService, StoredObject};

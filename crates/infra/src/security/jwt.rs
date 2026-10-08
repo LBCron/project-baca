@@ -469,22 +469,30 @@ async fn resolve_consumed_token(
     })
 }
 
-/// Revokes an active refresh token from Redis
+/// Revokes an active refresh token and blacklists the access token last
+/// issued with it, so a logout that carries no `Authorization` header still
+/// ends the whole session.
 pub async fn revoke_refresh_token(
     redis: &mut redis::aio::MultiplexedConnection,
     token: &str,
+    access_ttl_seconds: u64,
 ) -> Result<(), AppError> {
     let redis_key = refresh_key(token);
+    let hash = token_hash(token);
     let user_id_str: Option<String> = redis.get(&redis_key).await.unwrap_or(None);
+    if let Some(record) = read_session_record(redis, &hash).await {
+        blacklist_access_token(redis, record.jti, access_ttl_seconds).await?;
+    }
     let _: () = redis
         .del(&redis_key)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to revoke refresh token: {e}")))?;
+    let _: Result<(), _> = redis.del(session_key(&hash)).await;
 
     if let Some(uid_str) = user_id_str {
         if let Ok(uid) = Uuid::parse_str(&uid_str) {
             let user_set_key = format!("user_refresh_tokens:{uid}");
-            let _: Result<(), _> = redis.srem(&user_set_key, token_hash(token)).await;
+            let _: Result<(), _> = redis.srem(&user_set_key, &hash).await;
         }
     }
 

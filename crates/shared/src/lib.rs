@@ -310,20 +310,31 @@ pub struct OfflineBundleDto {
     pub chapters: Vec<ChapterDetailDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Filter bounds match the column widths they are compared against
+/// (`language` VARCHAR(10), `primary_theme` and `tags.name` VARCHAR(50)).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BookCatalogQuery {
     pub cursor: Option<Uuid>,
     pub limit: Option<u64>,
+    #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
     pub language: Option<String>,
+    #[validate(length(max = 50, message = "Theme filter must not exceed 50 characters"))]
     pub theme: Option<String>,
+    #[validate(length(max = 50, message = "Tag filter must not exceed 50 characters"))]
     pub tag: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BookSearchQuery {
+    #[validate(length(
+        min = 2,
+        max = 200,
+        message = "Search query must be between 2 and 200 characters"
+    ))]
     pub q: String,
+    #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
     pub language: Option<String>,
     pub limit: Option<u64>,
 }

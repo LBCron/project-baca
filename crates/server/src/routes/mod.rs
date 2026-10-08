@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod auth;
 pub mod books;
+pub mod covers;
 pub mod gamification;
 pub mod insights;
 pub mod progress;
@@ -13,6 +14,7 @@ pub use auth::{auth_routes, user_routes};
 pub use books::{
     books_routes, get_book, get_chapter, get_offline_bundle, list_books, search_books,
 };
+pub use covers::{covers_routes, get_cover};
 pub use gamification::{
     gamification_routes, get_my_streak, list_badges, list_user_badges, record_heartbeat,
 };

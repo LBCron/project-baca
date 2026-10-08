@@ -109,18 +109,26 @@ impl GeminiEmbeddingProvider {
 
     fn embed_url(&self) -> String {
         format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:embedContent?key={}",
-            self.model, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:embedContent",
+            self.model
         )
     }
 
     fn batch_embed_url(&self) -> String {
         format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:batchEmbedContents?key={}",
-            self.model, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:batchEmbedContents",
+            self.model
         )
     }
+
+    /// The key travels in a header, never in the URL: request errors and
+    /// access logs print the URL.
+    fn post(&self, url: String) -> reqwest::RequestBuilder {
+        self.client.post(url).header(API_KEY_HEADER, &self.api_key)
+    }
 }
+
+const API_KEY_HEADER: &str = "x-goog-api-key";
 
 #[async_trait]
 impl EmbeddingProvider for GeminiEmbeddingProvider {
@@ -139,7 +147,6 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
         };
 
         let response = self
-            .client
             .post(self.embed_url())
             .json(&body)
             .send()
@@ -186,7 +193,6 @@ impl EmbeddingProvider for GeminiEmbeddingProvider {
         let body = GeminiBatchEmbedRequest { requests };
 
         let response = self
-            .client
             .post(self.batch_embed_url())
             .json(&body)
             .send()
@@ -339,6 +345,33 @@ mod tests {
             dimension: 768,
         };
         assert!(GeminiEmbeddingProvider::new(&config).is_err());
+    }
+
+    #[test]
+    fn test_gemini_request_keeps_key_out_of_url() {
+        let config = AiConfig {
+            provider: "gemini".to_string(),
+            api_key: "secret-key-123".to_string(),
+            model_name: "gemini-embedding-2".to_string(),
+            dimension: 768,
+        };
+        let provider = GeminiEmbeddingProvider::new(&config).expect("key configured");
+        assert!(!provider.embed_url().contains("secret-key-123"));
+        assert!(!provider.batch_embed_url().contains("secret-key-123"));
+        assert!(!provider.embed_url().contains("key="));
+
+        let request = provider
+            .post(provider.embed_url())
+            .build()
+            .expect("request builds");
+        assert!(!request.url().as_str().contains("secret-key-123"));
+        assert_eq!(
+            request
+                .headers()
+                .get(API_KEY_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("secret-key-123")
+        );
     }
 
     #[test]

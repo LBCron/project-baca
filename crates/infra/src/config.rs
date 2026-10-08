@@ -13,10 +13,14 @@ pub struct ServerConfig {
     pub env: String,
     pub cors_allowed_origins: Vec<String>,
     pub log_format: String,
-    /// Trust `CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For` for rate
-    /// limiting. Keep false unless the edge proxy overwrites these headers
-    /// (spoofable by direct clients otherwise).
+    /// Read the client address from [`Self::trusted_ip_header`] for rate
+    /// limiting, lockouts, and session records. Keep false unless the edge
+    /// proxy overwrites that header (spoofable by direct clients otherwise).
     pub trust_proxy_headers: bool,
+    /// The one header the edge proxy sets with the real client address
+    /// (lowercase). Every other address header is ignored even when proxies
+    /// are trusted, so a client cannot pick its own bucket.
+    pub trusted_ip_header: String,
     /// Per-IP cap for unauthenticated catalog and insight reads. Zero disables
     /// the limiter (dev stack and in-memory tests share one fallback IP);
     /// production sets a positive value.
@@ -35,6 +39,7 @@ impl Default for ServerConfig {
             ],
             log_format: "text".to_string(),
             trust_proxy_headers: false,
+            trusted_ip_header: "x-forwarded-for".to_string(),
             public_rate_limit_per_minute: 0,
         }
     }
@@ -121,6 +126,30 @@ impl Default for StorageConfig {
     }
 }
 
+/// How the SMTP session is protected on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SmtpSecurity {
+    /// Plain connection upgraded with STARTTLS; the relay must offer it.
+    #[default]
+    StartTls,
+    /// Cleartext for local relays such as Mailpit; never for production.
+    None,
+}
+
+impl std::str::FromStr for SmtpSecurity {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, AppError> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "starttls" => Ok(Self::StartTls),
+            "none" => Ok(Self::None),
+            other => Err(AppError::Internal(format!(
+                "SMTP_SECURITY must be 'starttls' or 'none', got '{other}'"
+            ))),
+        }
+    }
+}
+
 /// Transactional email configuration (Mailpit / SMTP)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmailConfig {
@@ -130,6 +159,7 @@ pub struct EmailConfig {
     pub smtp_password: String,
     pub smtp_from_email: String,
     pub smtp_from_name: String,
+    pub smtp_security: SmtpSecurity,
 }
 
 impl Default for EmailConfig {
@@ -141,6 +171,7 @@ impl Default for EmailConfig {
             smtp_password: String::new(),
             smtp_from_email: "no-reply@projectbaca.local".to_string(),
             smtp_from_name: "Project Baca".to_string(),
+            smtp_security: SmtpSecurity::StartTls,
         }
     }
 }
@@ -209,6 +240,11 @@ impl AppConfig {
         let trust_proxy_headers = env::var("TRUST_PROXY_HEADERS")
             .map(|v| matches!(v.to_lowercase().as_str(), "true" | "1" | "yes"))
             .unwrap_or(default_server.trust_proxy_headers);
+        let trusted_ip_header = env::var("TRUSTED_IP_HEADER")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .unwrap_or(default_server.trusted_ip_header);
         let public_rate_limit_per_minute = env::var("PUBLIC_RATE_LIMIT_PER_MINUTE")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -221,6 +257,7 @@ impl AppConfig {
             cors_allowed_origins,
             log_format,
             trust_proxy_headers,
+            trusted_ip_header,
             public_rate_limit_per_minute,
         };
 
@@ -254,13 +291,16 @@ impl AppConfig {
         let redis = RedisConfig { url: redis_url };
 
         let jwt_secret = env::var("JWT_SECRET").unwrap_or(default_auth.jwt_secret.clone());
-        // Fail closed: a default or short secret in production would let anyone
-        // forge tokens, including admin ones.
-        if server.env.eq_ignore_ascii_case("production")
+        // Fail closed: a default or short secret would let anyone forge tokens,
+        // including admin ones. Trusting proxy headers marks a deployment that
+        // sits behind an edge, so it is held to the production rule too.
+        let internet_facing =
+            server.env.eq_ignore_ascii_case("production") || server.trust_proxy_headers;
+        if internet_facing
             && (jwt_secret == AuthConfig::default().jwt_secret || jwt_secret.len() < 32)
         {
             panic!(
-                "JWT_SECRET must be set to a unique value of at least 32 characters in production"
+                "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true"
             );
         }
         let access_expiry = env::var("JWT_ACCESS_EXPIRY_MINUTES")
@@ -314,6 +354,10 @@ impl AppConfig {
         let smtp_password = env::var("SMTP_PASSWORD").unwrap_or(default_email.smtp_password);
         let smtp_from_email = env::var("SMTP_FROM_EMAIL").unwrap_or(default_email.smtp_from_email);
         let smtp_from_name = env::var("SMTP_FROM_NAME").unwrap_or(default_email.smtp_from_name);
+        let smtp_security = match env::var("SMTP_SECURITY") {
+            Ok(value) => value.parse()?,
+            Err(_) => default_email.smtp_security,
+        };
 
         let email = EmailConfig {
             smtp_host,
@@ -322,6 +366,7 @@ impl AppConfig {
             smtp_password,
             smtp_from_email,
             smtp_from_name,
+            smtp_security,
         };
 
         let ai_provider = env::var("EMBEDDING_PROVIDER")
@@ -394,7 +439,9 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
         assert!(!config.server.trust_proxy_headers);
+        assert_eq!(config.server.trusted_ip_header, "x-forwarded-for");
         assert_eq!(config.server.public_rate_limit_per_minute, 0);
+        assert_eq!(config.email.smtp_security, SmtpSecurity::StartTls);
         assert_eq!(config.database.max_connections, 20);
         assert_eq!(config.database.min_connections, 5);
         assert_eq!(config.auth.access_expiry_minutes, 1440);
@@ -418,6 +465,16 @@ mod tests {
             config.jwt_secret(),
             "super-secret-jwt-key-replace-with-at-least-32-random-characters"
         );
+    }
+
+    #[test]
+    fn smtp_security_parses_known_modes_only() {
+        assert_eq!(
+            " StartTLS ".parse::<SmtpSecurity>().unwrap(),
+            SmtpSecurity::StartTls
+        );
+        assert_eq!("none".parse::<SmtpSecurity>().unwrap(), SmtpSecurity::None);
+        assert!("ssl".parse::<SmtpSecurity>().is_err());
     }
 
     #[test]
