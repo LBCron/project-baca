@@ -1,0 +1,13 @@
+{
+  "runs": [
+    {
+      "date": "2026-10-08T11:16:44.725997+00:00",
+      "input_tokens": 454402,
+      "output_tokens": 256926,
+      "files": 198,
+      "note": "Gemini passes + 2 reported subagents; chunk 2 subagent usage unknown (rate-limited), counted 0"
+    }
+  ],
+  "total_input_tokens": 454402,
+  "total_output_tokens": 256926
+}
