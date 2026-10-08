@@ -79,7 +79,7 @@ fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
     let lit = days.clamp(0, 7) as usize;
     let today_done = streak.today_seconds >= streak.daily_threshold_seconds;
     view! {
-        <section class="streak-card" aria-label="Streak">
+        <section class="streak-card" aria-label=move || lang.get().text("streak_label")>
             <div class="flame" aria-hidden="true">{icons::flame()}</div>
             <div class="streak-body">
                 <span class="count">{move || lang.get().text_with("streak_days", "n", &days.to_string())}</span>

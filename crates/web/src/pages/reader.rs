@@ -121,7 +121,7 @@ fn TypeSheet(prefs: RwSignal<ReaderPrefs>) -> impl IntoView {
     view! {
         <section class="type-sheet" aria-label=move || lang.get().text("reader_settings")>
             <div class="sheet-grip" aria-hidden="true"></div>
-            <div class="swatches" role="radiogroup" aria-label="Theme">
+            <div class="swatches" role="radiogroup" aria-label=move || lang.get().text("reading_theme")>
                 {ReadingTheme::ALL.iter().map(|t| {
                     let t = *t;
                     let active = move || prefs.get().theme == t;

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Rotaria">
+  <title>Rotaria</title>
+  <rect width="64" height="64" rx="14" fill="#F9F6F0"/>
+  <g transform="translate(8 8)" fill="none" stroke="#2B2625" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 22 24 9l18 13"/>
+    <path d="M11 22v17M37 22v17M11 22h26"/>
+    <circle cx="24" cy="31" r="8.5" stroke-width="2.6"/>
+    <path d="M24 22.5v17M15.5 31h17" stroke-width="2.2"/>
+    <path d="M4 44c3.3-2.4 6.7-2.4 10 0s6.7 2.4 10 0 6.7-2.4 10 0 6.7 2.4 10 0" stroke-width="2.4"/>
+  </g>
+  <circle cx="32" cy="39" r="3.2" fill="#9D5A3C"/>
+</svg>

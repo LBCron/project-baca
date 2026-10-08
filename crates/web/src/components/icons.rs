@@ -25,6 +25,35 @@ fn icon(path: &'static str, filled: bool) -> impl IntoView {
     }
 }
 
+/// Simplified watermill barn: seven strokes that stay legible at 24 px,
+/// drawn in the current text color with a terracotta hub.
+pub fn brand_mark() -> impl IntoView {
+    view! {
+        <svg
+            class="brand-mark"
+            viewBox="0 0 48 48"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            focusable="false"
+        >
+            <path d="M6 22 24 9l18 13"/>
+            <path d="M11 22v17M37 22v17M11 22h26"/>
+            <circle cx="24" cy="31" r="8.5" stroke-width="2.4"/>
+            <path d="M24 22.5v17M15.5 31h17M18 25l12 12M30 25 18 37" stroke-width="1.9"/>
+            <path d="M4 44c3.3-2.4 6.7-2.4 10 0s6.7 2.4 10 0 6.7-2.4 10 0 6.7 2.4 10 0" stroke-width="2.2"/>
+            <circle cx="24" cy="31" r="2.8" fill="var(--accent)" stroke="none"/>
+        </svg>
+    }
+}
+
+pub fn arrow_down() -> impl IntoView {
+    icon("M12 5v14m-6-6 6 6 6-6", false)
+}
+
 pub fn home() -> impl IntoView {
     icon(
         "M3 11 12 4l9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z",

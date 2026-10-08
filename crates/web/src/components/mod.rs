@@ -1,3 +1,4 @@
+pub mod anchor;
 pub mod auth;
 pub mod book_card;
 pub mod header;

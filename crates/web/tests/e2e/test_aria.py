@@ -18,7 +18,7 @@ def test_aria_home_structure(clean_page: Page):
         - navigation "Main":
           - link "Catalog":
             - /url: /
-          - link "Shelf":
+          - link "My shelf":
             - /url: /me
           - link "How it works":
             - /url: /#cara-kerja

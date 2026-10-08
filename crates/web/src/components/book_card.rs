@@ -1,5 +1,6 @@
 //! Catalog card and the typographic cover used when a book has no image.
 
+use crate::api;
 use crate::components::icons;
 use crate::i18n::use_lang;
 use leptos::prelude::*;
@@ -24,14 +25,19 @@ pub fn Cover(
     #[prop(optional)] badge: Option<String>,
 ) -> impl IntoView {
     let tint = cover_tint(&title);
-    let has_image = !cover_url.trim().is_empty();
-    // The typographic plate always renders beneath the image, so a cover
-    // that is slow or fails to load shows the title instead of a blank
-    // rectangle, without any load or error handler.
+    // The typographic plate always renders beneath the artwork. A CSS
+    // background that fails to load paints nothing, so the title shows
+    // through without a broken-image glyph and without an error handler.
+    let art = api::asset_url(&cover_url).map(|src| {
+        format!(
+            "background-image: url(\"{}\")",
+            src.replace('"', "%22").replace(')', "%29")
+        )
+    });
     view! {
         <div class="cover" style=format!("--cover-tint: {tint}")>
             <span>{title}</span>
-            {has_image.then(|| view! { <img src=cover_url alt="" loading="lazy" decoding="async"/> })}
+            {art.map(|style| view! { <span class="cover-art" style=style aria-hidden="true"></span> })}
             {badge.map(|label| view! {
                 <span class="cover-badge" role="img" aria-label=label>{icons::download()}</span>
             })}

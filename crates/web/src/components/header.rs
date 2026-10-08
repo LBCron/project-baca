@@ -1,11 +1,18 @@
 //! Site header: brand, desktop nav, language and theme toggles, account.
 
+use crate::components::anchor::scroll_to_hash;
 use crate::components::icons;
 use crate::components::session::use_session;
 use crate::i18n::{apply_lang, use_lang, Lang};
 use crate::theme::ShellTheme;
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
+
+pub const HOW_IT_WORKS_ID: &str = "cara-kerja";
+
+fn current(active: bool) -> Option<&'static str> {
+    active.then_some("page")
+}
 
 #[component]
 pub fn SiteHeader() -> impl IntoView {
@@ -14,19 +21,33 @@ pub fn SiteHeader() -> impl IntoView {
     let location = use_location();
     let theme =
         use_context::<RwSignal<ShellTheme>>().unwrap_or_else(|| RwSignal::new(ShellTheme::load()));
-    let current = move |path: &str| (location.pathname.get() == path).then_some("page");
+
+    let at_home = move || location.pathname.get() == "/";
+    let at_how_it_works =
+        move || at_home() && location.hash.get().trim_start_matches('#') == HOW_IT_WORKS_ID;
+    let on_catalog =
+        move || (at_home() && !at_how_it_works()) || location.pathname.get().starts_with("/book/");
+    let on_shelf = move || location.pathname.get() == "/me";
 
     view! {
         <header class="site-header">
             <div class="container site-header-inner">
                 <a href="/" class="brand-title" aria-label="Rotaria">
-                    <img src="/assets/rotaria-windmill.svg" alt="" class="brand-mark"/>
+                    {icons::brand_mark()}
                     <span>"Rotaria"</span>
                 </a>
-                <nav class="nav-links" aria-label="Main">
-                    <a href="/" class="nav-link" aria-current=move || current("/")>{move || lang.get().text("catalog")}</a>
-                    <a href="/me" class="nav-link" aria-current=move || current("/me")>{move || lang.get().text("nav_shelf")}</a>
-                    <a href="/#cara-kerja" class="nav-link">{move || lang.get().text("how_it_works")}</a>
+                <nav class="nav-links" aria-label=move || lang.get().text("nav_main")>
+                    <a href="/" class="nav-link" aria-current=move || current(on_catalog())>{move || lang.get().text("catalog")}</a>
+                    <a href="/me" class="nav-link" aria-current=move || current(on_shelf())>{move || lang.get().text("nav_shelf_long")}</a>
+                    <a
+                        href="/#cara-kerja"
+                        class="nav-link"
+                        aria-current=move || current(at_how_it_works())
+                        on:click=move |_| request_animation_frame(|| scroll_to_hash(HOW_IT_WORKS_ID))
+                    >
+                        <span>{move || lang.get().text("how_it_works")}</span>
+                        {icons::arrow_down()}
+                    </a>
                 </nav>
                 <div class="header-tools">
                     <div class="lang-toggle" role="group" aria-label=move || lang.get().text("language")>

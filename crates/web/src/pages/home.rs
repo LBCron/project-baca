@@ -3,6 +3,7 @@
 //! "how it works" band.
 
 use crate::api;
+use crate::components::anchor::{reveal, scroll_to_location_hash};
 use crate::components::book_card::{BookCard, Cover, SkeletonCard};
 use crate::components::icons;
 use crate::components::progress::{ProgressBar, ProgressRing};
@@ -202,6 +203,20 @@ pub fn HomePage() -> impl IntoView {
     let (quick, set_quick) = signal(None::<Quick>);
     let (resume, set_resume) = signal(None::<Resume>);
     let hour = js_sys::Date::new_0().get_hours();
+    let search_ref = NodeRef::<leptos::html::Input>::new();
+    let first_load = StoredValue::new(true);
+
+    // The search tab lands here with `?search=1`; `autofocus` only works
+    // once per document, so focus and reveal the field explicitly.
+    Effect::new(move || {
+        if !wants_search() {
+            return;
+        }
+        if let Some(input) = search_ref.get() {
+            let _ = input.focus();
+            reveal(&input);
+        }
+    });
 
     let load_page = move |reset: bool| {
         let gen = generation.get_untracked() + 1;
@@ -222,7 +237,7 @@ pub fn HomePage() -> impl IntoView {
             })
             .await
             .unwrap_or_default();
-            if generation.get_untracked() != gen {
+            if generation.try_get_untracked() != Some(gen) {
                 return;
             }
             set_exhausted.set((page.len() as u64) < PAGE_SIZE);
@@ -235,6 +250,10 @@ pub fn HomePage() -> impl IntoView {
                 set_books.update(|all| all.extend(page));
             }
             set_loading.set(false);
+            if first_load.try_get_value() == Some(true) {
+                first_load.set_value(false);
+                request_animation_frame(scroll_to_location_hash);
+            }
         });
     };
 
@@ -250,7 +269,7 @@ pub fn HomePage() -> impl IntoView {
             })
             .await
             .unwrap_or_default();
-            if generation.get_untracked() != gen {
+            if generation.try_get_untracked() != Some(gen) {
                 return;
             }
             set_exhausted.set(true);
@@ -264,7 +283,7 @@ pub fn HomePage() -> impl IntoView {
         set_query.set(value.clone());
         set_timeout(
             move || {
-                if query.get_untracked() != value {
+                if query.try_get_untracked() != Some(value.clone()) {
                     return;
                 }
                 if value.trim().len() < 2 {
@@ -375,7 +394,7 @@ pub fn HomePage() -> impl IntoView {
                             id="catalog-search"
                             type="search"
                             placeholder=move || lang.get().text("search_ph")
-                            autofocus=wants_search()
+                            node_ref=search_ref
                             prop:value=move || query.get()
                             on:input=on_search
                         />

@@ -67,12 +67,18 @@ async fn upload_epub(file: web_sys::File, title: String, author: String) -> Resu
         .json::<shared::ApiResponse<shared::UploadBookResponseDto>>()
         .await
         .map_err(|e| e.to_string())?;
-    envelope.data.map(|d| d.job_id).ok_or_else(|| {
-        envelope
-            .error
-            .map(|e| e.message)
-            .unwrap_or_else(|| "upload rejected".to_string())
-    })
+    envelope
+        .data
+        .map(|d| d.job_id)
+        .ok_or_else(|| envelope.error.map(|e| e.message).unwrap_or_default())
+}
+
+fn upload_error(message: &str, lang: &crate::i18n::Lang) -> String {
+    if message.is_empty() {
+        lang.text("upload_rejected")
+    } else {
+        message.to_string()
+    }
 }
 
 fn phase_index(status: &str) -> usize {
@@ -162,11 +168,11 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
                 Ok(job_id) => {
                     match api::admin_job(&job_id).await {
                         Ok(status) => job.set(Some(status)),
-                        Err(e) => toasts.error(e),
+                        Err(e) => toasts.error(upload_error(&e, &lang.get_untracked())),
                     }
                     poll(job_id);
                 }
-                Err(e) => toasts.error(e),
+                Err(e) => toasts.error(upload_error(&e, &lang.get_untracked())),
             }
             set_busy.set(false);
         });

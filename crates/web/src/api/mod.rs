@@ -20,6 +20,20 @@ pub fn api_base() -> &'static str {
     option_env!("API_BASE_URL").unwrap_or("http://localhost:8080/api/v1")
 }
 const TOKEN_KEY: &str = "baca_access_token";
+
+/// Resolves a stored asset reference to something an `<img>` or a CSS
+/// `url()` can fetch: absolute URLs and root paths pass through, bucket keys
+/// such as `covers/<id>.webp` are served by the API.
+pub fn asset_url(reference: &str) -> Option<String> {
+    let value = reference.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with("http://") || value.starts_with("https://") || value.starts_with('/') {
+        return Some(value.to_string());
+    }
+    Some(format!("{}/{value}", api_base()))
+}
 const REFRESH_KEY: &str = "baca_refresh_token";
 
 fn storage() -> Option<web_sys::Storage> {
