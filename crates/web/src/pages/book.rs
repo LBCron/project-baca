@@ -60,8 +60,9 @@ pub fn BookPage() -> impl IntoView {
     let quotes_open = RwSignal::new(false);
     let cards_open = RwSignal::new(false);
 
-    {
+    let load = move || {
         let id = book_id();
+        set_error.set(None);
         spawn_local(async move {
             match api::book_detail(&id).await {
                 Ok(detail) => {
@@ -76,7 +77,8 @@ pub fn BookPage() -> impl IntoView {
                 Err(e) => set_error.set(Some(e)),
             }
         });
-    }
+    };
+    load();
 
     let save_offline = move |_| {
         let id = book_id();
@@ -151,12 +153,27 @@ pub fn BookPage() -> impl IntoView {
                             </div>
                         </div>
                     }.into_any(),
-                    Some(_) => view! {
-                        <div class="empty-state">
-                            <p>{move || lang.get().text("not_found")}</p>
-                            <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
-                        </div>
-                    }.into_any(),
+                    Some(err) => {
+                        let not_found = api::is_not_found(&err);
+                        let message = if not_found {
+                            "not_found"
+                        } else if api::is_online() {
+                            "book_load_failed"
+                        } else {
+                            "offline_notice"
+                        };
+                        view! {
+                            <div class="empty-state" role=if not_found { "status" } else { "alert" }>
+                                <p>{move || lang.get().text(message)}</p>
+                                <div class="sheet-actions centered">
+                                    {(!not_found).then(|| view! {
+                                        <button class="btn btn-primary" on:click=move |_| load()>{move || lang.get().text("retry")}</button>
+                                    })}
+                                    <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
+                                </div>
+                            </div>
+                        }.into_any()
+                    }
                 },
                 Some(b) => {
                     let total_minutes = if b.estimated_reading_minutes > 0 { b.estimated_reading_minutes } else { reading_minutes(b.total_words) };

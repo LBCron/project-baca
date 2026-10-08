@@ -1,6 +1,7 @@
 //! Quote finder, insight cards, and the spoiler-free recap, rendered as
 //! paper cards inside a sheet.
 
+use crate::components::focus::manage_sheet_focus;
 use crate::components::icons;
 use crate::components::toast::use_toasts;
 use crate::i18n::{use_lang, Lang};
@@ -19,6 +20,8 @@ fn Sheet(
     let (lang, _) = use_lang();
     let id = format!("sheet-{}", uuid::Uuid::new_v4().simple());
     let labelled = id.clone();
+    let close_ref = NodeRef::<leptos::html::Button>::new();
+    manage_sheet_focus(show.into(), close_ref, move || show.set(false));
     view! {
         {move || {
             let id = id.clone();
@@ -29,7 +32,7 @@ fn Sheet(
                         <div class="sheet-grip" aria-hidden="true"></div>
                         <div class="sheet-head">
                             <h2 id=id class="section-title">{title.get()}</h2>
-                            <button class="btn-icon" aria-label=move || lang.get().text("close") on:click=move |_| show.set(false)>{icons::close()}</button>
+                            <button class="btn-icon" node_ref=close_ref aria-label=move || lang.get().text("close") on:click=move |_| show.set(false)>{icons::close()}</button>
                         </div>
                         {children()}
                     </div>

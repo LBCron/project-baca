@@ -56,3 +56,18 @@ def test_offline_save_read_badge(clean_page: Page, book_with_chapters: str):
     finally:
         page.context.set_offline(False)
     assert_no_page_errors(page)
+
+
+def test_end_of_book_notice_is_visible(clean_page: Page, book_with_chapters: str):
+    page = clean_page
+    _, n_chapters = _chapter_no(book_with_chapters)
+    last, _ = _chapter_no(book_with_chapters, n_chapters - 1)
+    goto(page, f"/read/{book_with_chapters}?chapter={last}")
+    page.wait_for_timeout(500)
+    for _ in range(12):
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(120)
+    toasts = page.locator(".reader .toast")
+    expect(toasts).to_have_count(1)
+    expect(toasts.first).to_be_visible()
+    assert_no_page_errors(page)

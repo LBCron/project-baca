@@ -2,8 +2,12 @@
  * flashes the wrong surface, then registers the service worker on load. */
 (function () {
   try {
-    if (localStorage.getItem("rotaria_theme") === "paper") {
+    var stored = localStorage.getItem("rotaria_theme");
+    var light = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+    if (stored === "paper" || (!stored && light)) {
       document.documentElement.setAttribute("data-theme", "paper");
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", "#F9F6F0");
     }
   } catch (e) {
     /* storage unavailable (private mode): keep the default surface */

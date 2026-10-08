@@ -1,6 +1,7 @@
 pub mod anchor;
 pub mod auth;
 pub mod book_card;
+pub mod focus;
 pub mod header;
 pub mod icons;
 pub mod insights;

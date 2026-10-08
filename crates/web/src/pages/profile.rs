@@ -297,6 +297,7 @@ pub fn ProfilePage() -> impl IntoView {
     let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
     let (offline_books, set_offline_books) = signal(Vec::<BookDetailDto>::new());
     let (active, set_active) = signal(None::<(uuid::Uuid, f32)>);
+    let (loaded, set_loaded) = signal(false);
 
     Effect::new(move || {
         if !session.authed.get() {
@@ -315,6 +316,7 @@ pub fn ProfilePage() -> impl IntoView {
             if let Ok(Some(progress)) = api::active_progress().await {
                 set_active.set(Some((progress.book_id, progress.completion_percentage)));
             }
+            set_loaded.set(true);
         });
     });
 
@@ -379,7 +381,9 @@ pub fn ProfilePage() -> impl IntoView {
                                 <h2 id="shelf-title" class="section-title">{move || lang.get().text("shelf_title")}</h2>
                                 <span class="form-hint">{move || lang.get().text_with("saved_count", "n", &offline_books.get().len().to_string())}</span>
                             </div>
-                            {move || if offline_books.get().is_empty() {
+                            {move || if !loaded.get() {
+                                view! { <div class="skeleton skeleton-card" aria-busy="true"></div> }.into_any()
+                            } else if offline_books.get().is_empty() {
                                 view! { <p class="form-hint">{move || lang.get().text("no_offline")}</p> }.into_any()
                             } else {
                                 view! {
@@ -404,7 +408,9 @@ pub fn ProfilePage() -> impl IntoView {
 
                         <section aria-labelledby="badges-title">
                             <div class="section-head"><h2 id="badges-title" class="section-title">{move || lang.get().text("badges")}</h2></div>
-                            {move || if badges.get().is_empty() {
+                            {move || if !loaded.get() {
+                                view! { <div class="skeleton skeleton-line" aria-busy="true"></div> }.into_any()
+                            } else if badges.get().is_empty() {
                                 view! { <p class="form-hint">{move || lang.get().text("no_badges")}</p> }.into_any()
                             } else {
                                 view! {
@@ -429,7 +435,9 @@ pub fn ProfilePage() -> impl IntoView {
                                     <span class="form-hint">{move || lang.get().text_with("quotes_all", "n", &quotes.get().len().to_string())}</span>
                                 })}
                             </div>
-                            {move || if quotes.get().is_empty() {
+                            {move || if !loaded.get() {
+                                view! { <div class="skeleton skeleton-line" aria-busy="true"></div> }.into_any()
+                            } else if quotes.get().is_empty() {
                                 view! { <p class="form-hint">{move || lang.get().text("no_quotes")}</p> }.into_any()
                             } else {
                                 view! {

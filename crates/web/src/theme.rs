@@ -17,14 +17,49 @@ pub enum ShellTheme {
     Paper,
 }
 
+fn prefers_light() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.match_media("(prefers-color-scheme: light)")
+                .ok()
+                .flatten()
+        })
+        .map(|m| m.matches())
+        .unwrap_or(false)
+}
+
 impl ShellTheme {
+    /// The stored choice wins; a first visit follows the system scheme.
     pub fn load() -> Self {
         match storage()
             .and_then(|s| s.get_item(SHELL_KEY).ok().flatten())
             .as_deref()
         {
             Some("paper") => ShellTheme::Paper,
+            Some("espresso") => ShellTheme::Espresso,
+            _ if prefers_light() => ShellTheme::Paper,
             _ => ShellTheme::Espresso,
+        }
+    }
+
+    /// Browser chrome color matching the shell surface.
+    pub fn surface_color(self) -> &'static str {
+        match self {
+            ShellTheme::Espresso => "#1F1916",
+            ShellTheme::Paper => "#F9F6F0",
+        }
+    }
+
+    /// Remembers an explicit choice so it outlives the system scheme.
+    pub fn persist(self) {
+        if let Some(s) = storage() {
+            let _ = s.set_item(
+                SHELL_KEY,
+                match self {
+                    ShellTheme::Espresso => "espresso",
+                    ShellTheme::Paper => "paper",
+                },
+            );
         }
     }
 
@@ -35,21 +70,12 @@ impl ShellTheme {
         }
     }
 
-    /// Persists and stamps `data-theme` on the root element.
+    /// Stamps `data-theme` on the root element and recolors the browser chrome.
     pub fn apply(self) {
-        if let Some(s) = storage() {
-            let _ = s.set_item(
-                SHELL_KEY,
-                match self {
-                    ShellTheme::Espresso => "espresso",
-                    ShellTheme::Paper => "paper",
-                },
-            );
-        }
-        if let Some(root) = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.document_element())
-        {
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        if let Some(root) = document.document_element() {
             match self {
                 ShellTheme::Paper => {
                     let _ = root.set_attribute("data-theme", "paper");
@@ -58,6 +84,9 @@ impl ShellTheme {
                     let _ = root.remove_attribute("data-theme");
                 }
             }
+        }
+        if let Ok(Some(meta)) = document.query_selector("meta[name=\"theme-color\"]") {
+            let _ = meta.set_attribute("content", self.surface_color());
         }
     }
 }

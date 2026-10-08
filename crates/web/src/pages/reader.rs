@@ -7,7 +7,7 @@ use crate::components::icons;
 use crate::components::insights::CatchupRecap;
 use crate::components::progress::ProgressBar;
 use crate::components::session::use_session;
-use crate::components::toast::use_toasts;
+use crate::components::toast::{use_toasts, ToastStack};
 use crate::format::{reading_minutes, roman};
 use crate::i18n::use_lang;
 use crate::storage::{self, OfflineChapterRecord};
@@ -235,7 +235,7 @@ pub fn ReaderPage() -> impl IntoView {
                 .iter()
                 .find(|c| c.id == chapter_id)
                 .map(|c| c.chapter_number);
-            if saved_chapter == Some(chapter_no.get_untracked()) {
+            if saved_chapter.is_some() && saved_chapter == chapter_no.try_get_untracked() {
                 set_pending_anchor.set(Some(cfi));
             }
         }
@@ -344,7 +344,7 @@ pub fn ReaderPage() -> impl IntoView {
         set_save_generation.set(generation);
         set_timeout(
             move || {
-                if save_generation.get_untracked() == generation {
+                if save_generation.try_get_untracked() == Some(generation) {
                     persist();
                 }
             },
@@ -572,7 +572,26 @@ pub fn ReaderPage() -> impl IntoView {
                     {move || match chapter.get() {
                         None => match error.get() {
                             None => view! { <div class="skeleton" style="height: 60vh" aria-busy="true"></div> }.into_any(),
-                            Some(_) => view! { <p class="reader-end">{move || lang.get().text("not_found")}</p> }.into_any(),
+                            Some(err) => {
+                                let not_found = api::is_not_found(&err);
+                                let message = if not_found {
+                                    "not_found"
+                                } else if api::is_online() {
+                                    "chapter_load_failed"
+                                } else {
+                                    "offline_notice"
+                                };
+                                view! {
+                                    <div class="reader-end">
+                                        <p>{move || lang.get().text(message)}</p>
+                                        {(!not_found).then(|| view! {
+                                            <button class="btn btn-primary" on:click=move |_| load_chapter(chapter_no.get_untracked(), None)>
+                                                {move || lang.get().text("retry")}
+                                            </button>
+                                        })}
+                                    </div>
+                                }.into_any()
+                            }
                         },
                         Some(c) => view! { <div class="chapter-body" inner_html=c.html_content></div> }.into_any(),
                     }}
@@ -599,6 +618,7 @@ pub fn ReaderPage() -> impl IntoView {
             {move || streak.get().map(|days| view! {
                 <div class="streak-toast" role="status">{format!("\u{2756} {}", lang.get().text_with("streak_days", "n", &days.to_string()))}</div>
             })}
+            <ToastStack toasts=toasts/>
         </div>
     }
 }

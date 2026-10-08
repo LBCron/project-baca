@@ -197,6 +197,7 @@ pub fn HomePage() -> impl IntoView {
     let (cursor, set_cursor) = signal(None::<String>);
     let (exhausted, set_exhausted) = signal(false);
     let (loading, set_loading) = signal(true);
+    let (load_error, set_load_error) = signal(false);
     let (query, set_query) = signal(String::new());
     let (generation, set_generation) = signal(0u32);
     let (filter, set_filter) = signal(LanguageFilter::All);
@@ -229,17 +230,25 @@ pub fn HomePage() -> impl IntoView {
         let cur = if reset { None } else { cursor.get_untracked() };
         let language = filter.get_untracked().code();
         spawn_local(async move {
-            let page = api::catalog(&BookCatalogQuery {
+            let outcome = api::catalog(&BookCatalogQuery {
                 cursor: cur.as_deref().and_then(|c| c.parse::<uuid::Uuid>().ok()),
                 limit: Some(PAGE_SIZE),
                 language,
                 ..Default::default()
             })
-            .await
-            .unwrap_or_default();
+            .await;
             if generation.try_get_untracked() != Some(gen) {
                 return;
             }
+            let page = match outcome {
+                Ok(page) => page,
+                Err(_) => {
+                    set_load_error.set(true);
+                    set_loading.set(false);
+                    return;
+                }
+            };
+            set_load_error.set(false);
             set_exhausted.set((page.len() as u64) < PAGE_SIZE);
             if let Some(last) = page.last() {
                 set_cursor.set(Some(last.id.to_string()));
@@ -262,16 +271,24 @@ pub fn HomePage() -> impl IntoView {
         set_generation.set(gen);
         set_loading.set(true);
         spawn_local(async move {
-            let results = api::search(&BookSearchQuery {
+            let outcome = api::search(&BookSearchQuery {
                 q: value,
                 limit: Some(20),
                 ..Default::default()
             })
-            .await
-            .unwrap_or_default();
+            .await;
             if generation.try_get_untracked() != Some(gen) {
                 return;
             }
+            let results = match outcome {
+                Ok(results) => results,
+                Err(_) => {
+                    set_load_error.set(true);
+                    set_loading.set(false);
+                    return;
+                }
+            };
+            set_load_error.set(false);
             set_exhausted.set(true);
             set_books.set(results.into_iter().map(search_hit_to_summary).collect());
             set_loading.set(false);
@@ -303,6 +320,13 @@ pub fn HomePage() -> impl IntoView {
             run_search(value);
         }
     };
+
+    let back_online = window_event_listener(leptos::ev::online, move |_| {
+        if load_error.try_get_untracked() == Some(true) {
+            load_page(true);
+        }
+    });
+    on_cleanup(move || back_online.remove());
 
     let pick_filter = move |f: LanguageFilter| {
         set_filter.set(f);
@@ -461,7 +485,13 @@ pub fn HomePage() -> impl IntoView {
                     {move || visible().into_iter().map(|b| view! { <BookCard book=b/> }).collect::<Vec<_>>()}
                     {move || (loading.get() && books.get().is_empty()).then(|| (0..8).map(|_| view! { <SkeletonCard/> }).collect::<Vec<_>>())}
                 </div>
-                {move || (!loading.get() && visible().is_empty()).then(|| view! {
+                {move || load_error.get().then(|| view! {
+                    <div class="empty-state" role="alert">
+                        <p>{move || lang.get().text(if api::is_online() { "load_failed" } else { "offline_notice" })}</p>
+                        <button class="btn btn-primary" on:click=move |_| load_page(true)>{move || lang.get().text("retry")}</button>
+                    </div>
+                })}
+                {move || (!loading.get() && !load_error.get() && visible().is_empty()).then(|| view! {
                     <div class="empty-state">
                         <img src="/assets/retro-rocket-discovery.webp" alt="" width="768" height="512"/>
                         <p>{move || lang.get().text("no_results")}</p>

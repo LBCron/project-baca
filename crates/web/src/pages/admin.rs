@@ -127,6 +127,12 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
     let (file_name, set_file_name) = signal(None::<String>);
     let (busy, set_busy) = signal(false);
     let file_ref = NodeRef::<leptos::html::Input>::new();
+    let poll_handle = StoredValue::new(None::<IntervalHandle>);
+    on_cleanup(move || {
+        if let Some(handle) = poll_handle.try_get_value().flatten() {
+            handle.clear();
+        }
+    });
 
     let poll = move |job_id: String| {
         let handle = set_interval_with_handle(
@@ -141,6 +147,7 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
             Duration::from_millis(POLL_INTERVAL_MS),
         );
         if let Ok(handle) = handle {
+            poll_handle.set_value(Some(handle));
             Effect::new(move || {
                 if let Some(j) = job.get() {
                     if j.status == "published" || j.status == "failed" {

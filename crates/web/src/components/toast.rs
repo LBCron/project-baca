@@ -3,6 +3,9 @@
 use leptos::prelude::*;
 use std::time::Duration;
 
+const INFO_MS: u64 = 2800;
+const ERROR_MS: u64 = 5200;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toast {
     pub id: u32,
@@ -26,20 +29,30 @@ impl Toasts {
         toasts
     }
 
+    /// Shows a notice; a message that is already on screen is not stacked
+    /// again, so repeated taps at the end of a book yield one toast.
     pub fn push(&self, message: impl Into<String>, is_error: bool) {
+        let message = message.into();
+        if self
+            .items
+            .with_untracked(|items| items.iter().any(|t| t.message == message))
+        {
+            return;
+        }
         let id = self.next_id.get_untracked();
         self.next_id.set(id + 1);
         self.items.update(|items| {
             items.push(Toast {
                 id,
-                message: message.into(),
+                message,
                 is_error,
             })
         });
         let items = self.items;
+        let shown_for = if is_error { ERROR_MS } else { INFO_MS };
         set_timeout(
             move || items.update(|all| all.retain(|t| t.id != id)),
-            Duration::from_millis(2800),
+            Duration::from_millis(shown_for),
         );
     }
 
@@ -65,7 +78,7 @@ pub fn ToastStack(toasts: Toasts) -> impl IntoView {
     view! {
         <div class="toast-stack" aria-live="polite">
             <For each=move || toasts.items.get() key=|t| t.id let:toast>
-                <div class="toast" class:error=toast.is_error role="status">{toast.message}</div>
+                <div class="toast" class:error=toast.is_error role=if toast.is_error { "alert" } else { "status" }>{toast.message}</div>
             </For>
         </div>
     }

@@ -1,5 +1,6 @@
 //! Sign-in sheet: login, registration, and OTP steps plus guest merge.
 
+use crate::components::focus::manage_sheet_focus;
 use crate::components::icons;
 use crate::i18n::use_lang;
 use crate::{api, storage};
@@ -52,6 +53,8 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
         set_error.set(None);
         set_busy.set(false);
     };
+    let close_ref = NodeRef::<leptos::html::Button>::new();
+    manage_sheet_focus(show.into(), close_ref, close);
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
@@ -124,7 +127,7 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                     <div class="sheet-grip" aria-hidden="true"></div>
                     <div class="sheet-head">
                         <h2 id="auth-title" class="section-title">{move || lang.get().text(title_key())}</h2>
-                        <button class="btn-icon" aria-label=move || lang.get().text("close") on:click=move |_| close()>{icons::close()}</button>
+                        <button class="btn-icon" node_ref=close_ref aria-label=move || lang.get().text("close") on:click=move |_| close()>{icons::close()}</button>
                     </div>
                     {move || (mode.get() != Mode::Otp).then(|| view! {
                         <div class="segmented" role="tablist">

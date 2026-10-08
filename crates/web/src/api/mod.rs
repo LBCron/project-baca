@@ -72,6 +72,16 @@ pub fn is_authed() -> bool {
     token().is_some()
 }
 
+/// The server answered with a NOT_FOUND envelope, as opposed to a transport
+/// failure or a server error that is worth retrying.
+pub fn is_not_found(error: &str) -> bool {
+    error.starts_with("NOT_FOUND")
+}
+
+pub fn is_online() -> bool {
+    window().map(|w| w.navigator().on_line()).unwrap_or(true)
+}
+
 fn authed(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
     match token() {
         Some(t) => builder.header("Authorization", &format!("Bearer {t}")),

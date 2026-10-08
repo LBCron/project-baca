@@ -56,4 +56,6 @@ def test_overview_and_sheets(clean_page: Page, book_with_chapters: str):
     page.wait_for_timeout(4000)
     assert page.query_selector(".quote-results") is not None
     page.keyboard.press("Escape")
+    expect(page.locator(".sheet")).to_have_count(0)
+    expect(page.get_by_role("button", name="Find a quote")).to_be_focused()
     assert_no_page_errors(page)

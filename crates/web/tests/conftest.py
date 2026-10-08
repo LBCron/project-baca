@@ -23,6 +23,14 @@ SEED_BOOK_ID = "a0000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture(scope="session")
+def browser_context_args(browser_context_args):
+    """The shell follows the system scheme on a first visit; goldens and
+    structural checks are pinned to the Espresso surface, and the a11y suite
+    scans the Paper surface explicitly."""
+    return {**browser_context_args, "color_scheme": "dark"}
+
+
+@pytest.fixture(scope="session")
 def book_with_chapters() -> str:
     """ID of a book that has at least one chapter.
 

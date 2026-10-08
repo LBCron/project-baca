@@ -69,6 +69,7 @@ pub fn SiteHeader() -> impl IntoView {
                         aria-label=move || lang.get().text("theme_toggle")
                         on:click=move |_| {
                             let next = theme.get_untracked().toggle();
+                            next.persist();
                             next.apply();
                             theme.set(next);
                         }
