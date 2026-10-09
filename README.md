@@ -31,9 +31,8 @@ make worker-install worker      # optional: ingestion worker for EPUB uploads
 ## Documentation
 
 - [GUIDE.md](GUIDE.md): setup, configuration, tests, reader controls.
-- [ARCHITECTURE.md](ARCHITECTURE.md): crates, request path, API surface, security model, web app and reader internals, deployment.
-- [DISTRIBUTED.md](DISTRIBUTED.md): ingestion worker, message contract, retries, dead letters.
-- [CHANGELOG.md](CHANGELOG.md), [NOTICE.md](NOTICE.md), [assets/README.md](assets/README.md).
+- [ARCHITECTURE.md](ARCHITECTURE.md): crates, request path, API, security, web app and reader, ingestion worker, data, deployment, service levels.
+- [CHANGELOG.md](CHANGELOG.md) and [NOTICE.md](NOTICE.md).
 
 ## Content
 

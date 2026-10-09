@@ -40,6 +40,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - Docs and comments: spec tracers removed from code, SSOT corrections in SRS and ERD, history re-sorted newest first.
 
 ### Removed
+- Documentation consolidated (2026-10-09): `DISTRIBUTED.md`, `assets/README.md`, and `python_worker/README.md` folded into `ARCHITECTURE.md`; one agent rule file (`AGENTS.md`).
 - The unversioned `/api/*` alias; `/api/v1/*` is the only API surface.
 
 ## [0.2.1] — 2026-09-26

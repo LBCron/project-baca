@@ -8,7 +8,7 @@ crates/shared    DTOs, validation, error contract; compiled native and to WebAss
 crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, MinIO, SMTP (lettre), Gemini client
 crates/server    Axum router, middleware, handlers, OpenAPI (utoipa)
 crates/web       Leptos 0.7 client-side app, Trunk build, service worker
-python_worker    ingestion consumer (see DISTRIBUTED.md)
+python_worker    ingestion consumer (section 6)
 migrations       paired .up.sql / .down.sql (7 pairs, 13 tables)
 ```
 
@@ -55,7 +55,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted.
 - Headers: the API sets HSTS, `nosniff`, frame denial, referrer policy, COOP and CORP, a permissions policy, its own CSP, and `Cache-Control: no-store` on `/auth/*` and on every bearer response. Caddy sets the SPA headers, including a CSP with `script-src 'self' 'wasm-unsafe-eval'` and no inline scripts (a Trunk post-build hook moves the bootstrap into a hashed `boot-*.js`).
 - Data exposure: draft and archived books are invisible on every public route; validation errors name the field without echoing the value; logs mask connection strings, recipients, OTPs, and the Gemini key (sent in `x-goog-api-key`).
-- Known gaps are tracked in `knowledge/tasks` (launch gate, non-root containers, signup 409 disclosure, stream trimming).
+- Open security work is tracked as tickets in `knowledge/tickets/` (private repo).
 
 ## 5. Web app (`crates/web`)
 
@@ -64,7 +64,18 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - API client (`api/mod.rs`): gloo-net, 401 single-flight refresh, offline detection, pending-write queue drained on `online` and login, `asset_url` turns stored cover keys into `/api/v1/covers/{file}`.
 - Storage: IndexedDB through rexie, `project_baca_db` v3 (guest progress, offline books and chapters, pending sync, local quotes). Reader and shelf fall back to it offline.
 - Service worker (`sw.js`): `rotaria-shell-v2` precaches `/` and serves it for unvisited deep links offline; `rotaria-assets-v2` caches hashed assets and prunes stale ones; `/api/*` is never cached.
-- Design: Espresso shell (`#1F1916`, clay `#CE734E`) with a Paper shell toggle; reading themes Paper, Sepia, Espresso; EB Garamond display, Newsreader body, Plus Jakarta Sans labels; 44 px targets; motion disabled under `prefers-reduced-motion`. Illustrations ship as WebP from `assets/illustrations`.
+- Design: Espresso shell (`#1F1916`, clay `#CE734E`) with a Paper shell toggle; reading themes Paper, Sepia, Espresso; EB Garamond display, Newsreader body, Plus Jakarta Sans labels; copy in the literate "kamu" register; 44 px targets; motion disabled under `prefers-reduced-motion`.
+- Illustrations (`assets/illustrations/`): PNG originals at 640 px, WebP copies (quality 82, `magick in.png -quality 82 -define webp:method=6 in.webp`) copied by `index.html`.
+
+  | File | Used on |
+  |---|---|
+  | `library-bookshelf-ladder` | home hero plate (wide screens) |
+  | `cozy-reader-armchair-owl` | guest shelf, reader finale |
+  | `manuscript-inspection-clothesline` | curator desk empty lists |
+  | `admin-sorting-pigeonholes` | non-curator admin, empty signed-in shelf |
+  | `retro-rocket-discovery` | empty search, 404 |
+  | `rotaria-mark.svg` | favicon and PWA tile; the header draws the same mark inline |
+  | `rotaria-windmill.svg` | detailed brand plate for onboarding and email; too fine below 36 px |
 - Responsive: under 768 px the tab bar, bottom sheets, and the book action dock; from 768 px header navigation and dialogs; catalog columns 2 / 3 / 4 / 5 at under 640 / 1024 / 1440 / wider; home shows two catalog rows until "see the whole catalog".
 
 ### Reader (`pages/reader/`)
@@ -75,7 +86,22 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 ## 6. Ingestion and AI
 
-Upload stores the EPUB in MinIO and publishes to `stream:epub_ingestion`; the worker writes chapters, 768-dimensional chunks, covers, and `tldr_cache` rows, then publishes the book. Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped to the book. Catalog search uses a partial GIN index (FTS and trigram) over published books. Details in [DISTRIBUTED.md](DISTRIBUTED.md).
+**Flow.** Upload stores the EPUB at `raw-epubs/<book_id>.epub` and publishes to `stream:epub_ingestion`. Python workers in the consumer group `ingestion-workers` process it and report progress to the `job:{id}` hash read by the curator desk. Workers are stateless; add processes to scale.
+
+**Message contract.** Stream fields `book_id`, `storage_path`, `job_id`, `timestamp`. Job hash `job:{id}`: `status` (`queued`, `parsing`, `chunking`, `embedding`, `summarizing`, `published`, `failed`), `progress` 0 to 100, `error`, `attempts`, timestamps; TTL 7 days. Dead letters go to `stream:epub_ingestion:dlq`; `POST /admin/dlq/{id}/replay` re-queues under the original job id.
+
+**Pipeline per message.**
+1. Download; zip guard (per-file size, compression ratio, ZipSlip paths).
+2. Parse OPF and spine; cover to WebP with Pillow as `covers/<book_id>.<ext>` (original bytes on failure; a cover never fails a job).
+3. Sanitize XHTML: allowlisted tags, scripts, styles and handlers removed, decoded character references re-escaped.
+4. Chunk about 400 words, tails under 50 merged, with CFI ranges.
+5. Embed in batches, 768 dimensions, `EMBEDDING_MODEL_NAME` (`fastembed` is a stub; production needs `GEMINI_API_KEY`).
+6. Atomic cards and the spoiler-free recap with `LLM_MODEL_NAME`; recap input is the key concepts of earlier chapters plus the current text within a 12k-character budget; rows upsert on `uq_tldr_cache`.
+7. Insert chapters and chunks, set the book `published`, `XACK`.
+
+**Reliability.** At-least-once: `XACK` only after success; entries idle past `RECLAIM_IDLE_MS` (300000) are reclaimed with `XAUTOCLAIM`; three attempts, then the dead-letter stream. Gemini calls retry transient failures three times with quadratic backoff (1, 4, 9 s, jitter, `Retry-After` up to 60 s) and time out at 60 s (embeddings) or 120 s (generation). The Redis socket timeout (30 s) exceeds the `XREADGROUP` block window.
+
+**Search.** Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped `WHERE book_id = $1`, so index memory follows the active book, not the corpus. Catalog search uses a partial GIN index (FTS and trigram) over published books.
 
 ## 7. Data
 
@@ -91,11 +117,23 @@ Upload stores the EPUB in MinIO and publishes to `stream:epub_ingestion`; the wo
 - The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
 - Observability: tracing with `x-request-id` on every span; `LOG_FORMAT=json` for NDJSON.
 
-## 9. Tests
+## 9. Service levels
+
+| Path | Target |
+|---|---|
+| REST API, cached or indexed routes | p95 < 50 ms |
+| Catalog FTS and trigram search | < 5 ms |
+| Scoped vector search | < 10 ms |
+| Login, OTP verify (release build) | p95 < 150 ms, < 100 ms |
+| Reader page turn | `transform` and `opacity` only; one column cloned per turn |
+
+`make test-performance-release` checks the API targets.
+
+## 10. Tests
 
 Functional server suites are modules of one binary (`crates/server/tests/it`); `performance_test` and `load_stress_test` stay separate so parallel tests cannot skew latency assertions. Web tests are a Playwright pyramid in `crates/web/tests` (e2e, component, integration, a11y, visual). Targets and counts: [GUIDE.md](GUIDE.md) section 5.
 
-## 10. Invariants
+## 11. Invariants
 
 1. No `unwrap()` or `expect()` on production paths in any crate; errors flow through `Result<T, AppError>`.
 2. Stateless API; scoped vector search; partial indexes on published books.
