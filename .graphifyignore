@@ -13,3 +13,6 @@
 !GEMINI.md
 !MEMORY.md
 !PROJECT_LOG.md
+
+# Vendored minified library: its mangled symbols (n, T, me) pollute the graph.
+crates/web/tests/a11y/axe.min.js

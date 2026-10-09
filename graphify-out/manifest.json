@@ -731,12 +731,6 @@
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
-  "crates/web/tests/a11y/axe.min.js": {
-    "mtime": 1790594005.5484214,
-    "seen": 1791446784.439886,
-    "ast_hash": "a2ebda0c580e4442d62b61da77c8ff41",
-    "semantic_hash": "a2ebda0c580e4442d62b61da77c8ff41"
-  },
   "crates/web/tests/a11y/test_axe.py": {
     "mtime": 1791441344.672964,
     "seen": 1791458012.6718092,
@@ -1405,9 +1399,9 @@
   },
   "knowledge/output/audit-2026-09-27/05-atomic.png": {
     "mtime": 1790524171.3434944,
-    "seen": 1791446784.4403014,
+    "seen": 1791550553.9456239,
     "ast_hash": "28783275ff576d824d204ca5c629d6a8",
-    "semantic_hash": ""
+    "semantic_hash": "28783275ff576d824d204ca5c629d6a8"
   },
   "knowledge/output/audit-2026-09-27/06-reader.png": {
     "mtime": 1790524174.738963,
@@ -1423,9 +1417,9 @@
   },
   "knowledge/output/audit-2026-09-27/08-profile.png": {
     "mtime": 1790524178.2114117,
-    "seen": 1791446784.4403052,
+    "seen": 1791550553.945629,
     "ast_hash": "2f9cabce0c96cdfb50ebe9c7d04a9648",
-    "semantic_hash": ""
+    "semantic_hash": "2f9cabce0c96cdfb50ebe9c7d04a9648"
   },
   "knowledge/output/audit-2026-09-27/09-admin.png": {
     "mtime": 1790524180.50571,
@@ -1435,9 +1429,9 @@
   },
   "knowledge/output/audit-2026-09-27/10-saved-offline.png": {
     "mtime": 1790524285.2511132,
-    "seen": 1791446784.4403079,
+    "seen": 1791550553.9456332,
     "ast_hash": "7c08ef484fcba0b0acfa67be288c6567",
-    "semantic_hash": ""
+    "semantic_hash": "7c08ef484fcba0b0acfa67be288c6567"
   },
   "knowledge/output/audit-2026-09-27/11-reader-ch2.png": {
     "mtime": 1790524296.606206,
@@ -1453,9 +1447,9 @@
   },
   "knowledge/output/audit-2026-09-27/20-quote-empty.png": {
     "mtime": 1790525082.6334188,
-    "seen": 1791446784.4403112,
+    "seen": 1791550553.9456375,
     "ast_hash": "5c49a9614602db4601b31d288c0f51ec",
-    "semantic_hash": ""
+    "semantic_hash": "5c49a9614602db4601b31d288c0f51ec"
   },
   "knowledge/output/audit-2026-09-27/21-drawer-styled.png": {
     "mtime": 1790525086.426576,
@@ -1465,15 +1459,15 @@
   },
   "knowledge/output/audit-2026-09-27/22-saved.png": {
     "mtime": 1790525094.3296983,
-    "seen": 1791446784.4403136,
+    "seen": 1791550553.9456408,
     "ast_hash": "4d9d4185eba9dd84dc93f67b2cf13f84",
-    "semantic_hash": ""
+    "semantic_hash": "4d9d4185eba9dd84dc93f67b2cf13f84"
   },
   "knowledge/output/audit-2026-09-27/23-profile-cta.png": {
     "mtime": 1790525097.1815772,
-    "seen": 1791446784.4403148,
+    "seen": 1791550553.9456449,
     "ast_hash": "547a6e0663094453f0babd76a0ef6428",
-    "semantic_hash": ""
+    "semantic_hash": "547a6e0663094453f0babd76a0ef6428"
   },
   "Cargo.toml": {
     "mtime": 1791441344.6609643,

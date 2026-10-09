@@ -6,6 +6,13 @@
       "output_tokens": 256926,
       "files": 198,
       "note": "Gemini passes + 2 reported subagents; chunk 2 subagent usage unknown (rate-limited), counted 0"
+    },
+    {
+      "date": "2026-10-09T12:55:58.037493+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 6,
+      "note": "6 audit screenshots via vision subagents; axe.min.js pruned"
     }
   ],
   "total_input_tokens": 454402,
