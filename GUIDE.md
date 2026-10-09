@@ -1,3 +1,15 @@
+---
+type: Developer Guide
+title: Developer Guide
+tags:
+  - developer
+  - guide
+  - okf
+  - onboarding
+  - setup
+  - workflow
+---
+
 # Developer Guide
 
 Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](ARCHITECTURE.md) section 8.

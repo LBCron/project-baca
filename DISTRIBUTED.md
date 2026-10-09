@@ -1,3 +1,18 @@
+---
+type: Technical Architecture Specification
+title: Ingestion Worker and Queue
+tags:
+  - distributed
+  - embedding
+  - fastembed
+  - gemini
+  - ingestion
+  - okf
+  - redis-streams
+  - scalability
+  - worker
+---
+
 # Ingestion Worker and Queue
 
 ## 1. Topology
