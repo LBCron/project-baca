@@ -13,6 +13,13 @@
       "output_tokens": 0,
       "files": 6,
       "note": "6 audit screenshots via vision subagents; axe.min.js pruned"
+    },
+    {
+      "date": "2026-10-09T13:44:22.958746+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 44,
+      "note": "doc consolidation: 27 docs via 3 subagents, 17 moved files remapped"
     }
   ],
   "total_input_tokens": 454402,
