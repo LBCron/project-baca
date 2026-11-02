@@ -1,6 +1,7 @@
 //! Book overview: cover, synopsis, chapter list, offline save, share, and
 //! the action dock that leads into the reader and the insight sheets.
 
+use crate::components::anchor::scroll_to_location_hash;
 use crate::components::book_card::Cover;
 use crate::components::icons;
 use crate::components::insights::{AtomicCards, QuoteFinder};
@@ -73,6 +74,9 @@ pub fn BookPage() -> impl IntoView {
                     set_resume_at
                         .set(resume_chapter(&detail, session.authed.get_untracked()).await);
                     set_book.set(Some(detail));
+                    // `#daftar-bab` (the reader's chapter title links here)
+                    // only exists once the book has rendered.
+                    request_animation_frame(scroll_to_location_hash);
                 }
                 Err(e) => set_error.set(Some(e)),
             }

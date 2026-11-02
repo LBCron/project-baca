@@ -332,6 +332,31 @@ pub async fn save_progress(book_id: &str, update: &ReadingProgressUpdateDto) -> 
     Ok(())
 }
 
+/// Saves progress with a `keepalive` fetch, which the browser completes even
+/// after the page unloads, so closing the tab inside the save debounce keeps
+/// the last page. Fire and forget: it skips the refresh cycle, which cannot
+/// run once the page is gone.
+pub fn save_progress_on_exit(book_id: &str, update: &ReadingProgressUpdateDto) {
+    let (Some(window), Ok(body), Ok(headers)) = (
+        window(),
+        serde_json::to_string(update),
+        web_sys::Headers::new(),
+    ) else {
+        return;
+    };
+    let _ = headers.set("Content-Type", "application/json");
+    if let Some(t) = token() {
+        let _ = headers.set("Authorization", &format!("Bearer {t}"));
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_method("PUT");
+    // web-sys generates no setter for `keepalive`; the dictionary is a plain object.
+    let _ = js_sys::Reflect::set(&init, &"keepalive".into(), &true.into());
+    init.set_headers(&headers);
+    init.set_body(&wasm_bindgen::JsValue::from_str(&body));
+    let _ = window.fetch_with_str_and_init(&format!("{}/progress/{book_id}", api_base()), &init);
+}
+
 pub async fn active_progress() -> Result<Option<ActiveProgressDto>, String> {
     get("/progress/active").await
 }

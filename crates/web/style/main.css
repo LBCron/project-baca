@@ -1765,7 +1765,8 @@ img {
     align-items: stretch;
     justify-content: center;
     padding: var(--space-1) var(--space-2) var(--space-2);
-    touch-action: none;
+    /* One-finger drags turn pages; two fingers still zoom. */
+    touch-action: pinch-zoom;
 }
 
 .book {

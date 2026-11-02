@@ -1,38 +1,11 @@
 """Authed flow: OTP via Mailpit, automatic progress save, shelf, cleanup."""
 import json
-import re
 import time
 import urllib.request
 
 from playwright.sync_api import Page, expect
 
-from conftest import API, MAILPIT, api_get, assert_no_page_errors, goto
-
-
-def _post(path: str, payload: dict, token: str | None = None):
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(
-        f"{API}{path}", data=json.dumps(payload).encode(), headers=headers
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)["data"]
-
-
-def _mailpit_otp(email: str, timeout_s: int = 15) -> str:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        time.sleep(1)
-        with urllib.request.urlopen(f"{MAILPIT}/api/v1/messages?limit=50") as r:
-            msgs = json.load(r)["messages"]
-        for m in msgs:
-            if email in json.dumps(m):
-                with urllib.request.urlopen(f"{MAILPIT}/api/v1/message/{m['ID']}") as r:
-                    found = re.search(r"\b(\d{6})\b", json.dumps(json.load(r)))
-                    if found:
-                        return found.group(1)
-    raise AssertionError("OTP email never arrived in Mailpit")
+from conftest import api_get, api_post as _post, assert_no_page_errors, goto, mailpit_otp as _mailpit_otp
 
 
 def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str):

@@ -18,7 +18,7 @@ use crate::i18n::use_lang;
 use crate::storage::{self, OfflineChapterRecord};
 use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LEADING_PRESETS};
 use flip::{Dir, DragStart, Flipper, Geometry, Mode, TurnPlan};
-use layout::{anchor_index, columns_for, paddings, page_of, paragraphs};
+use layout::{anchor_index, columns_for, paddings, page_of, paragraphs, window_width};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_params_map, use_query_map};
@@ -111,11 +111,42 @@ fn starts_on_control(ev: &web_sys::PointerEvent) -> bool {
         .is_some()
 }
 
+/// Keys typed into a field belong to the field; Space on a button or link
+/// activates it instead of turning the page.
+fn key_belongs_to_target(ev: &web_sys::KeyboardEvent) -> bool {
+    let Some(el) = ev
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    else {
+        return false;
+    };
+    let within = |selector: &str| el.closest(selector).ok().flatten().is_some();
+    within("input, select, textarea, [contenteditable]") || (ev.key() == " " && within("button, a"))
+}
+
 fn selection_is_collapsed() -> bool {
     web_sys::window()
         .and_then(|w| w.get_selection().ok().flatten())
         .map(|s| s.is_collapsed())
         .unwrap_or(true)
+}
+
+/// Stores a guest's position on this device.
+fn persist_guest(book: &str, update: &ReadingProgressUpdateDto) {
+    let Ok(book_id) = book.parse::<uuid::Uuid>() else {
+        return;
+    };
+    let record = GuestProgressRecord {
+        book_id,
+        last_chapter_id: update.chapter_id,
+        last_anchor_cfi: update.last_anchor_cfi.clone(),
+        completion_percentage: update.completion_percentage,
+        is_finished: Some(update.completion_percentage >= 100.0),
+        last_read_at: Some(chrono::Utc::now()),
+    };
+    spawn_local(async move {
+        let _ = storage::put(storage::STORE_GUEST_PROGRESS, &record).await;
+    });
 }
 
 #[component]
@@ -205,6 +236,11 @@ pub fn ReaderPage() -> impl IntoView {
     let (streak, set_streak) = signal(None::<i32>);
     let (queued, set_queued) = signal(0usize);
     let (save_generation, set_save_generation) = signal(0u32);
+    // Until the saved position is known, page one is not a position worth
+    // saving: it would overwrite the real one when the chapter loads first.
+    let (position_known, set_position_known) = signal(false);
+    let save_pending = StoredValue::new(false);
+    let load_generation = StoredValue::new(0u32);
     let wants_recap = use_query_map().get_untracked().get("recap").is_some();
     let recap_open = RwSignal::new(wants_recap && start_chapter > 1);
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
@@ -241,21 +277,28 @@ pub fn ReaderPage() -> impl IntoView {
         set_page.set(0);
         set_finished.set(false);
         let id = book_id.get_value();
+        let generation = load_generation.get_value() + 1;
+        load_generation.set_value(generation);
         spawn_local(async move {
-            match api::chapter(&id, number).await {
-                Ok(detail) => {
+            let loaded = match api::chapter(&id, number).await {
+                Ok(detail) => Ok((detail, false)),
+                Err(e) => cached_chapter(&id, number)
+                    .await
+                    .map(|d| (d, true))
+                    .ok_or(e),
+            };
+            // A slower answer for a chapter the reader already left must
+            // neither replace the current text nor be saved under its number.
+            if load_generation.try_get_value() != Some(generation) {
+                return;
+            }
+            match loaded {
+                Ok((detail, from_device)) => {
                     set_chapter.set(Some(detail));
                     set_error.set(None);
-                    set_offline.set(false);
+                    set_offline.set(from_device);
                 }
-                Err(e) => match cached_chapter(&id, number).await {
-                    Some(detail) => {
-                        set_chapter.set(Some(detail));
-                        set_error.set(None);
-                        set_offline.set(true);
-                    }
-                    None => set_error.set(Some(e)),
-                },
+                Err(e) => set_error.set(Some(e)),
             }
         });
     };
@@ -281,6 +324,7 @@ pub fn ReaderPage() -> impl IntoView {
                 set_pending_anchor.set(Some(cfi));
             }
         }
+        set_position_known.set(true);
         set_book.set(detail);
         set_queued.set(api::pending_count().await);
     });
@@ -291,11 +335,10 @@ pub fn ReaderPage() -> impl IntoView {
         let Some(el) = viewport_ref.get_untracked() else {
             return;
         };
-        let width = el.client_width();
-        if width <= 0 {
+        if el.client_width() <= 0 {
             return;
         }
-        let columns = columns_for(width);
+        let columns = columns_for(window_width());
         set_spread.set(columns == 2);
         request_animation_frame(move || {
             let Some(el) = viewport_ref.try_get_untracked().flatten() else {
@@ -340,6 +383,18 @@ pub fn ReaderPage() -> impl IntoView {
         });
     });
 
+    // The saved position may arrive after the chapter is laid out; apply it
+    // then instead of waiting for the next chapter or preference change.
+    Effect::new(move || {
+        if pending_anchor.get().is_none() {
+            return;
+        }
+        let shown = chapter.get_untracked().map(|c| c.chapter_number);
+        if shown == Some(chapter_no.get_untracked()) && column_width.get_untracked() > 0.0 {
+            request_animation_frame(paginate);
+        }
+    });
+
     let percent = Memo::new(move |_| {
         let Some(b) = book.get() else {
             return 0.0f32;
@@ -357,37 +412,42 @@ pub fn ReaderPage() -> impl IntoView {
         (((index + fraction) / total) * 100.0).clamp(0.0, 100.0)
     });
 
+    // The position to save, or None while there is none yet: no chapter,
+    // the stored one still unknown, or an anchor still waiting to apply.
+    let position = move || -> Option<(String, ReadingProgressUpdateDto)> {
+        if !position_known.try_get_untracked()? || pending_anchor.try_get_untracked()?.is_some() {
+            return None;
+        }
+        let ch = chapter.try_get_untracked()??;
+        Some((
+            book_id.try_get_value()?,
+            ReadingProgressUpdateDto {
+                chapter_id: ch.id,
+                last_anchor_cfi: anchor.try_get_untracked()?,
+                completion_percentage: percent.try_get_untracked()?,
+            },
+        ))
+    };
+
     let persist = move || {
-        let Some(ch) = chapter.get_untracked() else {
+        save_pending.try_set_value(false);
+        let Some((id, update)) = position() else {
             return;
         };
-        let id = book_id.get_value();
-        let update = ReadingProgressUpdateDto {
-            chapter_id: ch.id,
-            last_anchor_cfi: anchor.get_untracked(),
-            completion_percentage: percent.get_untracked(),
-        };
+        if !session.authed.get_untracked() {
+            persist_guest(&id, &update);
+            return;
+        }
         spawn_local(async move {
-            if session.authed.get_untracked() {
-                if api::save_progress(&id, &update).await.is_err() {
-                    let _ = api::queue_pending_progress(&id, &update).await;
-                }
-                set_queued.set(api::pending_count().await);
-            } else if let Ok(book_uuid) = id.parse::<uuid::Uuid>() {
-                let record = GuestProgressRecord {
-                    book_id: book_uuid,
-                    last_chapter_id: update.chapter_id,
-                    last_anchor_cfi: update.last_anchor_cfi,
-                    completion_percentage: update.completion_percentage,
-                    is_finished: Some(update.completion_percentage >= 100.0),
-                    last_read_at: Some(chrono::Utc::now()),
-                };
-                let _ = storage::put(storage::STORE_GUEST_PROGRESS, &record).await;
+            if api::save_progress(&id, &update).await.is_err() {
+                let _ = api::queue_pending_progress(&id, &update).await;
             }
+            set_queued.try_set(api::pending_count().await);
         });
     };
 
     let schedule_save = move || {
+        save_pending.set_value(true);
         let generation = save_generation.get_untracked() + 1;
         set_save_generation.set(generation);
         set_timeout(
@@ -688,7 +748,7 @@ pub fn ReaderPage() -> impl IntoView {
             set_menu_open.set(false);
             return;
         }
-        if menu_open.get_untracked() || recap_open.get_untracked() {
+        if menu_open.get_untracked() || recap_open.get_untracked() || key_belongs_to_target(&ev) {
             return;
         }
         match ev.key().as_str() {
@@ -722,6 +782,28 @@ pub fn ReaderPage() -> impl IntoView {
         }
     });
     on_cleanup(move || keys.remove());
+
+    // Leaving inside the save debounce keeps the page just turned: an
+    // in-app navigation saves as usual when the reader unmounts; closing the
+    // tab uses a keepalive request the browser finishes after unload.
+    on_cleanup(move || {
+        if save_pending.try_get_value() == Some(true) {
+            persist();
+        }
+    });
+    let pagehide = window_event_listener(leptos::ev::pagehide, move |_| {
+        if save_pending.get_value() {
+            save_pending.set_value(false);
+            if let Some((id, update)) = position() {
+                if session.authed.get_untracked() {
+                    api::save_progress_on_exit(&id, &update);
+                } else {
+                    persist_guest(&id, &update);
+                }
+            }
+        }
+    });
+    on_cleanup(move || pagehide.remove());
 
     let resize = window_event_listener(leptos::ev::resize, move |_| {
         cancel_flip();

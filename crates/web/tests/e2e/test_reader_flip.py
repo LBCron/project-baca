@@ -115,3 +115,27 @@ def test_reduced_motion_turns_without_paper(browser: Browser, book_with_chapters
         assert errors == [], errors[:3]
     finally:
         context.close()
+
+
+@pytest.mark.parametrize("width,spread", [(1024, True), (1023, False)])
+def test_spread_starts_at_the_desktop_breakpoint(browser: Browser, book_with_chapters: str, width, spread):
+    context, page, errors, _ = _open_long_chapter(browser, book_with_chapters, width, 800, reduced=True)
+    try:
+        assert page.evaluate("() => document.querySelector('.reader').classList.contains('spread')") is spread
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_space_on_a_control_activates_it_and_pinch_zoom_stays(browser: Browser, book_with_chapters: str):
+    context, page, errors, _ = _open_long_chapter(browser, book_with_chapters, 1280, 800, reduced=True)
+    try:
+        page.focus(".reader-tools .btn-type")
+        page.keyboard.press("Space")
+        page.wait_for_timeout(300)
+        assert page.query_selector(".type-sheet") is not None, "Space opens the type sheet"
+        assert page.evaluate(SCROLL_PAGE) == 0, "and does not turn the page"
+        assert page.evaluate("() => getComputedStyle(document.querySelector('.reader-stage')).touchAction") == "pinch-zoom"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()

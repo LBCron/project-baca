@@ -4,6 +4,10 @@
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
+/// Window width from which the reader opens as a two-page spread; the same
+/// number as the desktop breakpoint in `main.css`, and measured on the
+/// window, not the frame, whose padding would otherwise push the spread out
+/// to 1144 px windows.
 pub const TWO_COLUMN_MIN_WIDTH: i32 = 1024;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,12 +33,20 @@ pub fn paddings(el: &HtmlElement) -> Paddings {
     }
 }
 
-pub fn columns_for(width: i32) -> usize {
-    if width >= TWO_COLUMN_MIN_WIDTH {
+pub fn columns_for(window_width: i32) -> usize {
+    if window_width >= TWO_COLUMN_MIN_WIDTH {
         2
     } else {
         1
     }
+}
+
+pub fn window_width() -> i32 {
+    web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|w| w.as_f64())
+        .map(|w| w as i32)
+        .unwrap_or(0)
 }
 
 pub fn paragraphs(el: &HtmlElement) -> Vec<HtmlElement> {

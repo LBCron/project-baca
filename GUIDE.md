@@ -101,5 +101,5 @@ Notes:
 ## 7. Reader controls
 
 - Turn a page: drag anywhere on a touch screen, or from the outer 22% of the page with a mouse. Release past the middle or flick to finish; release early to fall back. Tap the edges, use the edge arrows on wide screens, or press Space / Shift+Space, the arrow keys, PageUp / PageDown. Home and End jump within the chapter.
-- Center tap dims the bars; tap again to restore them. The chapter title in the bar opens the chapter list on the book page. The last page resists, and a forward tap opens the finale card.
+- Center tap dims the bars; tap again to restore them. Two fingers zoom the page. With a button focused, Space presses the button instead of turning. The chapter title in the bar opens the chapter list on the book page. The last page resists, and a forward tap opens the finale card.
 - Reduced motion: a short crossfade replaces the paper animation.
