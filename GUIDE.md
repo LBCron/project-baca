@@ -96,7 +96,7 @@ Notes:
 - OTP mail never arrives: set `SMTP_SECURITY=none`; signup answers 502 while SMTP is unreachable.
 - Uploads fail with 500: MinIO is unreachable; buckets are created at boot.
 - Worker never consumes: check `XINFO GROUPS stream:epub_ingestion`; the group is created when the worker starts.
-- Frontend change not visible: Trunk watches `src`, `style`, and `index.html` of `crates/web` only; a `crates/shared` change needs a Trunk restart.
+- Frontend change not visible: Trunk watches `src`, `style`, `index.html`, `sw.js`, `boot.js`, the manifest, `icons`, and `fonts` of `crates/web`; a `crates/shared` change needs a Trunk restart.
 
 ## 7. Reader controls
 

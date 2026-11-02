@@ -1,18 +1,23 @@
 /* Rotaria service worker.
  *
- * - Hashed WASM/CSS/JS/fonts/images: cache-first. Trunk renames files every
- *   build, so entries that the newest index.html no longer references are
- *   pruned after each successful shell fetch.
+ * - Content-hashed build output (wasm, js, css) and the self-hosted fonts:
+ *   cache-first. Their names change whenever their bytes do, so entries the
+ *   newest index.html no longer references are pruned after each shell fetch.
+ * - Every other static file (boot.js, icons, illustrations, manifest):
+ *   network-first, the cache answering only offline, so a deploy reaches a
+ *   returning reader on the next visit without bumping a cache version.
+ * - Navigations: network-first; the one shell entry ("/") is refreshed and
+ *   answers every route offline, since the SPA serves the same document for
+ *   all of them.
  * - /api/* : never cached, always network (stale API data and cross-user
  *   leaks are worse than offline errors).
- * - Navigations + manifest: network-first; offline, the cached page or the
- *   cached shell ("/") answers, so deep links open on the saved app too.
  */
-const SHELL_CACHE = "rotaria-shell-v2";
-const ASSET_CACHE = "rotaria-assets-v2";
+const SHELL_CACHE = "rotaria-shell-v3";
+const ASSET_CACHE = "rotaria-assets-v3";
 const SHELL_URL = "/";
-const ASSET_RE = /\.(wasm|js|css|png|svg|jpg|jpeg|webp|woff2?)$/;
-const HASHED_ASSET_RE = /^\/(?:[a-z0-9_-]+-[0-9a-f]{8,}(?:_bg)?\.(?:wasm|js|css))$/i;
+const STATIC_RE = /\.(?:wasm|js|css|png|svg|jpg|jpeg|webp|woff2?|webmanifest)$/;
+const IMMUTABLE_RE = /^\/(?:[a-z0-9_-]+-[0-9a-f]{8,}(?:_bg)?\.(?:wasm|js|css)|fonts\/[^/]+\.woff2)$/i;
+const HASHED_BUILD_RE = /^\/[a-z0-9_-]+-[0-9a-f]{8,}(?:_bg)?\.(?:wasm|js|css)$/i;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -39,7 +44,7 @@ self.addEventListener("activate", (event) => {
 });
 
 /* Drops hashed build artifacts that the freshly fetched shell no longer
- * references; images and fonts keep their own lifetime. */
+ * references; fonts and unhashed files keep their entries. */
 async function pruneStaleAssets(shellResponse) {
   try {
     const html = await shellResponse.text();
@@ -50,7 +55,7 @@ async function pruneStaleAssets(shellResponse) {
     const cache = await caches.open(ASSET_CACHE);
     for (const request of await cache.keys()) {
       const pathname = new URL(request.url).pathname;
-      if (HASHED_ASSET_RE.test(pathname) && !live.has(pathname)) {
+      if (HASHED_BUILD_RE.test(pathname) && !live.has(pathname)) {
         await cache.delete(request);
       }
     }
@@ -59,48 +64,50 @@ async function pruneStaleAssets(shellResponse) {
   }
 }
 
+async function cacheFirst(request) {
+  const cache = await caches.open(ASSET_CACHE);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const fresh = await fetch(request);
+  if (fresh && fresh.ok) cache.put(request, fresh.clone());
+  return fresh;
+}
+
+/* Network answer stored under `key`; offline, the stored copy. */
+async function networkFirst(request, cacheName, key) {
+  const cache = await caches.open(cacheName);
+  try {
+    const fresh = await fetch(request);
+    if (fresh && fresh.ok) cache.put(key, fresh.clone());
+    return fresh;
+  } catch (e) {
+    const cached = await cache.match(key);
+    if (cached) return cached;
+    throw e;
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
+  if (url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
 
-  if (url.pathname.startsWith("/api/")) return;
-
-  if (ASSET_RE.test(url.pathname)) {
+  if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
-        const cache = await caches.open(ASSET_CACHE);
-        const hit = await cache.match(request);
-        if (hit) return hit;
-        const fresh = await fetch(request);
-        if (fresh && fresh.ok) cache.put(request, fresh.clone());
-        return fresh;
+        const response = await networkFirst(request, SHELL_CACHE, SHELL_URL);
+        if (response.ok) pruneStaleAssets(response.clone());
+        return response;
       })()
     );
     return;
   }
-
-  if (request.mode === "navigate" || url.pathname.endsWith("manifest.webmanifest")) {
-    event.respondWith(
-      (async () => {
-        const cache = await caches.open(SHELL_CACHE);
-        try {
-          const fresh = await fetch(request);
-          if (fresh && fresh.ok) {
-            cache.put(request, fresh.clone());
-            if (request.mode === "navigate") pruneStaleAssets(fresh.clone());
-          }
-          return fresh;
-        } catch (e) {
-          const cached = await cache.match(request);
-          if (cached) return cached;
-          if (request.mode === "navigate") {
-            const shell = await cache.match(SHELL_URL);
-            if (shell) return shell;
-          }
-          throw e;
-        }
-      })()
-    );
+  if (IMMUTABLE_RE.test(url.pathname)) {
+    event.respondWith(cacheFirst(request));
+    return;
+  }
+  if (STATIC_RE.test(url.pathname)) {
+    event.respondWith(networkFirst(request, ASSET_CACHE, request));
   }
 });

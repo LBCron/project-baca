@@ -18,7 +18,7 @@ Raw texts and typography are sourced from open literary preservation initiatives
 
 * **Project Gutenberg:** [www.gutenberg.org](https://www.gutenberg.org) — Public domain text archive.
 * **Standard Ebooks:** [standardebooks.org](https://standardebooks.org) — Clean typography and modern EPUB3 editions.
-* **Typography:** Fonts (*EB Garamond*, *Newsreader*, *Plus Jakarta Sans*) licensed under [SIL Open Font License 1.1](http://scripts.sil.org/OFL).
+* **Typography:** Fonts (*EB Garamond*, *Newsreader*, *Plus Jakarta Sans*) licensed under [SIL Open Font License 1.1](http://scripts.sil.org/OFL), self-hosted from `crates/web/fonts/` (woff2 subsets from Google Fonts) with each family's `OFL-*.txt` alongside.
 
 ## 3. Third-Party Open Source Software
 

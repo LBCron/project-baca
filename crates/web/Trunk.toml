@@ -4,7 +4,7 @@ release = false
 dist = "dist"
 
 [watch]
-watch = ["src", "style", "index.html"]
+watch = ["src", "style", "index.html", "sw.js", "boot.js", "manifest.webmanifest", "icons", "fonts"]
 ignore = ["dist"]
 
 [serve]
