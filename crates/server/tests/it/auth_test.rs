@@ -884,10 +884,13 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
 #[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
 async fn test_auth_signup_ip_cap_eleven_per_hour() {
     let harness = TestHarness::new().await;
-    if harness.live_only().await.is_none() {
+    let Some(mut redis_conn) = harness.live_only().await else {
         panic!("live services required (BACA_LIVE_TEST=1 with db-up)");
-    }
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    };
+    // The cap counts every signup from the address for an hour, so the test
+    // starts from an empty counter instead of hoping no other test drew it.
+    let ip = unique_ip("198.18");
+    let _: () = redis_conn.del(format!("otp:signup:ip:{ip}")).await.unwrap();
     let mut last_status = StatusCode::CREATED;
     for i in 0..11 {
         let signup_req = SignupRequest {
