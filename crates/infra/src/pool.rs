@@ -51,6 +51,35 @@ pub fn init_redis_client(config: &AppConfig) -> Result<redis::Client, AppError> 
         .map_err(|e| AppError::Internal(format!("Failed to initialize Redis client: {e}")))
 }
 
+/// Shared Redis handle that reconnects after the server restarts or the
+/// socket drops. Cloning is cheap; every clone shares one socket.
+pub type RedisConn = redis::aio::ConnectionManager;
+
+/// Seconds a client should wait before retrying while Redis is unreachable.
+pub const REDIS_RETRY_AFTER_SECS: u64 = 5;
+
+/// Opens the shared [`RedisConn`].
+///
+/// The manager's own backoff starts at one second and multiplies by its
+/// factor up to a minute, which would park requests for the whole outage.
+/// With no internal retries a request during an outage fails within the
+/// connect timeout, and the next request after recovery triggers the
+/// reconnect, so callers answer 503 quickly and heal without a restart.
+pub async fn init_redis_conn(client: &redis::Client) -> Result<RedisConn, AppError> {
+    let config = redis::aio::ConnectionManagerConfig::new()
+        .set_number_of_retries(0)
+        .set_connection_timeout(Duration::from_secs(1))
+        .set_response_timeout(Duration::from_secs(3));
+    redis::aio::ConnectionManager::new_with_config(client.clone(), config)
+        .await
+        .map_err(|e| {
+            tracing::warn!(target: "infra::redis", error = %e, "Redis unreachable");
+            AppError::ServiceUnavailable {
+                retry_after: REDIS_RETRY_AFTER_SECS,
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::redacted_endpoint;

@@ -1,6 +1,8 @@
 //! HTTP REST API server.
 
-use infra::{build_embedding_provider, init_db_pool, init_redis_client, AppConfig};
+use infra::{
+    build_embedding_provider, init_db_pool, init_redis_client, init_redis_conn, AppConfig,
+};
 use sea_orm::DatabaseConnection;
 use server::{create_app, AppState};
 use std::net::SocketAddr;
@@ -33,9 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         e
     })?);
 
-    // Attempt DB and Redis initialization (graceful fallback if offline during initial build check)
+    // Production refuses to boot without its stores so the orchestrator
+    // restarts the container; development keeps running for offline work.
     let db = match init_db_pool(&config).await {
         Ok(pool) => pool,
+        Err(e) if config.is_production() => {
+            tracing::error!("Postgres connection failed in production ({e}). Refusing to boot.");
+            return Err(e.into());
+        }
         Err(e) => {
             tracing::warn!("Postgres connection failed ({e}). Running in standalone mode.");
             DatabaseConnection::Disconnected
@@ -54,13 +61,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let redis_conn = match redis.get_multiplexed_tokio_connection().await {
+    let redis_conn = match init_redis_conn(&redis).await {
         Ok(conn) => {
-            tracing::info!("Pre-initialized shared multiplexed Redis connection");
+            tracing::info!("Shared Redis connection ready");
             Some(conn)
         }
+        Err(e) if config.is_production() => {
+            tracing::error!("Redis unreachable in production ({e}). Refusing to boot.");
+            return Err(e.into());
+        }
         Err(e) => {
-            tracing::warn!("Failed to pre-initialize multiplexed Redis connection: {e}");
+            tracing::warn!("Redis unreachable at boot ({e}); connecting per request.");
             None
         }
     };

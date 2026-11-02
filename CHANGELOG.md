@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Fixed
+- Redis restarts no longer break login and bearer routes until an API restart: one reconnecting handle serves every request, an outage answers 503 instead of 401, and the next request after recovery reconnects. In production the server exits when Postgres or Redis is unreachable at boot; S3 calls stop after 15 s; request-id spans no longer leak across awaits.
+
 ### Security
 - Client address comes from one header: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` (default `x-forwarded-for`) is read; `Caddyfile.prod` strips the other address headers. The default JWT secret is refused whenever proxy headers are trusted.
 - Worker sanitizer re-escapes decoded character references, so markup hidden in entities stays text.

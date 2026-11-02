@@ -93,7 +93,7 @@ pub fn verify_access_token(token: &str, secret: &str) -> Result<Claims, AppError
 
 /// Blacklists an access token by its JTI in Redis until expiration
 pub async fn blacklist_access_token(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     jti: Uuid,
     ttl_seconds: u64,
 ) -> Result<(), AppError> {
@@ -110,7 +110,7 @@ pub async fn blacklist_access_token(
 
 /// Checks whether an access token JTI is in the Redis blacklist
 pub async fn is_token_blacklisted(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     jti: Uuid,
 ) -> Result<bool, AppError> {
     let redis_key = format!("blacklist:jti:{jti}");
@@ -123,7 +123,7 @@ pub async fn is_token_blacklisted(
 
 /// Records a timestamp before which all issued tokens for a user are considered revoked
 pub async fn invalidate_user_tokens(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     ttl_seconds: u64,
 ) -> Result<(), AppError> {
@@ -140,7 +140,7 @@ pub async fn invalidate_user_tokens(
 
 /// Checks whether a token's issuance time (iat) is prior to the user's revocation timestamp
 pub async fn is_user_token_revoked(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     token_iat: usize,
 ) -> Result<bool, AppError> {
@@ -189,7 +189,7 @@ fn session_key(token_hash: &str) -> String {
 }
 
 async fn write_session_record(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     token_hash: &str,
     record: &SessionRecord,
     ttl_seconds: u64,
@@ -202,7 +202,7 @@ async fn write_session_record(
 }
 
 async fn read_session_record(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     token_hash: &str,
 ) -> Option<SessionRecord> {
     let json: Option<String> = redis.get(session_key(token_hash)).await.unwrap_or(None);
@@ -213,7 +213,7 @@ async fn read_session_record(
 /// plus the session record readers see on their shelf. Only the SHA-256 hash
 /// is persisted: a Redis dump must not yield directly usable session tokens.
 pub async fn store_refresh_token(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     token: &str,
     user_id: Uuid,
     expiry_days: u64,
@@ -254,12 +254,7 @@ pub async fn store_refresh_token(
 
 /// Points the session record of a refresh token at the access token just
 /// issued with it and marks it seen now.
-pub async fn touch_session(
-    redis: &mut redis::aio::MultiplexedConnection,
-    token: &str,
-    jti: Uuid,
-    expiry_days: u64,
-) {
+pub async fn touch_session(redis: &mut crate::RedisConn, token: &str, jti: Uuid, expiry_days: u64) {
     let hash = token_hash(token);
     if let Some(mut record) = read_session_record(redis, &hash).await {
         record.jti = jti;
@@ -270,7 +265,7 @@ pub async fn touch_session(
 
 /// Every live session of a user, keyed by session id (the token hash).
 pub async fn list_sessions(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
 ) -> Vec<(String, Option<SessionRecord>)> {
     let user_set_key = format!("user_refresh_tokens:{user_id}");
@@ -294,7 +289,7 @@ pub async fn list_sessions(
 /// Revokes one session of the user: its refresh token dies and the access
 /// token last issued with it is blacklisted. False when the id is not theirs.
 pub async fn revoke_session(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     session_id: &str,
     access_ttl_seconds: u64,
@@ -319,7 +314,7 @@ pub async fn revoke_session(
 /// Signs every other device out while the caller (identified by the access
 /// token it holds) stays signed in; no global revocation stamp is written.
 pub async fn revoke_other_sessions_keeping(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     current_jti: Uuid,
     access_ttl_seconds: u64,
@@ -379,7 +374,7 @@ pub enum RefreshOutcome {
 /// GETDEL guarantees a single winner among concurrent presenters; losers are
 /// resolved against the rotation record (grace successor or replay).
 pub async fn validate_and_rotate_refresh_token(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     old_token: &str,
     expiry_days: u64,
 ) -> Result<RefreshOutcome, AppError> {
@@ -447,7 +442,7 @@ pub async fn validate_and_rotate_refresh_token(
 /// A token absent from the live set was never issued, was rotated inside the
 /// grace window (hand back the same successor), or was rotated earlier.
 async fn resolve_consumed_token(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     old_hash: &str,
 ) -> Result<RefreshOutcome, AppError> {
     let rotated_owner: Option<String> = redis.get(rotated_key(old_hash)).await.unwrap_or(None);
@@ -473,7 +468,7 @@ async fn resolve_consumed_token(
 /// issued with it, so a logout that carries no `Authorization` header still
 /// ends the whole session.
 pub async fn revoke_refresh_token(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     token: &str,
     access_ttl_seconds: u64,
 ) -> Result<(), AppError> {
@@ -501,7 +496,7 @@ pub async fn revoke_refresh_token(
 
 /// Revokes all active refresh tokens and access tokens for the specified user
 pub async fn revoke_all_user_sessions(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     access_token_max_expiry_secs: u64,
 ) -> Result<(), AppError> {
@@ -516,7 +511,7 @@ pub async fn revoke_all_user_sessions(
 /// Deletes every refresh token in the user's family without touching access
 /// tokens. Shared by full revocation and theft-triggered family revocation.
 async fn revoke_refresh_family(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
 ) -> Result<(), AppError> {
     let user_set_key = format!("user_refresh_tokens:{user_id}");
@@ -532,7 +527,7 @@ async fn revoke_refresh_family(
 /// Reuse of a rotated (dead) refresh token signals theft: kill the whole
 /// family so the attacker's copy dies with the victim's session.
 pub async fn revoke_family_on_reuse(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     access_token_max_expiry_secs: u64,
 ) -> Result<(), AppError> {
@@ -542,7 +537,7 @@ pub async fn revoke_family_on_reuse(
 
 /// Revokes all refresh tokens for a user except the specified one
 pub async fn revoke_other_user_sessions(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     user_id: Uuid,
     keep_token: Option<&str>,
 ) -> Result<(), AppError> {

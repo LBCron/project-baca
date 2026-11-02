@@ -36,7 +36,7 @@ pub fn generate_numeric_otp() -> String {
 
 /// Generates a random 6-digit numeric OTP and stores its SHA-256 hash in Redis
 pub async fn generate_and_store_otp(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     email: &str,
 ) -> Result<String, AppError> {
     let otp_str = generate_numeric_otp();
@@ -61,7 +61,7 @@ pub async fn generate_and_store_otp(
 
 /// Verifies a 6-digit OTP against its Redis record, enforcing attempt limits
 pub async fn verify_and_consume_otp(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut crate::RedisConn,
     email: &str,
     otp: &str,
 ) -> Result<bool, AppError> {

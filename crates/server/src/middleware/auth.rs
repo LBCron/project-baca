@@ -2,10 +2,20 @@
 
 use crate::{error::HttpError, AppState};
 use axum::{extract::FromRequestParts, http::request::Parts};
-use infra::{is_token_blacklisted, is_user_token_revoked, security::jwt::verify_access_token};
+use infra::{
+    is_token_blacklisted, is_user_token_revoked, security::jwt::verify_access_token,
+    REDIS_RETRY_AFTER_SECS,
+};
 use shared::AppError;
 use std::sync::Arc;
 use uuid::Uuid;
+
+fn auth_state_unavailable(context: &str, error: AppError) -> HttpError {
+    tracing::warn!(target: "server::auth", error = %error, "{context}; rejecting request");
+    HttpError(AppError::ServiceUnavailable {
+        retry_after: REDIS_RETRY_AFTER_SECS,
+    })
+}
 
 /// Authenticated user extracted from a valid JWT Bearer token
 #[derive(Debug, Clone)]
@@ -44,22 +54,16 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             verify_access_token(token, state.config.jwt_secret()).map_err(HttpError::from)?;
 
         // Fail closed when auth state cannot be verified: a revoked token must
-        // never be accepted just because Redis is unreachable.
-        let mut redis_conn = state.get_redis_conn().await.map_err(|e| {
-            tracing::warn!(target: "server::auth", error = %e, "Redis unavailable; rejecting request");
-            HttpError(AppError::Unauthorized(
-                "Authentication service temporarily unavailable".to_string(),
-            ))
-        })?;
+        // never be accepted just because Redis is unreachable. The answer is
+        // 503, not 401, so clients keep a token that is still valid.
+        let mut redis_conn = state
+            .get_redis_conn()
+            .await
+            .map_err(|e| auth_state_unavailable("Redis unavailable", e))?;
 
         if is_token_blacklisted(&mut redis_conn, claims.jti)
             .await
-            .map_err(|e| {
-                tracing::warn!(target: "server::auth", error = %e, "Blacklist check failed; rejecting request");
-                HttpError(AppError::Unauthorized(
-                    "Authentication service temporarily unavailable".to_string(),
-                ))
-            })?
+            .map_err(|e| auth_state_unavailable("Blacklist check failed", e))?
         {
             return Err(HttpError(AppError::Unauthorized(
                 "Access token has been revoked. Please log in again.".to_string(),
@@ -68,12 +72,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
 
         if is_user_token_revoked(&mut redis_conn, claims.sub, claims.iat)
             .await
-            .map_err(|e| {
-                tracing::warn!(target: "server::auth", error = %e, "Revocation check failed; rejecting request");
-                HttpError(AppError::Unauthorized(
-                    "Authentication service temporarily unavailable".to_string(),
-                ))
-            })?
+            .map_err(|e| auth_state_unavailable("Revocation check failed", e))?
         {
             return Err(HttpError(AppError::Unauthorized(
                 "Session has been invalidated. Please log in again.".to_string(),

@@ -18,7 +18,7 @@ Dependency direction: `server` -> `infra` -> `domain`; `shared` is used by all. 
 
 Caddy terminates TLS and HTTP/3, serves the SPA from `dist/` with security headers and an immutable cache for hashed assets, proxies `/api/*` to Axum, and strips every client-address header except `X-Forwarded-For`, which it overwrites.
 
-Axum layers, outermost first: tracing, CORS (`CORS_ALLOWED_ORIGINS`), server-minted `x-request-id`, security headers. Per-router limiters on one Redis fixed-window engine (`middleware/rate_limit.rs`): auth 20/min per IP; AI 10/min per user or guest IP; public reads `PUBLIC_RATE_LIMIT_PER_MINUTE` per IP on books, covers, insights, and gamification when the value is above 0. The admin router raises the body limit to 50 MB plus 64 KiB; the upload handler enforces 50 MB while streaming. Redis outage on auth or AI paths answers 503 (fail closed).
+Axum layers, outermost first: tracing, CORS (`CORS_ALLOWED_ORIGINS`), server-minted `x-request-id`, security headers. Per-router limiters on one Redis fixed-window engine (`middleware/rate_limit.rs`): auth 20/min per IP; AI 10/min per user or guest IP; public reads `PUBLIC_RATE_LIMIT_PER_MINUTE` per IP on books, covers, insights, and gamification when the value is above 0. The admin router raises the body limit to 50 MB plus 64 KiB; the upload handler enforces 50 MB while streaming. One reconnecting Redis handle (`ConnectionManager`, no internal retries, 1 s connect and 3 s response timeouts) serves every request: during an outage auth, AI, and bearer routes answer 503 (fail closed, so clients keep valid tokens), and the first request after recovery reconnects. S3 calls are capped at 15 s including SDK retries.
 
 ## 3. API surface
 
@@ -114,6 +114,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 - `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio (internal network only), server, worker, edge (Caddy on 80 and 443 TCP and UDP). Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
 - `make build` compiles release binaries and the WASM bundle with `API_BASE_URL` baked in.
+- With `APP_ENV=production` the server exits non-zero when Postgres or Redis is unreachable at boot, and `restart: always` retries; development keeps running without them.
 - The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
 - Observability: tracing with `x-request-id` on every span; `LOG_FORMAT=json` for NDJSON.
 

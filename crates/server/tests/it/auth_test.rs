@@ -4,7 +4,7 @@ use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::TestHarness;
+use common::{provision_verified_user, TestHarness};
 use pretty_assertions::assert_eq;
 use redis::AsyncCommands;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, ConnectionTrait, Statement};
@@ -647,63 +647,6 @@ async fn test_auth_guest_progress_merge() {
 // Adversarial tests need live Postgres + Redis (`#[ignore]` by default,
 // run with `BACA_LIVE_TEST=1`). Unique email + TEST-NET IP per test keeps
 // rate-limit and lockout buckets isolated across parallel runs.
-
-/// Builds a fully verified user via the real signup → OTP → verify flow and
-/// returns (access_token, refresh_token). Panics loudly when services are down.
-async fn provision_verified_user(
-    harness: &TestHarness,
-    redis_conn: &mut redis::aio::MultiplexedConnection,
-    tag: &str,
-    ip: &str,
-) -> (String, String) {
-    use redis::AsyncCommands;
-
-    let email = format!("adv_{tag}_{}@example.com", Uuid::new_v4());
-    harness.track_email(&email);
-    let password = "Adversarial123!";
-    let signup_req = SignupRequest {
-        display_name: format!("Adv{tag}"),
-        email: email.clone(),
-        password: password.to_string(),
-    };
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/signup")
-        .header(common::CLIENT_IP_HEADER, ip)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
-        .unwrap();
-    let (resp, _) = harness.send_json_request(req).await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let known_otp = "424242";
-    let record_json =
-        serde_json::json!({ "hash": infra::hash_otp(known_otp), "attempts": 0 }).to_string();
-    let _: () = redis_conn
-        .set_ex(format!("otp:{email}"), record_json, 600)
-        .await
-        .unwrap();
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/verify-otp")
-        .header(common::CLIENT_IP_HEADER, ip)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&VerifyOtpRequest {
-                email: email.clone(),
-                otp: known_otp.to_string(),
-            })
-            .unwrap(),
-        ))
-        .unwrap();
-    let (resp, body) = harness.send_json_request(req).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    (
-        body["data"]["access_token"].as_str().unwrap().to_string(),
-        body["data"]["refresh_token"].as_str().unwrap().to_string(),
-    )
-}
 
 /// Sleeps until the wall clock crosses into the next whole second.
 /// Needed because revocation compares whole-second `iat <= revoked_before`.

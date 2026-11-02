@@ -59,7 +59,7 @@ fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta
 
 async fn issue_token_pair(
     state: &AppState,
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut infra::RedisConn,
     user: &users::Model,
     issued_at: usize,
     headers: &HeaderMap,
@@ -98,7 +98,7 @@ async fn issue_token_pair(
 /// 5 failures so hammering a victim's address cannot lock the victim out
 /// from their own network; the per-email aggregate caps distributed guessing
 /// at 20 failures per 15 minutes.
-async fn note_login_failure(redis: &mut redis::aio::MultiplexedConnection, email: &str, ip: &str) {
+async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
     let pair_fail_key = format!("auth:login:fail:{email}:{ip}");
     let pair_count: Result<i64, _> = redis.incr(&pair_fail_key, 1).await;
     if let Ok(c) = pair_count {
@@ -121,7 +121,7 @@ async fn note_login_failure(redis: &mut redis::aio::MultiplexedConnection, email
 
 /// Returns the lockout retry delay when the pair or aggregate lock is set.
 async fn login_lockout_retry_after(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut infra::RedisConn,
     email: &str,
     ip: &str,
 ) -> Option<u64> {

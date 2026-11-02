@@ -1,8 +1,13 @@
 //! MinIO/S3 storage service: EPUB upload bucket and cover image bucket.
 
 use aws_credential_types::Credentials;
-use aws_sdk_s3::{config::Region, primitives::ByteStream, Client};
+use aws_sdk_s3::{
+    config::{timeout::TimeoutConfig, Region},
+    primitives::ByteStream,
+    Client,
+};
 use shared::AppError;
+use std::time::Duration;
 
 use crate::StorageConfig;
 
@@ -21,11 +26,24 @@ pub struct StoredObject {
     pub content_type: Option<String>,
 }
 
+/// Upper bound for one S3 call including the SDK's retries, so a store that
+/// accepts connections but never answers cannot hold a request open.
+pub const S3_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const S3_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 impl StorageService {
     /// Builds the service from [`StorageConfig`], creating both buckets when
     /// absent (idempotent; concurrent creates resolve to success or
     /// already-owned).
     pub async fn init(config: &StorageConfig) -> Result<Self, AppError> {
+        let service = Self::connect(config);
+        service.ensure_bucket(&service.bucket_epubs).await?;
+        service.ensure_bucket(&service.bucket_covers).await?;
+        Ok(service)
+    }
+
+    /// Builds the client without touching the store.
+    pub fn connect(config: &StorageConfig) -> Self {
         let credentials = Credentials::new(
             config.access_key_id.clone(),
             config.secret_access_key.clone(),
@@ -38,18 +56,20 @@ impl StorageService {
             .credentials_provider(credentials)
             .region(Region::new(config.region.clone()))
             .force_path_style(config.force_path_style)
+            .timeout_config(
+                TimeoutConfig::builder()
+                    .connect_timeout(S3_CONNECT_TIMEOUT)
+                    .operation_timeout(S3_OPERATION_TIMEOUT)
+                    .build(),
+            )
             .behavior_version_latest()
             .build();
-        let client = Client::from_conf(s3_config);
 
-        let service = Self {
-            client,
+        Self {
+            client: Client::from_conf(s3_config),
             bucket_epubs: config.bucket_epubs.clone(),
             bucket_covers: config.bucket_covers.clone(),
-        };
-        service.ensure_bucket(&service.bucket_epubs).await?;
-        service.ensure_bucket(&service.bucket_covers).await?;
-        Ok(service)
+        }
     }
 
     async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {

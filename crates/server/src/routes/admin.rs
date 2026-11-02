@@ -163,7 +163,8 @@ pub async fn list_dlq(
     Query(query): Query<DlqQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&state, &auth_user).await.map_err(HttpError)?;
-    let entries = list_dlq_entries(&state.redis, query.limit.unwrap_or(50))
+    let mut redis = state.get_redis_conn().await.map_err(HttpError)?;
+    let entries = list_dlq_entries(&mut redis, query.limit.unwrap_or(50))
         .await
         .map_err(HttpError)?;
     Ok((StatusCode::OK, Json(ApiResponse::success(entries))))
@@ -191,7 +192,8 @@ pub async fn replay_dlq(
     Path(entry_id): Path<String>,
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&state, &auth_user).await.map_err(HttpError)?;
-    let job_id = replay_dlq_entry(&state.redis, &entry_id)
+    let mut redis = state.get_redis_conn().await.map_err(HttpError)?;
+    let job_id = replay_dlq_entry(&mut redis, &entry_id)
         .await
         .map_err(HttpError)?
         .ok_or_else(|| {
@@ -376,14 +378,16 @@ pub async fn upload_book(
         ))));
     }
 
-    let job_id = publish_ingestion_job(&state.redis, book_id, &storage_path)
-        .await
-        .map_err(|e| {
-            // The book row stays as `draft` (visible to admins, invisible to
-            // readers) so a retry or reaper can pick it up later.
-            tracing::warn!(target: "server::admin", "Queue publish failed; book left as draft: {e}");
-            HttpError::from(e)
-        })?;
+    let published = match state.get_redis_conn().await {
+        Ok(mut redis) => publish_ingestion_job(&mut redis, book_id, &storage_path).await,
+        Err(e) => Err(e),
+    };
+    let job_id = published.map_err(|e| {
+        // The book row stays as `draft` (visible to admins, invisible to
+        // readers) so a retry or reaper can pick it up later.
+        tracing::warn!(target: "server::admin", "Queue publish failed; book left as draft: {e}");
+        HttpError::from(e)
+    })?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -426,7 +430,8 @@ pub async fn ingestion_status(
         )));
     }
 
-    let status = get_job_status(&state.redis, job_id)
+    let mut redis = state.get_redis_conn().await.map_err(HttpError)?;
+    let status = get_job_status(&mut redis, job_id)
         .await
         .map_err(HttpError)?
         .ok_or_else(|| HttpError(AppError::NotFound("Ingestion job not found".to_string())))?;

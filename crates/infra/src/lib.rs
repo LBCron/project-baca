@@ -16,7 +16,9 @@ pub use config::{
     SmtpSecurity, StorageConfig,
 };
 pub use email::send_otp_email;
-pub use pool::{init_db_pool, init_redis_client};
+pub use pool::{
+    init_db_pool, init_redis_client, init_redis_conn, RedisConn, REDIS_RETRY_AFTER_SECS,
+};
 pub use queue::{
     get_job_status, list_dlq_entries, publish_ingestion_job, replay_dlq_entry,
     INGESTION_DLQ_STREAM, INGESTION_GROUP, INGESTION_STREAM,
@@ -52,4 +54,4 @@ pub use security::{
     issue_access_token, list_sessions, revoke_other_sessions_keeping, revoke_session,
     touch_session, SessionMeta, SessionRecord,
 };
-pub use storage::StorageService;
+pub use storage::{StorageService, S3_OPERATION_TIMEOUT};

@@ -13,12 +13,13 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{AppConfig, EmbeddingProvider, StorageService};
+use infra::{init_redis_conn, AppConfig, EmbeddingProvider, RedisConn, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
+use tracing::Instrument;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -29,7 +30,7 @@ pub static REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id
 pub struct AppState {
     pub db: DatabaseConnection,
     pub redis: redis::Client,
-    pub redis_conn: Option<redis::aio::MultiplexedConnection>,
+    pub redis_conn: Option<RedisConn>,
     pub config: Arc<AppConfig>,
     /// Dual-mode embedding provider (Gemini REST API or FastEmbed CPU).
     /// Wrapped in Arc so cloning AppState does not clone the provider internals.
@@ -40,17 +41,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Returns a multiplexed Redis connection handle.
-    /// If pre-initialized, clones the handle in sub-microseconds without opening a new TCP socket.
-    /// Falls back to establishing a new multiplexed connection if not pre-initialized.
-    pub async fn get_redis_conn(&self) -> Result<redis::aio::MultiplexedConnection, AppError> {
-        if let Some(conn) = &self.redis_conn {
-            Ok(conn.clone())
-        } else {
-            self.redis
-                .get_multiplexed_tokio_connection()
-                .await
-                .map_err(|e| AppError::Internal(format!("Redis connection failed: {e}")))
+    /// Shared reconnecting Redis handle. A process that booted without Redis
+    /// (development only) opens one per call until Redis appears; either
+    /// way an outage surfaces as `ServiceUnavailable`.
+    pub async fn get_redis_conn(&self) -> Result<RedisConn, AppError> {
+        match &self.redis_conn {
+            Some(conn) => Ok(conn.clone()),
+            None => init_redis_conn(&self.redis).await,
         }
     }
 }
@@ -195,9 +192,7 @@ pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> R
     };
 
     let span = tracing::info_span!("http_request", request_id = %request_id);
-    let _guard = span.enter();
-
-    let mut response = next.run(req).await;
+    let mut response = next.run(req).instrument(span).await;
     response
         .headers_mut()
         .insert(REQUEST_ID_HEADER.clone(), request_id_value);

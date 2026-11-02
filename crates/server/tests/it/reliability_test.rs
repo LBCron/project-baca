@@ -4,14 +4,16 @@ use crate::common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use common::TestHarness;
-use infra::{build_embedding_provider, AiConfig, AppConfig};
+use common::{provision_verified_user, TestHarness, PROVISIONED_PASSWORD};
+use infra::{build_embedding_provider, AiConfig, AppConfig, StorageService, S3_OPERATION_TIMEOUT};
 use mockall::automock;
 use pretty_assertions::assert_eq;
 use sea_orm::DatabaseConnection;
 use server::{create_app, AppState};
 use shared::{AppError, BookSummaryDto};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tower::ServiceExt;
 use uuid::Uuid;
 
 #[automock]
@@ -19,14 +21,8 @@ pub trait BookCatalogPort: Send + Sync {
     fn find_book_by_id(&self, id: &Uuid) -> Result<Option<BookSummaryDto>, AppError>;
 }
 
-#[tokio::test]
-async fn test_reliability_disconnected_database_fallback() {
-    let mut config = AppConfig::default();
-    config.database.url = "postgresql://invalid_host:5433/none".to_string();
-    let config = Arc::new(config);
-
-    let redis = redis::Client::open("redis://127.0.0.1:6380").unwrap();
-
+/// App with no database and no shared Redis handle, for fault injection.
+fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Router {
     let embedding = build_embedding_provider(&AiConfig {
         provider: "fastembed".to_string(),
         api_key: String::new(),
@@ -35,16 +31,33 @@ async fn test_reliability_disconnected_database_fallback() {
     })
     .expect("fastembed stub must always succeed");
 
-    let state = Arc::new(AppState {
+    create_app(Arc::new(AppState {
         db: DatabaseConnection::Disconnected,
-        redis,
+        redis: redis::Client::open("redis://127.0.0.1:6380").unwrap(),
         redis_conn: None,
-        config,
+        config: Arc::new(config),
         embedding,
-        storage: None,
-    });
+        storage: storage.map(Arc::new),
+    }))
+}
 
-    let app = create_app(state);
+fn get(uri: &str) -> Request<Body> {
+    Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+fn get_bearer(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_reliability_disconnected_database_fallback() {
+    let mut config = AppConfig::default();
+    config.database.url = "postgresql://invalid_host:5433/none".to_string();
+    let app = offline_app(config, None);
 
     let req = Request::builder()
         .method("GET")
@@ -160,4 +173,128 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
     harness.cleanup().await;
+}
+
+/// Redis goes away under a running API and comes back: bearer routes answer
+/// 503 (so clients keep their tokens) while health reports Redis down, and
+/// the same process serves login and `/me` again without a restart.
+#[tokio::test]
+async fn test_redis_outage_answers_503_and_heals_without_restart() {
+    let base = AppConfig::from_env().unwrap_or_default();
+    let upstream = common::redis_upstream(&base);
+    let mut relay = common::TcpRelay::start(&upstream).await;
+    let relay_url = base
+        .redis
+        .url
+        .replacen(&upstream, &format!("127.0.0.1:{}", relay.port()), 1);
+    let harness = TestHarness::with_config(|c| c.redis.url = relay_url).await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let ip = format!(
+        "198.18.{}.{}",
+        (Uuid::new_v4().as_u128() % 250) as u8,
+        (Uuid::new_v4().as_u128() % 250) as u8
+    );
+    let (access, _) = provision_verified_user(&harness, &mut redis, "relay", &ip).await;
+    let (resp, me) = harness
+        .send_json_request(get_bearer("/api/v1/me", &access))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let email = me["data"]["email"].as_str().unwrap().to_string();
+
+    relay.cut().await;
+    let resp = harness
+        .send_request(get_bearer("/api/v1/me", &access))
+        .await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let (_, health) = harness.send_json_request(get("/api/v1/health")).await;
+    assert_eq!(health["data"]["redis"], "disconnected");
+
+    relay.restore().await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let resp = harness
+            .send_request(get_bearer("/api/v1/me", &access))
+            .await;
+        if resp.status() == StatusCode::OK {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "API still answers {} 5 s after Redis returned",
+            resp.status()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let login = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "email": email, "password": PROVISIONED_PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(harness.send_request(login).await.status(), StatusCode::OK);
+    harness.cleanup().await;
+}
+
+/// A production process that cannot reach Postgres exits non-zero so the
+/// orchestrator restarts it, instead of serving errors forever.
+#[tokio::test]
+async fn test_production_boot_without_postgres_exits_nonzero() {
+    let run = tokio::process::Command::new(env!("CARGO_BIN_EXE_server"))
+        .current_dir(std::env::temp_dir())
+        .env_clear()
+        .env("APP_ENV", "production")
+        .env("DATABASE_URL", "postgres://nobody:nothing@127.0.0.1:1/none")
+        .env("DATABASE_CONNECT_TIMEOUT_SECS", "2")
+        .env("JWT_SECRET", "p".repeat(48))
+        .env("SMTP_SECURITY", "starttls")
+        .env("RUST_LOG", "server=info")
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("server must exit instead of serving without Postgres")
+        .expect("server binary must start");
+    assert!(!output.status.success(), "exit status {:?}", output.status);
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        log.contains("Postgres connection failed in production"),
+        "unexpected boot log: {log}"
+    );
+}
+
+/// An object store that accepts the connection and never answers fails the
+/// cover request within the operation timeout instead of holding it open.
+#[tokio::test]
+async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
+    let (port, _listener) = common::silent_listener().await;
+    let mut config = AppConfig::default();
+    config.storage.endpoint = format!("http://127.0.0.1:{port}");
+    let storage = StorageService::connect(&config.storage);
+    let app = offline_app(config, Some(storage));
+
+    let started = Instant::now();
+    let uri = format!("/api/v1/covers/{}.webp", Uuid::new_v4());
+    let resp = tokio::time::timeout(
+        S3_OPERATION_TIMEOUT + Duration::from_secs(5),
+        app.oneshot(get(&uri)),
+    )
+    .await
+    .expect("cover request must not hang on a wedged store")
+    .unwrap();
+    assert!(resp.status().is_server_error(), "got {}", resp.status());
+    assert!(
+        started.elapsed() <= S3_OPERATION_TIMEOUT + Duration::from_secs(2),
+        "took {:?}",
+        started.elapsed()
+    );
 }

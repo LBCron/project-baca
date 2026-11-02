@@ -2,4 +2,4 @@
 
 pub mod s3;
 
-pub use s3::{StorageService, StoredObject};
+pub use s3::{StorageService, StoredObject, S3_OPERATION_TIMEOUT};

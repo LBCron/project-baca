@@ -3,6 +3,7 @@
 //! Message fields: `book_id`, `storage_path`, `job_id`, `timestamp`.
 //! Job hashes expire after 7 days.
 
+use crate::RedisConn;
 use redis::AsyncCommands;
 use shared::{AppError, DlqEntryDto, JobStatusDto};
 use std::collections::HashMap;
@@ -26,17 +27,12 @@ fn job_key(job_id: &str) -> String {
 /// Publishes an EPUB ingestion job: appends to the stream and initializes the
 /// job-status hash. Returns the new `job_id`.
 pub async fn publish_ingestion_job(
-    redis: &redis::Client,
+    conn: &mut RedisConn,
     book_id: Uuid,
     storage_path: &str,
 ) -> Result<String, AppError> {
     let job_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-
-    let mut conn = redis
-        .get_multiplexed_tokio_connection()
-        .await
-        .map_err(|e| AppError::Internal(format!("Redis connection failed: {e}")))?;
 
     let _: String = conn
         .xadd(
@@ -77,14 +73,9 @@ pub async fn publish_ingestion_job(
 
 /// Reads a job-status hash. Returns `None` for unknown or expired jobs.
 pub async fn get_job_status(
-    redis: &redis::Client,
+    conn: &mut RedisConn,
     job_id: &str,
 ) -> Result<Option<JobStatusDto>, AppError> {
-    let mut conn = redis
-        .get_multiplexed_tokio_connection()
-        .await
-        .map_err(|e| AppError::Internal(format!("Redis connection failed: {e}")))?;
-
     let fields: HashMap<String, String> = conn
         .hgetall(job_key(job_id))
         .await
@@ -132,13 +123,9 @@ fn dlq_entry(id: String, fields: &HashMap<String, String>) -> DlqEntryDto {
 
 /// Newest dead-letter entries first.
 pub async fn list_dlq_entries(
-    redis: &redis::Client,
+    conn: &mut RedisConn,
     limit: usize,
 ) -> Result<Vec<DlqEntryDto>, AppError> {
-    let mut conn = redis
-        .get_multiplexed_tokio_connection()
-        .await
-        .map_err(|e| AppError::Internal(format!("Redis connection failed: {e}")))?;
     let reply: redis::streams::StreamRangeReply = conn
         .xrevrange_count(INGESTION_DLQ_STREAM, "+", "-", limit.clamp(1, 200))
         .await
@@ -165,13 +152,9 @@ pub async fn list_dlq_entries(
 /// from the DLQ. `Ok(None)` when the entry is already gone, so a second replay
 /// is a no-op; an expired job hash is an error because the storage path is lost.
 pub async fn replay_dlq_entry(
-    redis: &redis::Client,
+    conn: &mut RedisConn,
     entry_id: &str,
 ) -> Result<Option<String>, AppError> {
-    let mut conn = redis
-        .get_multiplexed_tokio_connection()
-        .await
-        .map_err(|e| AppError::Internal(format!("Redis connection failed: {e}")))?;
     let reply: redis::streams::StreamRangeReply = conn
         .xrange(INGESTION_DLQ_STREAM, entry_id, entry_id)
         .await

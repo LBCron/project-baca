@@ -1,13 +1,17 @@
 //! Common test utilities, test harness, and app factories for Project Baca.
 
 use axum::body::Body;
-use axum::http::{Request, Response};
+use axum::http::{Request, Response, StatusCode};
 use axum::Router;
 use infra::entities::{books, tags, users};
 use infra::{build_embedding_provider, init_db_pool, init_redis_client, AiConfig, AppConfig};
+use redis::AsyncCommands;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use server::{create_app, AppState};
+use shared::{SignupRequest, VerifyOtpRequest};
 use std::sync::{Arc, Mutex};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::{JoinHandle, JoinSet};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -62,7 +66,7 @@ impl TestHarness {
             Err(_) => redis::Client::open("redis://127.0.0.1:6380").unwrap(),
         };
 
-        let redis_conn = redis.get_multiplexed_tokio_connection().await.ok();
+        let redis_conn = infra::init_redis_conn(&redis).await.ok();
 
         // Use Mock provider for tests: deterministic 768-dim zero-vectors without network calls.
         let embedding = build_embedding_provider(&AiConfig {
@@ -175,7 +179,7 @@ impl TestHarness {
     /// so live tests can skip loudly instead of passing silently.
     /// (Built per test-binary; allow dead code for binaries not using it.)
     #[allow(dead_code)]
-    pub async fn live_only(&self) -> Option<redis::aio::MultiplexedConnection> {
+    pub async fn live_only(&self) -> Option<infra::RedisConn> {
         if matches!(self.state.db, DatabaseConnection::Disconnected) {
             return None;
         }
@@ -198,4 +202,153 @@ impl TestHarness {
         );
         (Response::from_parts(parts, Body::from(bytes)), json)
     }
+}
+
+/// Password of every account [`provision_verified_user`] creates.
+#[allow(dead_code)]
+pub const PROVISIONED_PASSWORD: &str = "Adversarial123!";
+
+/// Builds a fully verified user via the real signup → OTP → verify flow and
+/// returns (access_token, refresh_token). Panics loudly when services are down.
+#[allow(dead_code)]
+pub async fn provision_verified_user(
+    harness: &TestHarness,
+    redis_conn: &mut infra::RedisConn,
+    tag: &str,
+    ip: &str,
+) -> (String, String) {
+    let email = format!("adv_{tag}_{}@example.com", Uuid::new_v4());
+    harness.track_email(&email);
+    let password = PROVISIONED_PASSWORD;
+    let signup_req = SignupRequest {
+        display_name: format!("Adv{tag}"),
+        email: email.clone(),
+        password: password.to_string(),
+    };
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/signup")
+        .header(CLIENT_IP_HEADER, ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+        .unwrap();
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let known_otp = "424242";
+    let record_json =
+        serde_json::json!({ "hash": infra::hash_otp(known_otp), "attempts": 0 }).to_string();
+    let _: () = redis_conn
+        .set_ex(format!("otp:{email}"), record_json, 600)
+        .await
+        .unwrap();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/verify-otp")
+        .header(CLIENT_IP_HEADER, ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&VerifyOtpRequest {
+                email: email.clone(),
+                otp: known_otp.to_string(),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    (
+        body["data"]["access_token"].as_str().unwrap().to_string(),
+        body["data"]["refresh_token"].as_str().unwrap().to_string(),
+    )
+}
+
+/// TCP relay in front of a real service, so one app instance can lose its
+/// dependency while the shared dev server keeps running for other tests.
+/// `cut` drops every relayed connection and stops listening; `restore`
+/// listens again on the same port.
+#[allow(dead_code)]
+pub struct TcpRelay {
+    port: u16,
+    upstream: String,
+    task: Option<JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl TcpRelay {
+    pub async fn start(upstream: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("relay must bind an ephemeral port");
+        let port = listener.local_addr().expect("bound address").port();
+        let mut relay = Self {
+            port,
+            upstream: upstream.to_string(),
+            task: None,
+        };
+        relay.serve(listener);
+        relay
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn serve(&mut self, listener: TcpListener) {
+        let upstream = self.upstream.clone();
+        self.task = Some(tokio::spawn(async move {
+            // Dropping the set on abort aborts every relayed connection.
+            let mut connections = JoinSet::new();
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let upstream = upstream.clone();
+                connections.spawn(async move {
+                    if let Ok(mut outbound) = TcpStream::connect(&upstream).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+            }
+        }));
+    }
+
+    pub async fn cut(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    pub async fn restore(&mut self) {
+        let listener = TcpListener::bind(("127.0.0.1", self.port))
+            .await
+            .expect("relay must rebind its port");
+        self.serve(listener);
+    }
+}
+
+/// `host:port` of the Redis server a config points at.
+#[allow(dead_code)]
+pub fn redis_upstream(config: &AppConfig) -> String {
+    let client = redis::Client::open(config.redis.url.as_str()).expect("valid REDIS_URL");
+    match &client.get_connection_info().addr {
+        redis::ConnectionAddr::Tcp(host, port) => format!("{host}:{port}"),
+        other => panic!("relay supports plain TCP Redis only, got {other:?}"),
+    }
+}
+
+/// Listener that accepts connections and never answers, the way a wedged
+/// object store behaves.
+#[allow(dead_code)]
+pub async fn silent_listener() -> (u16, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("silent listener must bind");
+    let port = listener.local_addr().expect("bound address").port();
+    let task = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    (port, task)
 }
