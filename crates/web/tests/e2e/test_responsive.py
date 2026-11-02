@@ -174,3 +174,20 @@ def test_two_screen_spread_keeps_text_off_the_hinge(browser: Browser, book_with_
         assert page.errors == [], page.errors[:3]  # type: ignore[attr-defined]
     finally:
         context.close()
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_phone_rail_starts_on_the_content_edge(browser: Browser, width):
+    context, page = _page_at(browser, width, 844)
+    try:
+        page.goto(f"{WEB}/", wait_until="networkidle")
+        page.wait_for_timeout(600)
+        edges = page.evaluate(
+            """() => ({
+                heading: document.querySelector('.picks h2').getBoundingClientRect().left,
+                card: document.querySelector('.book-rail > *').getBoundingClientRect().left,
+            })"""
+        )
+        assert abs(edges["card"] - edges["heading"]) < 1, edges
+    finally:
+        context.close()

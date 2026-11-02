@@ -5,6 +5,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Fixed
+- Phone home: the "picks" rail started flush with the screen edge instead of the content edge (scroll snapping ignored the rail's padding).
 - Sheets: closing one by a click no longer throws "closure invoked after being dropped" twice (the click still bubbled to listeners the close had freed; the close now waits for the dispatch to end); sheets opened over the reader keep the shell's ink instead of the page's; search forms inside sheets keep their one-line pill; ghost buttons on the reader's finale card take the page's ink.
 - Dual-screen devices: a window spanning two hinged screens reads as a spread with the spine on the hinge; below 1024 px it used to run one column straight through the hinge. The responsive matrix now also runs in Indonesian (the suite browser is English, so ID copy had never been checked) and emulates hinges through Chromium display features.
 - Shell accessibility: Tab and Shift+Tab stay inside open sheets; the focused search field clears the sticky header on phones; the error toast passes AA on Paper (it was 2.85:1); English counts read "1 chapter", "1 day in a row", "1 reader"; the theme toggle names the theme it switches to and the shell follows a system scheme change until a theme is chosen; running heads and tab labels grow to 0.7 and 0.75 rem; the empty shelf promises the first badge after the first minute, as the badge rule grants it.

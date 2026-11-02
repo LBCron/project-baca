@@ -940,6 +940,10 @@ img {
     overflow-x: auto;
     margin: 0 calc(-1 * (var(--gutter) + var(--safe-right))) 0 calc(-1 * (var(--gutter) + var(--safe-left)));
     padding: var(--space-1) calc(var(--gutter) + var(--safe-right)) var(--space-2) calc(var(--gutter) + var(--safe-left));
+    /* Snapping aligns cards to the snapport, which ignores padding; without
+       the same inset the rail scrolls itself until the first card touches
+       the screen edge. */
+    scroll-padding-inline: calc(var(--gutter) + var(--safe-left)) calc(var(--gutter) + var(--safe-right));
     scroll-snap-type: x mandatory;
     scrollbar-width: none;
 }
