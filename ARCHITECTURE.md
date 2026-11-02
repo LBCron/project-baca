@@ -89,7 +89,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 ### App shell (`apps/tauri`)
 
-- Tauri 2 around the same release bundle (`frontendDist` is `crates/web/dist`, built by `make build-web`); a Cargo workspace of its own, so the root workspace and CI need no WebView toolchain.
+- Tauri 2 around the same release bundle (`make build-web` into `target/app-web`, so an app build never overwrites the `crates/web/dist` that `trunk serve` is serving); a Cargo workspace of its own, so the root workspace and CI need no WebView toolchain.
 - The window gets `window.__ROTARIA_API__` from `ROTARIA_API_BASE` at build time through an initialization script; `api_base()` prefers it, `boot.js` registers no service worker inside Tauri, and CORS allows `tauri://localhost` and `http://tauri.localhost`.
 - `rotaria://book/<uuid>` opens the book (the id must parse as a UUID); a link that arrives before the first page load waits for it. Android declares the scheme in its manifest, desktop registers it at run time.
 - Android (`gen/android`, identifier `io.github.aprxty3.rotaria`): `MainActivity` pads the page by the system bar insets, since Android 15 draws edge to edge and the WebView reports no safe-area insets; debug builds allow cleartext to the dev API at `10.0.2.2`. Sharing falls back to the clipboard where `navigator.share` is missing.

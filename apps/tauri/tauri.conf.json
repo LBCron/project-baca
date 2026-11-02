@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "io.github.aprxty3.rotaria",
   "build": {
-    "frontendDist": "../../crates/web/dist",
+    "frontendDist": "../../target/app-web",
     "devUrl": "http://127.0.0.1:3000",
     "beforeDevCommand": { "script": "make dev-web", "cwd": "../..", "wait": false },
-    "beforeBuildCommand": { "script": "make build-web", "cwd": "../.." }
+    "beforeBuildCommand": { "script": "make build-web WEB_DIST=\"$PWD/target/app-web\"", "cwd": "../.." }
   },
   "app": {
     "windows": [],
