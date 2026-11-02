@@ -66,13 +66,34 @@ fn trap_tab(ev: &web_sys::KeyboardEvent, inside: &web_sys::Element) {
     }
 }
 
+/// The control a sheet focuses when it opens: the one marked
+/// `data-autofocus`, otherwise the close button.
+fn initial_focus(close: &web_sys::HtmlElement) -> web_sys::HtmlElement {
+    close
+        .closest("[role='dialog']")
+        .ok()
+        .flatten()
+        .and_then(|dialog| dialog.query_selector("[data-autofocus]").ok().flatten())
+        .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok())
+        .unwrap_or_else(|| close.clone())
+}
+
+fn focus_is_inside_dialog_of(el: &web_sys::Element) -> bool {
+    let dialog = el.closest("[role='dialog']").ok().flatten();
+    match (dialog, active_element()) {
+        (Some(dialog), Some(active)) => dialog.contains(Some(&active)),
+        _ => false,
+    }
+}
+
 /// Moves focus into the sheet when it opens and restores it when it closes;
-/// Tab stays inside it and Escape closes it. `on_close` is the sheet's own
-/// close routine so any extra reset (errors, busy flags) runs the same way
-/// as the close button.
+/// Tab stays inside it and Escape closes it. `close_button` takes focus
+/// unless the sheet marks a control `data-autofocus`. `on_close` is the
+/// sheet's own close routine so any extra reset (errors, busy flags) runs
+/// the same way as the close button.
 pub fn manage_sheet_focus(
     show: Signal<bool>,
-    first_focus: NodeRef<leptos::html::Button>,
+    close_button: NodeRef<leptos::html::Button>,
     on_close: impl Fn() + Copy + 'static,
 ) {
     let opener = StoredValue::new(None::<web_sys::HtmlElement>);
@@ -80,8 +101,14 @@ pub fn manage_sheet_focus(
         if show.get() {
             opener.set_value(active_element());
             request_animation_frame(move || {
-                if let Some(button) = first_focus.try_get_untracked().flatten() {
-                    let _ = button.focus();
+                let Some(button) = close_button.try_get_untracked().flatten() else {
+                    return;
+                };
+                // On a slow device the frame can arrive after the reader has
+                // already clicked or typed inside the sheet; moving focus then
+                // would send their next Enter to another control.
+                if !focus_is_inside_dialog_of(&button) {
+                    let _ = initial_focus(&button).focus();
                 }
             });
         } else if let Some(el) = opener.try_get_value().flatten() {
@@ -96,7 +123,7 @@ pub fn manage_sheet_focus(
         match ev.key().as_str() {
             "Escape" => on_close(),
             "Tab" => {
-                if let Some(button) = first_focus.try_get_untracked().flatten() {
+                if let Some(button) = close_button.try_get_untracked().flatten() {
                     trap_tab(&ev, &button);
                 }
             }

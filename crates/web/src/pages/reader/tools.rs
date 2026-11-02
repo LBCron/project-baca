@@ -138,16 +138,6 @@ pub fn BookSearch(
     let (query, set_query) = signal(String::new());
     let (busy, set_busy) = signal(false);
     let (found, set_found) = signal(None::<Found>);
-    let input_ref = NodeRef::<leptos::html::Input>::new();
-    Effect::new(move || {
-        if show.get() {
-            request_animation_frame(move || {
-                if let Some(input) = input_ref.try_get_untracked().flatten() {
-                    let _ = input.focus();
-                }
-            });
-        }
-    });
 
     let run = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
@@ -181,7 +171,7 @@ pub fn BookSearch(
                     type="search"
                     minlength="2"
                     maxlength="200"
-                    node_ref=input_ref
+                    data-autofocus=""
                     placeholder=move || lang.get().text("book_search_ph")
                     prop:value=move || query.get()
                     on:input=move |ev| set_query.set(event_target_value(&ev))

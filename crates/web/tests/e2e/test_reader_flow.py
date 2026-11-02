@@ -382,6 +382,31 @@ def test_book_search_opens_the_page_that_holds_the_hit(new_context, book_with_ch
         context.close()
 
 
+def test_book_search_field_takes_focus_and_keeps_it(new_context, book_with_chapters: str):
+    """The search field gets focus when the sheet opens, and a frame that
+    arrives late on a slow device must not pull focus away from someone who
+    is already typing (their Enter would press the close button)."""
+    context, page, errors = _context(new_context)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        page.click(".btn-search")
+        page.wait_for_timeout(300)
+        assert page.evaluate("() => document.activeElement && document.activeElement.id") == "book-search"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+
+        cdp = context.new_cdp_session(page)
+        cdp.send("Emulation.setCPUThrottlingRate", {"rate": 20})
+        try:
+            hits = _search(page, "surat")
+        finally:
+            cdp.send("Emulation.setCPUThrottlingRate", {"rate": 1})
+        assert hits.count() >= 1
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 def test_book_search_works_offline_from_the_saved_copy(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     context, page, errors = _context(new_context)
