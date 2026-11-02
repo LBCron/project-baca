@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TRUNK_VERSION: v0.22.1
+
+jobs:
+  check:
+    name: Format, lint, native and wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - run: make check
+      - name: Release version matches the changelog
+        run: python3 scripts/release_notes.py --check-version
+
+  backend:
+    name: Server and worker tests (live services)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/dev-stack
+      - name: Domain, infra, and server unit tests
+        run: |
+          make test-domain
+          cargo test -p infra --lib
+          cargo test -p server --lib
+      - name: Server functional suites
+        run: cargo test -p server --test it
+      - name: Live adversarial auth tests
+        run: make test-live
+      - name: Load and stress
+        run: make test-load-stress
+      - name: Worker unit and live tests
+        run: make worker-install worker-test worker-test-live
+
+  web:
+    name: Release bundle and browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: web
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.12"
+      - name: Install Trunk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Release bundle, size budget, no inline script
+        run: |
+          make build-web WEB_DIST="$PWD/target/web-release"
+          python3 scripts/externalize_inline_scripts.py --check target/web-release
+      - uses: ./.github/actions/dev-stack
+      - name: Browser test environment
+        run: |
+          uv venv "$HOME/.venvs/webapp-testing"
+          uv pip install --python "$HOME/.venvs/webapp-testing/bin/python" -r crates/web/tests/requirements-test.txt
+          "$HOME/.venvs/webapp-testing/bin/python" -m playwright install --with-deps chromium
+      - name: Start the API and the release bundle
+        run: |
+          cargo build -p server
+          nohup ./target/debug/server > server.log 2>&1 &
+          nohup make dev-web-release > trunk.log 2>&1 &
+          for _ in $(seq 1 120); do
+            curl -sf http://localhost:8080/health >/dev/null && curl -sf http://127.0.0.1:3000 >/dev/null && exit 0
+            sleep 3
+          done
+          tail -40 server.log trunk.log
+          exit 1
+      # Visual goldens are rendered on the maintainer's machine; font
+      # rasterisation differs on the runner, so CI checks behaviour only.
+      - name: Web unit, e2e, component, integration, and axe suites
+        run: |
+          make test-web
+          cd crates/web/tests && "$HOME/.venvs/webapp-testing/bin/python" -m pytest a11y/ --browser chromium -q
+      - name: Logs
+        if: failure()
+        run: tail -100 server.log trunk.log

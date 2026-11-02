@@ -32,7 +32,7 @@ make worker-install worker      # optional: ingestion worker for EPUB uploads
 
 - [GUIDE.md](GUIDE.md): setup, configuration, tests, reader controls.
 - [ARCHITECTURE.md](ARCHITECTURE.md): crates, request path, API, security, web app and reader, ingestion worker, data, deployment, service levels.
-- [CHANGELOG.md](CHANGELOG.md) and [NOTICE.md](NOTICE.md).
+- [CHANGELOG.md](CHANGELOG.md) and [NOTICE.md](NOTICE.md); releases and container images are built by GitHub Actions (GUIDE section 8).
 
 ## Content and license
 

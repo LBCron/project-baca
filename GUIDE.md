@@ -104,3 +104,21 @@ Notes:
 - Center tap dims the bars; tap again to restore them. Two fingers zoom the page. With a button focused, Space presses the button instead of turning. The chapter title in the bar opens the chapter list on the book page. The last page resists, and a forward tap opens the finale card.
 - Reduced motion: a short crossfade replaces the paper animation.
 
+## 8. CI and releases
+
+Branches: work lands on `develop`; `main` takes what is ready to release.
+
+| Workflow | Trigger | Runs |
+|---|---|---|
+| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+
+Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
+
+Cutting a release:
+
+1. Set `[workspace.package] version` in `Cargo.toml`, rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
+2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
+3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.

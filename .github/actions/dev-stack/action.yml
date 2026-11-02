@@ -1,0 +1,26 @@
+name: Dev stack
+description: Starts the docker-compose dev services, applies migrations, and seeds the CC0 catalog, the same way a laptop does.
+runs:
+  using: composite
+  steps:
+    - name: Environment
+      shell: bash
+      run: cp .env.example .env
+    - name: Services
+      shell: bash
+      run: make db-up
+    - name: Wait for Postgres and Redis
+      shell: bash
+      run: |
+        for _ in $(seq 1 60); do
+          if docker exec project_baca_db pg_isready -U baca_user -d project_baca_db >/dev/null 2>&1 \
+            && docker exec project_baca_redis redis-cli ping >/dev/null 2>&1; then
+            exit 0
+          fi
+          sleep 2
+        done
+        docker compose ps
+        exit 1
+    - name: Schema and seed
+      shell: bash
+      run: make migrate-up seed-dev
