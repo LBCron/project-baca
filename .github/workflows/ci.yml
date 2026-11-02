@@ -44,7 +44,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: debug
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.12"
       - uses: ./.github/actions/dev-stack
@@ -73,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: web
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.12"
       - name: Install Trunk
