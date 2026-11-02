@@ -232,16 +232,27 @@ pub fn HomePage() -> impl IntoView {
     let first_load = StoredValue::new(true);
 
     // The search tab lands here with `?search=1`; `autofocus` only works
-    // once per document, so focus and reveal the field explicitly.
+    // once per document, so the field takes focus as soon as it exists. The
+    // scroll to it waits for the first catalog page (below): a scroll aimed
+    // before the page settles overshot and left the field under the header.
     Effect::new(move || {
         if !wants_search() {
             return;
         }
         if let Some(input) = search_ref.get() {
             let _ = input.focus();
-            reveal(&input);
         }
     });
+    let reveal_search = move || {
+        if query_map
+            .try_read_untracked()
+            .is_some_and(|q| q.get("search").is_some())
+        {
+            if let Some(input) = search_ref.try_get_untracked().flatten() {
+                reveal(&input);
+            }
+        }
+    };
 
     let load_page = move |reset: bool| {
         let gen = generation.get_untracked() + 1;
@@ -285,7 +296,10 @@ pub fn HomePage() -> impl IntoView {
             set_loading.set(false);
             if first_load.try_get_value() == Some(true) {
                 first_load.set_value(false);
-                request_animation_frame(scroll_to_location_hash);
+                request_animation_frame(move || {
+                    scroll_to_location_hash();
+                    reveal_search();
+                });
             }
         });
     };

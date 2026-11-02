@@ -954,6 +954,9 @@ img {
 
 .rail-card {
     flex: 0 0 128px;
+    /* Without it the nowrap title sets the card's minimum width, and cards
+       with long titles grew wider than the rest. */
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 6px;

@@ -186,8 +186,10 @@ def test_phone_rail_starts_on_the_content_edge(browser: Browser, width):
             """() => ({
                 heading: document.querySelector('.picks h2').getBoundingClientRect().left,
                 card: document.querySelector('.book-rail > *').getBoundingClientRect().left,
+                widths: [...document.querySelectorAll('.book-rail > *')].map(c => Math.round(c.getBoundingClientRect().width)),
             })"""
         )
         assert abs(edges["card"] - edges["heading"]) < 1, edges
+        assert len(set(edges["widths"])) == 1, f"rail cards differ in width: {edges['widths']}"
     finally:
         context.close()

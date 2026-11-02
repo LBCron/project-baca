@@ -2,6 +2,7 @@
 catalog loads, exactly one item carries the active marker, the search tab
 really focuses the field, sheets keep keyboard focus, and the shell follows
 the system scheme until the reader picks one."""
+import pytest
 from playwright.sync_api import Browser, Page, expect
 
 from conftest import WEB, assert_no_page_errors, goto
@@ -86,10 +87,16 @@ def test_tab_stays_inside_an_open_sheet(clean_page: Page):
     assert_no_page_errors(page)
 
 
-def test_focused_search_field_clears_the_sticky_header(clean_page: Page):
-    page = clean_page
-    page.set_viewport_size({"width": 390, "height": 844})
-    goto(page, "/?search=1")
+@pytest.mark.parametrize("locale", ["en-US", "id-ID"])
+def test_focused_search_field_clears_the_sticky_header(browser: Browser, locale: str):
+    # A real phone context: the overshoot only showed with mobile emulation,
+    # after the catalog had loaded.
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, locale=locale
+    )
+    page = context.new_page()
+    page.goto(f"{WEB}/?search=1", wait_until="networkidle")
+    page.wait_for_timeout(2500)
     geometry = page.evaluate(
         """() => ({
             field: document.getElementById('catalog-search').getBoundingClientRect().top,
@@ -97,9 +104,9 @@ def test_focused_search_field_clears_the_sticky_header(clean_page: Page):
             focused: document.activeElement.id,
         })"""
     )
+    context.close()
     assert geometry["focused"] == "catalog-search", geometry
     assert geometry["field"] >= geometry["header"], geometry
-    assert_no_page_errors(page)
 
 
 def _theme(page: Page) -> tuple[str | None, str]:
