@@ -34,6 +34,6 @@ make worker-install worker      # optional: ingestion worker for EPUB uploads
 - [ARCHITECTURE.md](ARCHITECTURE.md): crates, request path, API, security, web app and reader, ingestion worker, data, deployment, service levels.
 - [CHANGELOG.md](CHANGELOG.md) and [NOTICE.md](NOTICE.md).
 
-## Content
+## Content and license
 
-Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain. Licensing and attribution: [NOTICE.md](NOTICE.md).
+Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain; fonts are under the SIL Open Font License. The source code is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Attribution and third-party licenses: [NOTICE.md](NOTICE.md).

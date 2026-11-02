@@ -26,6 +26,10 @@ Raw texts and typography are sourced from open literary preservation initiatives
 * **Database & Infrastructure:** PostgreSQL (PostgreSQL License), pgvector (PostgreSQL License), Redis (RSALv2/SSPLv1/BSD), MinIO (AGPLv3), Mailpit (MIT).
 * **AI & Embeddings:** Google GenAI SDK (Apache-2.0), FastEmbed / ONNX Runtime (Apache-2.0/MIT).
 
-## 4. Disclaimer of Warranty
+## 4. Project License
+
+The Project Baca source code is licensed under either of the MIT License ([LICENSE-MIT](LICENSE-MIT)) or the Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE)), at your option. Contributions are accepted under the same terms. Book texts stay in the public domain and fonts under the SIL Open Font License 1.1 regardless of the code license.
+
+## 5. Disclaimer of Warranty
 
 Project Baca software is provided "AS IS", without warranties of any kind, express or implied, including fitness for a particular purpose or merchantability.
