@@ -6,7 +6,8 @@ use sea_orm::{
 };
 use shared::{
     AdminBookRowDto, AppError, BookCatalogQuery, BookDetailDto, BookSearchQuery,
-    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, ChapterSummaryDto, OfflineBundleDto,
+    BookSearchResultDto, BookSummaryDto, BookTextHitDto, ChapterDetailDto, ChapterSummaryDto,
+    OfflineBundleDto,
 };
 use uuid::Uuid;
 
@@ -149,6 +150,111 @@ pub async fn list_books(
 }
 
 /// Typo-tolerant lexical search via PostgreSQL 17 GIN Trigram and FTS indexes.
+/// Paragraphs of one published book that contain `query`, in reading order.
+///
+/// Chapters are split at `</p>`, so the n-th piece is the reader's `p-n`
+/// anchor. The SQL `ILIKE` over the tag-stripped text narrows the rows; the
+/// snippet comes from [`shared::text_hit_snippet`], as in offline search.
+pub async fn search_book_text(
+    db: &DatabaseConnection,
+    book_id: Uuid,
+    query: &str,
+) -> Result<Vec<BookTextHitDto>, AppError> {
+    ensure_book_published(db, book_id).await?;
+    let needle = query.trim();
+    let pattern = format!(
+        "%{}%",
+        needle
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let sql = r#"
+        SELECT c.chapter_number, c.title AS chapter_title, p.n::int4 AS paragraph,
+               regexp_replace(p.piece, '<[^>]*>', ' ', 'g') AS text
+        FROM chapters c
+        CROSS JOIN LATERAL regexp_split_to_table(c.html_content, '</p>') WITH ORDINALITY AS p(piece, n)
+        WHERE c.book_id = $1
+          AND regexp_replace(p.piece, '<[^>]*>', ' ', 'g') ILIKE $2 ESCAPE '\'
+        ORDER BY c.chapter_number, p.n
+        LIMIT $3;
+    "#;
+    let stmt = Statement::from_sql_and_values(
+        DatabaseBackend::Postgres,
+        sql,
+        vec![
+            Value::from(book_id),
+            Value::from(pattern),
+            Value::from(shared::BOOK_TEXT_HITS_MAX as i64),
+        ],
+    );
+    let rows = TextHitRow::find_by_statement(stmt)
+        .all(db)
+        .await
+        .map_err(|e| AppError::Database(format!("In-book search failed: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let text = decode_entities(&row.text);
+            shared::text_hit_snippet(&text, needle).map(|snippet| BookTextHitDto {
+                chapter_number: row.chapter_number,
+                chapter_title: row.chapter_title,
+                paragraph: row.paragraph,
+                snippet,
+            })
+        })
+        .collect())
+}
+
+#[derive(Debug, FromQueryResult)]
+struct TextHitRow {
+    chapter_number: i32,
+    chapter_title: String,
+    paragraph: i32,
+    text: String,
+}
+
+/// Character references left in stored chapter HTML, decoded so a snippet
+/// reads like the page (the browser decodes them for offline search).
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let decoded = tail.find(';').filter(|end| *end <= 10).and_then(|end| {
+            let name = &tail[1..end];
+            let ch = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => name
+                    .strip_prefix("#x")
+                    .or_else(|| name.strip_prefix("#X"))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| name.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                    .and_then(char::from_u32),
+            }?;
+            Some((ch, end + 1))
+        });
+        match decoded {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 pub async fn search_books(
     db: &DatabaseConnection,
     search: &BookSearchQuery,
@@ -560,4 +666,23 @@ pub async fn set_book_status(
         .await
         .map_err(|e| AppError::Database(format!("Failed to update book status: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_entities;
+
+    #[test]
+    fn character_references_decode_like_a_browser() {
+        assert_eq!(decode_entities("Tom &amp; Jerry"), "Tom & Jerry");
+        assert_eq!(
+            decode_entities("it&#8217;s &#x2014; ok"),
+            "it\u{2019}s \u{2014} ok"
+        );
+        assert_eq!(decode_entities("a&nbsp;b &lt;p&gt;"), "a b <p>");
+        assert_eq!(
+            decode_entities("AT&T and &unknown; stay"),
+            "AT&T and &unknown; stay"
+        );
+    }
 }

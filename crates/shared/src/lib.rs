@@ -367,6 +367,67 @@ pub struct BookSearchResultDto {
     pub score: f32,
 }
 
+/// `GET /books/{id}/search`: a phrase looked up in one book's text.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct BookTextSearchQuery {
+    #[validate(length(
+        min = 2,
+        max = 200,
+        message = "Search query must be between 2 and 200 characters"
+    ))]
+    pub q: String,
+}
+
+/// One paragraph of a book that contains the searched phrase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct BookTextHitDto {
+    pub chapter_number: i32,
+    pub chapter_title: String,
+    /// 1-based paragraph index in the chapter: the reader's `p-N` anchor.
+    pub paragraph: i32,
+    pub snippet: String,
+}
+
+/// Most hits one in-book search returns.
+pub const BOOK_TEXT_HITS_MAX: usize = 50;
+
+/// Characters of context kept on each side of a match in a snippet.
+const SNIPPET_CONTEXT: usize = 70;
+
+/// The match of `query` in `text` (case-insensitive) with some context on
+/// either side, or `None` when it is absent. Server and offline search share
+/// it, so a hit reads the same either way.
+pub fn text_hit_snippet(text: &str, query: &str) -> Option<String> {
+    let needle: Vec<char> = query.trim().to_lowercase().chars().collect();
+    if needle.is_empty() {
+        return None;
+    }
+    let words: Vec<char> = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .collect();
+    let folded: Vec<char> = words
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let at = folded
+        .windows(needle.len())
+        .position(|window| window == needle.as_slice())?;
+    let start = at.saturating_sub(SNIPPET_CONTEXT);
+    let end = (at + needle.len() + SNIPPET_CONTEXT).min(words.len());
+    let body: String = words[start..end].iter().collect();
+    Some(format!(
+        "{}{}{}",
+        if start > 0 { "\u{2026}" } else { "" },
+        body.trim(),
+        if end < words.len() { "\u{2026}" } else { "" }
+    ))
+}
+
 // Reading Progress & CFI DTOs
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -672,4 +733,37 @@ pub struct DropOffPointDto {
     pub readers_reached: i64,
     /// Percentage lost relative to chapter 1 (0.0-100.0).
     pub drop_off_pct: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snippet_finds_the_phrase_case_insensitively_with_context() {
+        let text = "Pelabuhan Teluk bangun lebih pagi daripada penghuninya.";
+        assert_eq!(
+            text_hit_snippet(text, "teluk BANGUN").as_deref(),
+            Some("Pelabuhan Teluk bangun lebih pagi daripada penghuninya.")
+        );
+        assert_eq!(text_hit_snippet(text, "kapal"), None);
+        assert_eq!(text_hit_snippet(text, "  "), None);
+    }
+
+    #[test]
+    fn snippet_trims_long_paragraphs_around_the_match() {
+        let text = format!("{} harbour {}", "a".repeat(300), "b".repeat(300));
+        let snippet = text_hit_snippet(&text, "harbour").unwrap();
+        assert!(snippet.starts_with('\u{2026}') && snippet.ends_with('\u{2026}'));
+        assert!(snippet.contains("harbour"));
+        assert!(snippet.chars().count() <= 2 * 70 + "harbour".len() + 2);
+    }
+
+    #[test]
+    fn snippet_collapses_markup_whitespace() {
+        assert_eq!(
+            text_hit_snippet("  satu \n\n  dua   tiga ", "dua").as_deref(),
+            Some("satu dua tiga")
+        );
+    }
 }

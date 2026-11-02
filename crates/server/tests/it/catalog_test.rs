@@ -774,3 +774,83 @@ async fn test_progress_ignores_unpublished_books() {
     );
     harness.cleanup().await;
 }
+
+/// In-book search returns matching paragraphs in reading order with the
+/// reader's `p-N` index, escapes LIKE wildcards, and hides unpublished books.
+#[tokio::test]
+async fn test_book_text_search_finds_paragraphs() {
+    let harness = TestHarness::new().await;
+    if harness.live_only().await.is_none() {
+        panic!("live DB required (db-up)");
+    }
+    let (book_id, chapter_id) = seed_book_with_chapter(&harness, "published").await;
+    chapters::Entity::update_many()
+        .col_expr(
+            chapters::Column::HtmlContent,
+            sea_orm::sea_query::Expr::value(
+                "<h2>Pembuka</h2><p>Kabut turun di pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100% penuh.</p><p>Kapal tiba.</p>",
+            ),
+        )
+        .filter(chapters::Column::Id.eq(chapter_id))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+    let search = |q: &str| {
+        Request::builder()
+            .uri(format!("/api/v1/books/{book_id}/search?q={}", urlencode(q)))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (resp, body) = harness.send_json_request(search("KAPAL")).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let hits = body["data"].as_array().unwrap();
+    let anchors: Vec<i64> = hits
+        .iter()
+        .map(|h| h["paragraph"].as_i64().unwrap())
+        .collect();
+    assert_eq!(anchors, vec![2, 3], "reading order, p-N indexes");
+    assert_eq!(hits[0]["chapter_number"], 1);
+    assert_eq!(hits[0]["chapter_title"], "Hidden");
+    assert_eq!(
+        hits[0]["snippet"],
+        "Laras menulis surat & menunggu kapal 100% penuh."
+    );
+
+    let (_, body) = harness.send_json_request(search("100%")).await;
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        1,
+        "a literal percent sign"
+    );
+    let (_, body) = harness.send_json_request(search("%_")).await;
+    assert_eq!(
+        body["data"].as_array().unwrap().len(),
+        0,
+        "wildcards stay literal"
+    );
+
+    let (resp, _) = harness.send_json_request(search("k")).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (draft_id, _) = seed_book_with_chapter(&harness, "draft").await;
+    let req = Request::builder()
+        .uri(format!("/api/v1/books/{draft_id}/search?q=hidden"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        harness.send_request(req).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    harness.cleanup().await;
+}
+
+fn urlencode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}

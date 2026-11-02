@@ -7,7 +7,7 @@ use axum::{
 };
 use shared::{
     ApiResponse, BookCatalogQuery, BookDetailDto, BookSearchQuery, BookSearchResultDto,
-    BookSummaryDto, ChapterDetailDto, OfflineBundleDto,
+    BookSummaryDto, BookTextHitDto, BookTextSearchQuery, ChapterDetailDto, OfflineBundleDto,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -142,4 +142,33 @@ pub fn books_routes() -> axum::Router<Arc<AppState>> {
             "/{id}/offline-bundle",
             axum::routing::get(get_offline_bundle),
         )
+        .route("/{id}/search", axum::routing::get(search_book_text))
+}
+
+/// Paragraphs of one book that contain a phrase, in reading order, each with
+/// its chapter and `p-N` anchor so the reader can open the page.
+#[utoipa::path(
+    get,
+    path = "/api/v1/books/{id}/search",
+    tag = "Catalog",
+    params(
+        ("id" = Uuid, Path, description = "Book UUID"),
+        BookTextSearchQuery
+    ),
+    responses(
+        (status = 200, description = "Matching paragraphs, at most 50", body = ApiResponse<Vec<BookTextHitDto>>),
+        (status = 400, description = "Query outside 2-200 characters"),
+        (status = 404, description = "No such published book")
+    )
+)]
+pub async fn search_book_text(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<BookTextSearchQuery>,
+) -> Result<Response, HttpError> {
+    query.validate().map_err(HttpError::from)?;
+    let hits = infra::search_book_text(&state.db, id, &query.q)
+        .await
+        .map_err(HttpError::from)?;
+    Ok(Json(ApiResponse::success(hits)).into_response())
 }

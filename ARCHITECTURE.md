@@ -35,6 +35,7 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 | `GET /me/sessions`, `DELETE /me/sessions/{id}` | bearer | per-device sessions, caller flagged |
 | `GET /me/badges`, `GET /me/streak` | bearer | gamification standing |
 | `GET /books`, `/books/search`, `/books/{id}`, `/books/{id}/chapters/{n}`, `/books/{id}/offline-bundle` | none | published books only; cursor paging; `q` capped at 200 chars, filters at column width |
+| `GET /books/{id}/search?q=` | none | paragraphs of one published book containing `q` (2 to 200 chars, LIKE wildcards literal), in reading order, at most 50, each with chapter, `p-N` index, and a snippet built by `shared::text_hit_snippet` (the offline reader search uses the same function) |
 | `GET /covers/{file}` | none | `<uuid>` plus webp, jpg, jpeg, or png from the covers bucket, `Cache-Control: public, max-age=31536000, immutable` |
 | `GET /books/{id}/chapters/{ref}/atomic-cards`, `.../recap` | none | `ref` is a chapter number or chapter UUID; 404 for unpublished books |
 | `POST /books/{id}/quotes/search` | optional bearer | AI limiter; HNSW cosine search scoped `WHERE book_id = $1` |
