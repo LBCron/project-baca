@@ -25,6 +25,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - Audit hardening (2026-10-07): 50 MB EPUB uploads past axum's default body limit; atomic refresh rotation (`GETDEL`, 30 s grace); unverified accounts behave like a wrong password; signup fails closed on SMTP (502); password change returns a fresh pair; heartbeat credit clamped to 90 s per user; admin guard re-reads the user row; HSTS on the API; SPA CSP in both Caddyfiles.
 - Earlier hardening (ADR-20 to ADR-27): SHA-256 refresh storage with family revocation on replay; two-layer login lockout; signup SMTP cap; OTP lock without deletion; fail-closed 503 on Redis outage for auth and AI paths; EPUB magic check and worker zip guard; CORS allowlist; server-minted request ids; avatar URL allowlist; guest merge transactional with a 100-record cap.
 
+### Changed
+- WebAssembly bundle down from 2.83 MB to 1.47 MB raw (909 KB to 573 KB gzip): a `wasm-release` Cargo profile and `wasm-opt -Oz` in `make build-web`, which the edge image also runs; the build fails above 1.8 MB raw or 700 KB gzip. Unused `web-sys` features dropped.
+
 ### Added
 - Reader as an open book: paper frame with running heads and folios; pages turn as spine-hinged strips driven by a damped spring from a drag, tap, or key; one-column clones keep a turn cheap; the last page resists and a finale card closes the book; center tap dims the bars; haptic on landing; reduced motion keeps a crossfade; the chapter title links to the chapter list.
 - Home catalog preview: two rows (2x2 to 2x5 by width) and a "see the whole catalog" button; search and filters show everything with paging.

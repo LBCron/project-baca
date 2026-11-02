@@ -56,7 +56,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 ```bash
 make migrate-up seed-dev
 make dev-server        # cargo-watch when installed, else cargo run -p server
-make dev-web           # trunk serve on 127.0.0.1:3000
+make dev-web           # trunk serve on 127.0.0.1:3000 (make dev-web-release for the shipped bundle)
 make worker            # after make worker-install
 ```
 
@@ -79,7 +79,7 @@ make worker            # after make worker-install
 | `make test-load-stress` | 200 concurrent tasks and rate-limit saturation | `db-up` |
 | `make worker-test`, `make worker-test-live` | 27 worker unit tests; dead letters, claim refresh, and SIGTERM release on probe streams | nothing; `db-up` |
 | `make test-web` | `cargo test -p web --lib` plus Playwright e2e, component, integration | `db-up`, API on :8080, web on :3000, Mailpit |
-| `make test-web-full` | adds visual goldens, axe a11y, Firefox smoke, and the inline-script check on `crates/web/dist` | same |
+| `make test-web-full` | builds the release bundle into `target/web-release` (size budget, no inline script), then adds visual goldens, axe a11y, and Firefox smoke | same; serve the release bundle with `make dev-web-release` |
 | `make test-all` | `cargo test --workspace` (includes performance and load) | `db-up` |
 
 Notes:
@@ -103,3 +103,4 @@ Notes:
 - Turn a page: drag anywhere on a touch screen, or from the outer 22% of the page with a mouse. Release past the middle or flick to finish; release early to fall back. Tap the edges, use the edge arrows on wide screens, or press Space / Shift+Space, the arrow keys, PageUp / PageDown. Home and End jump within the chapter.
 - Center tap dims the bars; tap again to restore them. Two fingers zoom the page. With a button focused, Space presses the button instead of turning. The chapter title in the bar opens the chapter list on the book page. The last page resists, and a forward tap opens the finale card.
 - Reduced motion: a short crossfade replaces the paper animation.
+

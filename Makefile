@@ -30,6 +30,13 @@ dev-web:
 	@echo "Starting frontend development server (Trunk hot-reload)..."
 	@cd crates/web && trunk serve
 
+# Serves the release bundle (wasm-release profile, wasm-opt) on :3000, for
+# running the web suite against release optimisations; the `gallery` feature
+# keeps the component story route the shipped bundle leaves out.
+dev-web-release:
+	@echo "Starting frontend on the release bundle (with the story gallery)..."
+	@cd crates/web && trunk serve --release --cargo-profile wasm-release --features gallery
+
 # Starts all infrastructure containers in detached mode
 db-up:
 	@echo "Starting database and infrastructure services..."
@@ -139,8 +146,9 @@ test-web:
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/ component/ integration/ --browser chromium -q
 
 test-web-full:
-	@echo "Web pyramid + visual + a11y + firefox smoke + strict-CSP shell check..."
-	@python3 scripts/externalize_inline_scripts.py --check crates/web/dist
+	@echo "Release bundle budget + strict-CSP shell, then web pyramid + visual + a11y + firefox smoke..."
+	@$(MAKE) --no-print-directory build-web WEB_DIST=$(CURDIR)/target/web-release
+	@python3 scripts/externalize_inline_scripts.py --check target/web-release
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest . --browser chromium -q
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/test_smoke.py --browser chromium --browser firefox -q
 
@@ -188,11 +196,18 @@ worker-once:
 # API base baked into the WASM bundle at compile time (Trunk has no runtime
 # env); override per environment, e.g. API_BASE_URL=https://example.com/api/v1
 API_BASE_URL ?= http://localhost:8080/api/v1
+WEB_DIST ?= $(CURDIR)/crates/web/dist
 build:
 	@echo "Building production release binaries..."
 	@cargo build --workspace --release
-	@echo "Building production WASM frontend bundle..."
-	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --public-url /
+	@$(MAKE) --no-print-directory build-web
+
+# Release WebAssembly bundle: wasm-release profile, wasm-opt -Oz (Trunk
+# fetches binaryen when it is not installed), then the size budget.
+build-web:
+	@echo "Building the release WASM bundle into $(WEB_DIST)..."
+	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --cargo-profile wasm-release --public-url / --dist $(WEB_DIST)
+	@python3 scripts/check_bundle_budget.py $(WEB_DIST)
 
 # Production compose stack (see .env.production.example). Dev stack stays
 # on docker-compose.yml with host ports 5433/6380/9005/9006.
@@ -228,5 +243,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

@@ -6,14 +6,13 @@ FROM rust:1.94-bookworm AS webbuild
 RUN rustup target add wasm32-unknown-unknown \
     && cargo install trunk --locked
 WORKDIR /app
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock Makefile ./
 COPY crates ./crates
-COPY scripts/externalize_inline_scripts.py ./scripts/
+COPY scripts/externalize_inline_scripts.py scripts/check_bundle_budget.py ./scripts/
 COPY assets/illustrations ./assets/illustrations
 ARG API_BASE_URL=http://localhost:8080/api/v1
 ENV API_BASE_URL=$API_BASE_URL
-WORKDIR /app/crates/web
-RUN trunk build --release --public-url /
+RUN make build-web
 
 FROM caddy:2-alpine
 COPY Caddyfile.prod /etc/caddy/Caddyfile

@@ -53,6 +53,15 @@ pretty_assertions = "1.4"
 claims = "0.8"
 rstest = "0.27"
 
+# WebAssembly bundle only (`make build-web`): size over speed, whole-program
+# LTO, one codegen unit. The server keeps the default release profile.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
 # Full debuginfo across ~570 crates made each test binary ~390 MB and target/ reach 50+ GB.
 [profile.dev]
 debug = "line-tables-only"
