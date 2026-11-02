@@ -139,7 +139,7 @@ Memory, measured 2026-11-03 (release builds, dev data):
 | Process | Idle | Under load |
 |---|---|---|
 | API server | 24 MB RSS | 61 MB at 256 concurrent mixed reads (`MALLOC_ARENA_MAX=2`, set in the image; 72 MB without) |
-| Ingestion worker | about 25 MB | 53 MB RSS, 19.5 MB Python heap, parsing a 300-chapter EPUB (6.3 MB of text) |
+| Ingestion worker | 35 MB RSS | 53 MB RSS, 19.5 MB Python heap, parsing a 300-chapter EPUB (6.3 MB of text) |
 | Web app | 1.3 MB JS heap, 1.3 MB WASM memory on the catalog | 2.8 MB JS heap in the reader; DOM nodes and listeners stay flat over 60 page turns, 45 sheet cycles, and 36 chapter jumps |
 
 ## 10. Tests
