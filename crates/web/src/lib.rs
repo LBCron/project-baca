@@ -44,6 +44,13 @@ pub fn App() -> impl IntoView {
     i18n::provide_lang();
     let theme = RwSignal::new(ShellTheme::load());
     theme.get_untracked().apply();
+    ShellTheme::on_system_change(move || {
+        if !ShellTheme::is_chosen() {
+            let next = ShellTheme::load();
+            next.apply();
+            theme.set(next);
+        }
+    });
     provide_context(theme);
     Toasts::provide();
     Session::provide();

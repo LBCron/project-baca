@@ -251,8 +251,8 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
                 <span class="manuscript-meta">
                     {move || format!(
                         "{} \u{00B7} {}",
-                        lang.get().text_with("chapters_count", "n", &chapters.to_string()),
-                        lang.get().text_with("chunks_count", "n", &chunks.to_string())
+                        lang.get().text_n("chapters_count", chapters),
+                        lang.get().text_n("chunks_count", chunks)
                     )}
                 </span>
             </div>
@@ -465,13 +465,13 @@ fn RetentionPanel() -> impl IntoView {
                     view! {
                         <li class="funnel-row">
                             <span class="funnel-label">{format!("{} \u{00B7} {}", roman(p.chapter_number), p.chapter_title)}</span>
-                            <div class="funnel-bar" role="img" aria-label=move || lang.get().text_with("readers_reached", "n", &p.readers_reached.to_string())>
+                            <div class="funnel-bar" role="img" aria-label=move || lang.get().text_n("readers_reached", p.readers_reached)>
                                 <span style=format!("width: {width:.1}%")></span>
                             </div>
                             <span class="funnel-meta">
                                 {move || format!(
                                     "{} \u{00B7} {}",
-                                    lang.get().text_with("readers_reached", "n", &p.readers_reached.to_string()),
+                                    lang.get().text_n("readers_reached", p.readers_reached),
                                     lang.get().text_with("drop_off", "n", &format!("{:.0}", p.drop_off_pct))
                                 )}
                             </span>

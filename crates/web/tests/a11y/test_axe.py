@@ -96,3 +96,45 @@ def test_axe_paper_surface(browser: Browser, book_with_chapters: str, route: str
         )
     finally:
         context.close()
+
+
+CONTRAST = """() => {
+  const toast = document.createElement('div');
+  toast.className = 'toast error';
+  toast.textContent = 'Probe';
+  document.body.appendChild(toast);
+  const style = getComputedStyle(toast);
+  const rgb = value => value.match(/\\d+(\\.\\d+)?/g).slice(0, 3).map(Number);
+  const lum = ([r, g, b]) => {
+    const c = [r, g, b].map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const [fg, bg] = [lum(rgb(style.color)), lum(rgb(style.backgroundColor))];
+  toast.remove();
+  return (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05);
+}"""
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_error_toast_meets_aa_contrast(browser: Browser, scheme: str):
+    context = browser.new_context(color_scheme=scheme)
+    page = context.new_page()
+    try:
+        page.goto(f"{WEB}/", wait_until="networkidle")
+        ratio = page.evaluate(CONTRAST)
+        assert ratio >= 4.5, f"{scheme}: error toast contrast {ratio:.2f}:1"
+    finally:
+        context.close()
+
+
+def test_small_labels_stay_legible(clean_page: Page, book_with_chapters: str):
+    page = clean_page
+    page.set_viewport_size({"width": 390, "height": 844})
+    goto(page, "/")
+    tab = page.evaluate("() => parseFloat(getComputedStyle(document.querySelector('.tab')).fontSize)")
+    assert tab >= 12, f"tab label {tab}px"
+    page.set_viewport_size({"width": 1280, "height": 800})
+    goto(page, f"/read/{book_with_chapters}?chapter=1")
+    head = page.evaluate("() => parseFloat(getComputedStyle(document.querySelector('.page-head')).fontSize)")
+    assert head >= 11.2, f"running head {head}px"
+    assert_no_page_errors(page)

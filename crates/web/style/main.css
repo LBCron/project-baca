@@ -189,7 +189,8 @@ html {
 #katalog,
 #cara-kerja,
 #daftar-bab,
-#akun {
+#akun,
+#catalog-search {
     scroll-margin-top: calc(var(--header-height) + var(--safe-top) + var(--space-3));
 }
 
@@ -421,7 +422,7 @@ img {
     gap: 4px;
     padding: 6px 0;
     min-height: 44px;
-    font-size: 0.7rem;
+    font-size: 0.75rem;
     font-weight: 600;
     color: var(--text-faint);
     transition: color var(--dur-fast), transform var(--dur-fast) var(--ease-out);
@@ -1907,7 +1908,7 @@ img {
 .page-head {
     top: 13px;
     max-width: 46%;
-    font-size: 0.62rem;
+    font-size: 0.7rem;
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2469,7 +2470,7 @@ img {
 
 .toast.error {
     background: var(--danger);
-    color: #1F1916;
+    color: var(--accent-ink);
 }
 
 /* Profile */

@@ -82,7 +82,7 @@ fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
         <section class="streak-card" aria-label=move || lang.get().text("streak_label")>
             <div class="flame" aria-hidden="true">{icons::flame()}</div>
             <div class="streak-body">
-                <span class="count">{move || lang.get().text_with("streak_days", "n", &days.to_string())}</span>
+                <span class="count">{move || lang.get().text_n("streak_days", i64::from(days))}</span>
                 <small>{move || if today_done { format!("{} \u{00B7} {}", lang.get().text_with("xp", "n", &streak.total_xp.to_string()), lang.get().duration((streak.total_reading_seconds / 60) as i32)) } else { lang.get().text("streak_hint") }}</small>
                 <div class="week-dots" aria-hidden="true">
                     {(0..7).map(|i| {

@@ -1016,7 +1016,7 @@ pub fn ReaderPage() -> impl IntoView {
                 <div class="reader-status">
                     <span>{page_status}</span>
                     <span>
-                        {move || lang.get().text_with("minutes_left", "n", &minutes_left().to_string())}
+                        {move || lang.get().text_n("minutes_left", i64::from(minutes_left()))}
                         {move || offline.get().then(|| view! { <span class="badge">{format!(" \u{00B7} {}", lang.get().text("offline_copy"))}</span> })}
                         {move || (queued.get() > 0).then(|| view! { <span class="badge">{format!(" \u{00B7} {}", lang.get().text_with("queued", "n", &queued.get().to_string()))}</span> })}
                     </span>
@@ -1025,7 +1025,7 @@ pub fn ReaderPage() -> impl IntoView {
 
             {move || view! { <CatchupRecap book_id=book_id.get_value() chapter=chapter_no.get() show=recap_open/> }}
             {move || streak.get().map(|days| view! {
-                <div class="streak-toast" role="status">{format!("\u{2756} {}", lang.get().text_with("streak_days", "n", &days.to_string()))}</div>
+                <div class="streak-toast" role="status">{format!("\u{2756} {}", lang.get().text_n("streak_days", i64::from(days)))}</div>
             })}
             <ToastStack toasts=toasts/>
         </div>

@@ -213,7 +213,7 @@ pub fn BookPage() -> impl IntoView {
                                     <p class="book-author">{format!("{}{year}", b.author)}</p>
                                     <div class="meta-row">
                                         <span>{move || lang.get().duration(total_minutes)}</span>
-                                        <span>{move || lang.get().text_with("chapters_count", "n", &chapter_count.to_string())}</span>
+                                        <span>{move || lang.get().text_n("chapters_count", chapter_count as i64)}</span>
                                         <span>{b.language.to_uppercase()}</span>
                                     </div>
                                 </div>

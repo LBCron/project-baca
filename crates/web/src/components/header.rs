@@ -66,7 +66,10 @@ pub fn SiteHeader() -> impl IntoView {
                     </div>
                     <button
                         class="btn-icon"
-                        aria-label=move || lang.get().text("theme_toggle")
+                        aria-label=move || lang.get().text(match theme.get() {
+                            ShellTheme::Espresso => "theme_to_paper",
+                            ShellTheme::Paper => "theme_to_espresso",
+                        })
                         on:click=move |_| {
                             let next = theme.get_untracked().toggle();
                             next.persist();

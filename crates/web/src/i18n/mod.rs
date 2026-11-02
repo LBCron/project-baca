@@ -50,7 +50,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("sign_in", "Masuk", "Sign In"),
     ("sign_out", "Keluar", "Sign out"),
     ("register", "Daftar", "Register"),
-    ("theme_toggle", "Ganti tema", "Switch theme"),
+    ("theme_to_paper", "Ganti ke tema Kertas", "Switch to the Paper theme"),
+    ("theme_to_espresso", "Ganti ke tema Espresso", "Switch to the Espresso theme"),
     ("language", "Bahasa", "Language"),
     (
         "hero_sub",
@@ -128,6 +129,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("words", "kata", "words"),
     ("chapters", "Daftar bab", "Chapters"),
     ("chapters_count", "{n} bab", "{n} chapters"),
+    ("chapters_count_one", "{n} bab", "{n} chapter"),
     ("chapter", "Bab", "Chapter"),
     ("reading_progress", "Kemajuan membaca", "Reading progress"),
     ("last_read", "Terakhir dibaca", "Last read"),
@@ -197,6 +199,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("reader_settings", "Pengaturan tampilan", "Display settings"),
     ("page_of", "Halaman {a} dari {b}", "Page {a} of {b}"),
     ("minutes_left", "~{n} menit lagi di bab ini", "~{n} minutes left in this chapter"),
+    ("minutes_left_one", "~{n} menit lagi di bab ini", "~{n} minute left in this chapter"),
     ("offline_copy", "salinan luring", "offline copy"),
     ("queued", "{n} menunggu sinkron", "{n} awaiting sync"),
     ("theme_paper", "Kertas", "Paper"),
@@ -260,6 +263,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ),
     ("back_to_catalog", "Kembali ke katalog", "Back to catalog"),
     ("streak_days", "{n} hari berturut-turut", "{n} days in a row"),
+    ("streak_days_one", "{n} hari berturut-turut", "{n} day in a row"),
     (
         "streak_hint",
         "Baca lima menit hari ini untuk menjaga streak.",
@@ -287,8 +291,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("member_since", "Pembaca sejak", "Reader since"),
     (
         "no_badges",
-        "Lencana pertamamu menunggu di menit keenam puluh membaca.",
-        "Your first badge awaits at the sixtieth minute of reading.",
+        "Lencana pertamamu menunggu di menit pertama membaca.",
+        "Your first badge awaits after your first minute of reading.",
     ),
     (
         "no_quotes",
@@ -327,6 +331,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("archive", "Arsipkan", "Archive"),
     ("archived_done", "Naskah diarsipkan.", "Manuscript archived."),
     ("chunks_count", "{n} potongan", "{n} chunks"),
+    ("chunks_count_one", "{n} potongan", "{n} chunk"),
     (
         "no_manuscripts",
         "Belum ada naskah dengan status ini.",
@@ -352,6 +357,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "How many readers reach each chapter.",
     ),
     ("readers_reached", "{n} pembaca", "{n} readers"),
+    ("readers_reached_one", "{n} pembaca", "{n} reader"),
     ("drop_off", "turun {n}%", "{n}% drop"),
     (
         "no_funnel",
@@ -440,6 +446,19 @@ impl Lang {
                 Lang::En => (*en).to_string(),
             })
             .unwrap_or_else(|| key.to_string())
+    }
+
+    /// `{n}` texts for a count. English takes the `_one` form for exactly
+    /// one; Indonesian nouns do not inflect, so its `_one` rows repeat the
+    /// base text.
+    pub fn text_n(self, key: &str, n: i64) -> String {
+        let singular = format!("{key}_one");
+        let key = if n == 1 && ENTRIES.iter().any(|(k, _, _)| *k == singular) {
+            singular.as_str()
+        } else {
+            key
+        };
+        self.text_with(key, "n", &n.to_string())
     }
 
     /// `text` with one `{name}` placeholder substituted.

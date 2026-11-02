@@ -3,6 +3,7 @@
 //! so the page never flashes the wrong surface.
 
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 
 const SHELL_KEY: &str = "rotaria_theme";
 const READER_KEY: &str = "rotaria_reader_prefs";
@@ -48,6 +49,28 @@ impl ShellTheme {
             ShellTheme::Espresso => "#1F1916",
             ShellTheme::Paper => "#F9F6F0",
         }
+    }
+
+    /// Whether the reader picked a theme; until then the system scheme rules.
+    pub fn is_chosen() -> bool {
+        storage()
+            .and_then(|s| s.get_item(SHELL_KEY).ok().flatten())
+            .is_some()
+    }
+
+    /// Calls `on_change` whenever the system scheme flips. The listener
+    /// lives as long as the page, like the app root that installs it.
+    pub fn on_system_change(on_change: impl Fn() + 'static) {
+        let Some(query) = web_sys::window().and_then(|w| {
+            w.match_media("(prefers-color-scheme: light)")
+                .ok()
+                .flatten()
+        }) else {
+            return;
+        };
+        let listener = wasm_bindgen::closure::Closure::<dyn Fn()>::new(on_change);
+        let _ = query.add_event_listener_with_callback("change", listener.as_ref().unchecked_ref());
+        listener.forget();
     }
 
     /// Remembers an explicit choice so it outlives the system scheme.
