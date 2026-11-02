@@ -233,3 +233,13 @@ class RetryAndRecapTests(unittest.TestCase):
         crowded = build_recap_input([{"key_concepts": ["z" * 9000]}, {"key_concepts": ["w" * 9000]}], current, budget=12000)
         self.assertNotIn("z" * 9000, crowded, "the oldest summary goes first when room runs out")
         self.assertLessEqual(len(crowded), 12000)
+
+
+class StreamCapTest(unittest.TestCase):
+    def test_dead_letters_are_capped_like_the_ingestion_stream(self):
+        client = mock.Mock()
+        worker.dead_letter(client, worker.Settings(), "job-1", RuntimeError("boom"))
+        args, kwargs = client.xadd.call_args
+        self.assertEqual(args[0], "stream:epub_ingestion:dlq")
+        self.assertEqual(args[1], {"job_id": "job-1", "error": "boom"})
+        self.assertEqual(kwargs, {"maxlen": 10_000, "approximate": True})

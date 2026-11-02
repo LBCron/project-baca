@@ -53,7 +53,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - Signup: emails are trimmed and lowercased at deserialization, so case variants are one account and one lockout key; a concurrent duplicate answers 409. While a code is pending, a signup with a different password answers 429 until it expires, so nobody can plant a password on someone else's registration; the same password gets a fresh code.
 - Tokens: HS256 access token (1440 min in dev, 60 min in production compose); refresh token stored as a SHA-256 hash with a session record (device label, IP prefix, last access `jti`), rotated atomically (`GETDEL`, 30 s grace for concurrent tabs, handing back the successor only while it is still live); a replayed token revokes the family including access tokens. Logout and per-device revocation blacklist the last access `jti`.
 - Lockouts: 5 failures per (email, IP) and 20 per email lock login for 15 min; unverified accounts behave like a wrong password.
-- Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted, and production refuses to boot with `PUBLIC_RATE_LIMIT_PER_MINUTE` above 0 but proxy trust off (every reader would share one bucket).
+- Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted, and production refuses to boot with `PUBLIC_RATE_LIMIT_PER_MINUTE` above 0 but proxy trust off (every reader would share one bucket) and with `SMTP_SECURITY=none`.
 - Headers: the API sets HSTS, `nosniff`, frame denial, referrer policy, COOP and CORP, a permissions policy, its own CSP, and `Cache-Control: no-store` on `/auth/*` and on every bearer response. Caddy sets the SPA headers, including a CSP with `script-src 'self' 'wasm-unsafe-eval'` and no inline scripts (a Trunk post-build hook moves the bootstrap into a hashed `boot-*.js`).
 - Data exposure: draft and archived books are invisible on every public route; validation errors name the field without echoing the value; logs mask connection strings, recipients, OTPs, and the Gemini key (sent in `x-goog-api-key`).
 - Open security work is tracked as tickets in `knowledge/tickets/` (private repo).
@@ -89,7 +89,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 **Flow.** Upload stores the EPUB at `raw-epubs/<book_id>.epub` and publishes to `stream:epub_ingestion`. Python workers in the consumer group `ingestion-workers` process it and report progress to the `job:{id}` hash read by the curator desk. Workers are stateless; add processes to scale.
 
-**Message contract.** Stream fields `book_id`, `storage_path`, `job_id`, `timestamp`. Job hash `job:{id}`: `status` (`queued`, `parsing`, `chunking`, `embedding`, `summarizing`, `published`, `failed`), `progress` 0 to 100, `error`, `attempts`, timestamps; TTL 7 days. Dead letters go to `stream:epub_ingestion:dlq`; `POST /admin/dlq/{id}/replay` re-queues under the original job id.
+**Message contract.** Stream fields `book_id`, `storage_path`, `job_id`, `timestamp`. Job hash `job:{id}`: `status` (`queued`, `parsing`, `chunking`, `embedding`, `summarizing`, `published`, `failed`), `progress` 0 to 100, `error`, `attempts`, timestamps; TTL 7 days. Dead letters go to `stream:epub_ingestion:dlq`; `POST /admin/dlq/{id}/replay` re-queues under the original job id. Both streams are capped with `XADD MAXLEN ~ 10000` (server and worker share the number), so Redis does not grow with every upload ever made.
 
 **Pipeline per message.**
 1. Download; zip guard (per-file size, compression ratio, ZipSlip paths).
@@ -115,6 +115,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 - `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio (internal network only), server, worker, edge (Caddy on 80 and 443 TCP and UDP). Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
 - `make build` compiles release binaries and the WASM bundle with `API_BASE_URL` baked in.
+- Server and worker images run as uid 10001; the dev compose binds every port to `127.0.0.1`, and `Caddyfile.prod` drops the `Server` banner on every response, errors included.
 - With `APP_ENV=production` the server exits non-zero when Postgres or Redis is unreachable at boot, and `restart: always` retries; development keeps running without them.
 - The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
 - Observability: tracing with `x-request-id` on every span; `LOG_FORMAT=json` for NDJSON.

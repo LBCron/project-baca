@@ -4,7 +4,7 @@
 //! Job hashes expire after 7 days.
 
 use crate::RedisConn;
-use redis::AsyncCommands;
+use redis::{streams::StreamMaxlen, AsyncCommands};
 use shared::{AppError, DlqEntryDto, JobStatusDto};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -15,6 +15,10 @@ pub const INGESTION_STREAM: &str = "stream:epub_ingestion";
 pub const INGESTION_DLQ_STREAM: &str = "stream:epub_ingestion:dlq";
 /// Consumer group used by ingestion workers (created with MKSTREAM on first run).
 pub const INGESTION_GROUP: &str = "ingestion-workers";
+/// Approximate cap on both streams (`MAXLEN ~`). Acknowledged entries are
+/// never read again, so the stream only needs room for a backlog; trimming
+/// keeps Redis from growing with every upload ever made.
+pub const STREAM_MAXLEN: usize = 10_000;
 /// Redis key prefix for per-job status hashes.
 pub const JOB_KEY_PREFIX: &str = "job:";
 /// Job hash time-to-live in seconds (7 days).
@@ -22,6 +26,21 @@ pub const JOB_TTL_SECS: u64 = 7 * 24 * 3600;
 
 fn job_key(job_id: &str) -> String {
     format!("{JOB_KEY_PREFIX}{job_id}")
+}
+
+/// `XADD` of one job onto the capped ingestion stream.
+fn ingestion_entry(book_id: &str, storage_path: &str, job_id: &str, timestamp: &str) -> redis::Cmd {
+    let mut cmd = redis::cmd("XADD");
+    cmd.arg(INGESTION_STREAM)
+        .arg(StreamMaxlen::Approx(STREAM_MAXLEN))
+        .arg("*")
+        .arg(&[
+            ("book_id", book_id),
+            ("storage_path", storage_path),
+            ("job_id", job_id),
+            ("timestamp", timestamp),
+        ]);
+    cmd
 }
 
 /// Publishes an EPUB ingestion job: appends to the stream and initializes the
@@ -34,17 +53,8 @@ pub async fn publish_ingestion_job(
     let job_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
-    let _: String = conn
-        .xadd(
-            INGESTION_STREAM,
-            "*",
-            &[
-                ("book_id", book_id.to_string()),
-                ("storage_path", storage_path.to_string()),
-                ("job_id", job_id.clone()),
-                ("timestamp", now.clone()),
-            ],
-        )
+    let _: String = ingestion_entry(&book_id.to_string(), storage_path, &job_id, &now)
+        .query_async(conn)
         .await
         .map_err(|e| AppError::Internal(format!("Stream publish failed: {e}")))?;
 
@@ -179,17 +189,8 @@ pub async fn replay_dlq_entry(
     };
 
     let now = chrono::Utc::now().to_rfc3339();
-    let _: String = conn
-        .xadd(
-            INGESTION_STREAM,
-            "*",
-            &[
-                ("book_id", book_id.as_str()),
-                ("storage_path", storage_path.as_str()),
-                ("job_id", job_id.as_str()),
-                ("timestamp", now.as_str()),
-            ],
-        )
+    let _: String = ingestion_entry(book_id, storage_path, &job_id, &now)
+        .query_async(conn)
         .await
         .map_err(|e| AppError::Internal(format!("Stream publish failed: {e}")))?;
     let _: () = conn
@@ -214,4 +215,25 @@ pub async fn replay_dlq_entry(
         .await
         .map_err(|e| AppError::Internal(format!("DLQ acknowledge failed: {e}")))?;
     Ok(Some(job_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ingestion_entries_trim_the_stream_approximately() {
+        let packed = ingestion_entry("b", "epubs/b.epub", "j", "t").get_packed_command();
+        let packed = String::from_utf8_lossy(&packed);
+        let words: Vec<&str> = packed
+            .split("\r\n")
+            .filter(|w| !w.starts_with(['*', '$']))
+            .collect();
+        assert_eq!(
+            &words[..5],
+            &["XADD", INGESTION_STREAM, "MAXLEN", "~", "10000"],
+            "{packed:?}"
+        );
+        assert!(words.contains(&"epubs/b.epub"));
+    }
 }

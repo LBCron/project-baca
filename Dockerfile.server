@@ -6,9 +6,12 @@ COPY crates ./crates
 RUN cargo build --release -p server
 
 FROM debian:bookworm-slim
+# wget serves the compose healthcheck; the slim base ships without it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/server /usr/local/bin/server
+# The API writes nothing to disk, so it runs as an unprivileged id.
+USER 10001:10001
 EXPOSE 8080
 CMD ["server"]

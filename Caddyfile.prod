@@ -8,6 +8,13 @@
 {$DOMAIN} {
 	encode gzip
 
+	# No server banner on any response: proxied, static, or an error Caddy
+	# writes itself (a 502 while the API restarts, a missing file).
+	header -Server
+	handle_errors {
+		header -Server
+	}
+
 	# Axum REST API. Swagger UI and the OpenAPI JSON are not mounted in
 	# production, so they get no route here.
 	#
@@ -42,7 +49,6 @@
 			X-Frame-Options "DENY"
 			Referrer-Policy "strict-origin-when-cross-origin"
 			Permissions-Policy "camera=(), microphone=(), geolocation=()"
-			-Server
 		}
 	}
 

@@ -24,7 +24,7 @@ Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](AR
 
 ## 2. Services (`make db-up`)
 
-| Service | Image | Host port |
+| Service | Image | Host port (loopback only) |
 |---|---|---|
 | PostgreSQL 17 + pgvector | `pgvector/pgvector:pg17` | 5433 |
 | Redis 7 | `redis:7-alpine` | 6380 |
@@ -46,7 +46,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `S3_FORCE_PATH_STYLE` | MinIO dev values | any S3-compatible store |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Mailpit, `starttls` | `SMTP_SECURITY=none` for Mailpit; credentials sent only when `SMTP_USER` is set; signup answers 502 when the relay is unreachable |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Mailpit, `starttls` | `SMTP_SECURITY=none` for Mailpit (refused in production); credentials sent only when `SMTP_USER` is set; signup answers 502 when the relay is unreachable |
 | `EMBEDDING_PROVIDER`, `GEMINI_API_KEY`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSION` | `gemini`, none, `gemini-embedding-2`, `768` | shared by server (query embeddings) and worker; `AI_*` aliases accepted |
 | `LLM_MODEL_NAME`, `RECLAIM_IDLE_MS` | `gemini-flash-latest`, `300000` | worker only |
 | `API_BASE_URL` | `http://localhost:8080/api/v1` | baked into the WASM bundle at build time (`make build API_BASE_URL=...`) |

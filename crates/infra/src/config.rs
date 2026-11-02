@@ -405,6 +405,11 @@ impl AppConfig {
                 "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true".to_string(),
             ));
         }
+        if self.is_production() && self.email.smtp_security == SmtpSecurity::None {
+            return Err(AppError::ValidationError(
+                "SMTP_SECURITY=none is refused in production: OTP codes and SMTP credentials would cross the network in cleartext".to_string(),
+            ));
+        }
         if self.is_production()
             && self.server.public_rate_limit_per_minute > 0
             && !self.server.trust_proxy_headers
@@ -520,6 +525,18 @@ mod tests {
         let mut behind_edge = AppConfig::default();
         behind_edge.server.trust_proxy_headers = true;
         assert!(behind_edge.validate().is_err());
+    }
+
+    #[test]
+    fn cleartext_smtp_is_refused_in_production_only() {
+        let mut config = production();
+        config.email.smtp_security = SmtpSecurity::None;
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("SMTP_SECURITY=none"), "{err}");
+
+        let mut dev = AppConfig::default();
+        dev.email.smtp_security = SmtpSecurity::None;
+        assert!(dev.validate().is_ok(), "Mailpit in development");
     }
 
     #[test]

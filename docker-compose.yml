@@ -1,3 +1,5 @@
+# Development services. Every port binds to loopback: the credentials below
+# are public defaults, so nothing here may be reachable from the LAN.
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -8,7 +10,7 @@ services:
       POSTGRES_PASSWORD: baca_password
       POSTGRES_DB: project_baca_db
     ports:
-      - "5433:5432" # Host port 5433 avoids collisions with default Postgres
+      - "127.0.0.1:5433:5432" # Host port 5433 avoids collisions with default Postgres
     volumes:
       - pgdata_baca:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +24,7 @@ services:
     container_name: project_baca_redis
     restart: always
     ports:
-      - "6380:6379" # Host port 6380 avoids collisions with default Redis
+      - "127.0.0.1:6380:6379" # Host port 6380 avoids collisions with default Redis
     volumes:
       - redisdata_baca:/data
     healthcheck:
@@ -40,8 +42,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9005:9000" # S3 API endpoint
-      - "9006:9001" # Web console
+      - "127.0.0.1:9005:9000" # S3 API endpoint
+      - "127.0.0.1:9006:9001" # Web console
     volumes:
       - miniodata_baca:/data
 
@@ -50,8 +52,8 @@ services:
     container_name: project_baca_mailpit
     restart: always
     ports:
-      - "1025:1025" # SMTP port
-      - "8025:8025" # Web UI for transactional emails
+      - "127.0.0.1:1025:1025" # SMTP port
+      - "127.0.0.1:8025:8025" # Web UI for transactional emails
 
 volumes:
   pgdata_baca:

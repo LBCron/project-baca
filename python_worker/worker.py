@@ -65,6 +65,9 @@ class Settings:
     llm_model: str = field(default_factory=lambda: env("LLM_MODEL_NAME", "gemini-flash-latest"))
     stream: str = "stream:epub_ingestion"
     dlq_stream: str = "stream:epub_ingestion:dlq"
+    # Mirrors STREAM_MAXLEN in crates/infra/src/queue.rs: an approximate cap
+    # so neither stream grows with every upload ever made.
+    stream_maxlen: int = 10_000
     group: str = "ingestion-workers"
     reclaim_idle_ms: int = field(
         default_factory=lambda: int(env("RECLAIM_IDLE_MS", "300000"))
@@ -827,16 +830,22 @@ def run(once: bool = False) -> int:
                 except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
                     LOG.exception("job %s failed: %s", job_id, exc)
                     if attempts >= 3:
-                        redis_client.xadd(
-                            settings.dlq_stream,
-                            {"job_id": job_id, "error": str(exc)[:2000]},
-                        )
+                        dead_letter(redis_client, settings, job_id, exc)
                         set_job(redis_client, job_id, "failed", 100, error=str(exc))
                         redis_client.xack(settings.stream, settings.group, msg_id)
                     # Otherwise leave unacknowledged for XPENDING reclaim.
                 if once:
                     return 0
     return processed
+
+
+def dead_letter(redis_client, settings: Settings, job_id: str, exc: Exception) -> None:
+    redis_client.xadd(
+        settings.dlq_stream,
+        {"job_id": job_id, "error": str(exc)[:2000]},
+        maxlen=settings.stream_maxlen,
+        approximate=True,
+    )
 
 
 def main() -> None:
