@@ -101,14 +101,23 @@ jobs:
             curl -sf http://localhost:8080/health >/dev/null && curl -sf http://127.0.0.1:3000 >/dev/null && exit 0
             sleep 3
           done
-          tail -40 server.log trunk.log
+          tail -n 40 server.log trunk.log
           exit 1
       # Visual goldens are rendered on the maintainer's machine; font
       # rasterisation differs on the runner, so CI checks behaviour only.
       - name: Web unit, e2e, component, integration, and axe suites
+        env:
+          PYTEST_ADDOPTS: --screenshot only-on-failure --tracing retain-on-failure --output ${{ github.workspace }}/test-results
         run: |
           make test-web
           cd crates/web/tests && "$HOME/.venvs/webapp-testing/bin/python" -m pytest a11y/ --browser chromium -q
+      # The runner's coreutils (uutils) reject the legacy `tail -100` form.
       - name: Logs
         if: failure()
-        run: tail -100 server.log trunk.log
+        run: tail -n 100 server.log trunk.log
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-failures
+          path: test-results
+          retention-days: 7
