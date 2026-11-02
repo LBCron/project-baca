@@ -38,7 +38,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | Variable | Default | Meaning |
 |---|---|---|
 | `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger |
-| `CORS_ALLOWED_ORIGINS` | localhost:3000 origins | comma-separated allowlist |
+| `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist; the last two are the Tauri app WebView origins |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
 | `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-IP cap on unauthenticated reads; production compose sets 600, and production refuses a cap without `TRUST_PROXY_HEADERS=true` |

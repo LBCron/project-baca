@@ -14,10 +14,27 @@ use shared::{
 use wasm_bindgen::JsCast;
 use web_sys::window;
 
-/// API base URL, baked at Trunk build time via `API_BASE_URL` env
-/// (`Makefile` passes it through; dev falls back to localhost).
+/// API base URL. A native shell sets `window.__ROTARIA_API__` before the
+/// bundle runs (the Tauri app does), which wins over the base baked at Trunk
+/// build time through `API_BASE_URL`; so one bundle serves the web and the
+/// apps. Read once per page.
 pub fn api_base() -> &'static str {
-    option_env!("API_BASE_URL").unwrap_or("http://localhost:8080/api/v1")
+    static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        injected_api_base().unwrap_or_else(|| {
+            option_env!("API_BASE_URL")
+                .unwrap_or("http://localhost:8080/api/v1")
+                .to_string()
+        })
+    })
+}
+
+fn injected_api_base() -> Option<String> {
+    let value = js_sys::Reflect::get(window()?.as_ref(), &"__ROTARIA_API__".into()).ok()?;
+    value
+        .as_string()
+        .map(|base| base.trim().trim_end_matches('/').to_string())
+        .filter(|base| !base.is_empty())
 }
 const TOKEN_KEY: &str = "baca_access_token";
 

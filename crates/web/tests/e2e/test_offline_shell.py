@@ -118,3 +118,26 @@ def test_house_fonts_offline_on_home_and_reader(browser: Browser, book_with_chap
     finally:
         context.set_offline(False)
         context.close()
+
+
+def test_native_shell_sets_the_api_base_and_skips_the_worker(browser: Browser):
+    """The Tauri app injects the API base and keeps no service worker; one
+    bundle serves both."""
+    context = browser.new_context(color_scheme="dark")
+    context.add_init_script(
+        "window.__TAURI_INTERNALS__ = {}; window.__ROTARIA_API__ = 'http://localhost:8080/api/v1/';"
+    )
+    page = context.new_page()
+    api_calls: list[str] = []
+    page.on("request", lambda r: api_calls.append(r.url) if "/api/v1/" in r.url else None)
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        page.goto(f"{WEB}/", wait_until="networkidle")
+        page.wait_for_selector(".book-card")
+        page.wait_for_timeout(500)
+        assert page.evaluate("() => navigator.serviceWorker.getRegistrations().then(r => r.length)") == 0
+        assert api_calls and all("/api/v1//" not in url for url in api_calls), api_calls[:3]
+        assert errors == [], errors[:3]
+    finally:
+        context.close()

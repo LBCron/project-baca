@@ -1,5 +1,7 @@
 /* Runs before first paint: applies the stored shell theme so the page never
- * flashes the wrong surface, then registers the service worker on load. */
+ * flashes the wrong surface, then registers the service worker on load.
+ * Inside the Tauri app the bundle ships with the app and the WebView keeps
+ * no service worker, so none is registered there. */
 (function () {
   try {
     var stored = localStorage.getItem("rotaria_theme");
@@ -12,7 +14,8 @@
   } catch (e) {
     /* storage unavailable (private mode): keep the default surface */
   }
-  if ("serviceWorker" in navigator) {
+  var nativeShell = "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+  if ("serviceWorker" in navigator && !nativeShell) {
     window.addEventListener("load", function () {
       navigator.serviceWorker.register("/sw.js").catch(function () {});
     });
