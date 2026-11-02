@@ -4130,6 +4130,7 @@ dependencies = [
  "chrono",
  "claims",
  "domain",
+ "futures",
  "infra",
  "jsonwebtoken",
  "mockall",
