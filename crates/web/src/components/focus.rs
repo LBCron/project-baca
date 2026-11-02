@@ -4,6 +4,20 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+/// Hides a sheet once the event being handled has finished. A click inside
+/// a sheet still bubbles to the sheet's and the backdrop's own listeners;
+/// unmounting the sheet before then frees those closures, and the browser
+/// then calls freed handlers. Microtasks run between listeners of one
+/// dispatch, so only a task (a zero timeout) waits for the whole of it.
+pub fn close_after_event(show: RwSignal<bool>) {
+    set_timeout(
+        move || {
+            show.try_set(false);
+        },
+        std::time::Duration::ZERO,
+    );
+}
+
 pub fn active_element() -> Option<web_sys::HtmlElement> {
     web_sys::window()?
         .document()?

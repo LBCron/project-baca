@@ -1,6 +1,6 @@
 //! Sign-in sheet: login, registration, and OTP steps plus guest merge.
 
-use crate::components::focus::manage_sheet_focus;
+use crate::components::focus::{close_after_event, manage_sheet_focus};
 use crate::components::icons;
 use crate::i18n::use_lang;
 use crate::{api, storage};
@@ -49,7 +49,7 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
     };
 
     let close = move || {
-        show.set(false);
+        close_after_event(show);
         set_error.set(None);
         set_busy.set(false);
     };

@@ -1,7 +1,7 @@
 //! Quote finder, insight cards, and the spoiler-free recap, rendered as
 //! paper cards inside a sheet.
 
-use crate::components::focus::manage_sheet_focus;
+use crate::components::focus::{close_after_event, manage_sheet_focus};
 use crate::components::icons;
 use crate::components::toast::use_toasts;
 use crate::i18n::{use_lang, Lang};
@@ -27,12 +27,12 @@ fn Sheet(
             let id = id.clone();
             let labelled = labelled.clone();
             show.get().then(|| view! {
-                <div class="sheet-backdrop" on:click=move |_| show.set(false)>
+                <div class="sheet-backdrop" on:click=move |_| close_after_event(show)>
                     <div class="sheet" class:wide=wide role="dialog" aria-modal="true" aria-labelledby=labelled on:click=|ev| ev.stop_propagation()>
                         <div class="sheet-grip" aria-hidden="true"></div>
                         <div class="sheet-head">
                             <h2 id=id class="section-title">{title.get()}</h2>
-                            <button class="btn-icon" node_ref=close_ref aria-label=move || lang.get().text("close") on:click=move |_| show.set(false)>{icons::close()}</button>
+                            <button class="btn-icon" node_ref=close_ref aria-label=move || lang.get().text("close") on:click=move |_| close_after_event(show)>{icons::close()}</button>
                         </div>
                         {children()}
                     </div>

@@ -1475,6 +1475,8 @@ img {
     overflow-y: auto;
     overscroll-behavior: contain;
     background: var(--bg-elevated);
+    /* Sheets opened inside the reader would otherwise inherit its paper ink. */
+    color: var(--text);
     border: 1px solid var(--border);
     border-radius: 24px 24px 0 0;
     padding: var(--space-3) calc(var(--space-5) + var(--safe-right)) calc(var(--space-6) + var(--safe-bottom)) calc(var(--space-5) + var(--safe-left));
@@ -1509,6 +1511,16 @@ img {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+}
+
+/* A search form keeps its one-line pill inside a sheet too. */
+.sheet form.search-bar {
+    flex-direction: row;
+    gap: var(--space-3);
+}
+
+.sheet .search-bar .search-submit {
+    display: inline-flex;
 }
 
 .sheet-actions {
@@ -2233,6 +2245,18 @@ img {
     max-width: 44ch;
     color: var(--r-muted);
     line-height: 1.5;
+}
+
+/* The cards sit on the page, so secondary buttons take the page's ink,
+   not the shell's. */
+.finale .btn-ghost {
+    color: var(--r-text);
+    border-color: var(--r-border);
+}
+
+.finale .btn-ghost:hover:not(:disabled) {
+    color: var(--r-accent-text);
+    border-color: var(--r-accent);
 }
 
 .reader-footer {
