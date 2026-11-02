@@ -90,6 +90,50 @@ pub async fn get_all<T: DeserializeOwned>(store: &str) -> Result<Vec<T>, String>
         .collect()
 }
 
+/// Every record with its primary key, in key order; for stores whose key is
+/// generated (`auto_increment`) and so lives outside the value.
+pub async fn get_all_keyed<T: DeserializeOwned>(store: &str) -> Result<Vec<(JsValue, T)>, String> {
+    let rexie = db().await?;
+    let tx = rexie
+        .transaction(&[store], TransactionMode::ReadOnly)
+        .map_err(|e| format!("{e:?}"))?;
+    let handle = tx.store(store).map_err(|e| format!("{e:?}"))?;
+    let keys = handle
+        .get_all_keys(None, None)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    let values = handle
+        .get_all(None, None)
+        .await
+        .map_err(|e| format!("{e:?}"))?;
+    tx.done().await.map_err(|e| format!("{e:?}"))?;
+    keys.into_iter()
+        .zip(values)
+        .map(|(k, v)| {
+            serde_wasm_bindgen::from_value(v)
+                .map(|value| (k, value))
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// Deletes the given keys in one transaction.
+pub async fn delete_keys(store: &str, keys: &[JsValue]) -> Result<(), String> {
+    let rexie = db().await?;
+    let tx = rexie
+        .transaction(&[store], TransactionMode::ReadWrite)
+        .map_err(|e| format!("{e:?}"))?;
+    let handle = tx.store(store).map_err(|e| format!("{e:?}"))?;
+    for key in keys {
+        handle
+            .delete(key.clone())
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+    }
+    tx.done().await.map_err(|e| format!("{e:?}"))?;
+    Ok(())
+}
+
 pub async fn delete(store: &str, key: &str) -> Result<(), String> {
     let rexie = db().await?;
     let tx = rexie

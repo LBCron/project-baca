@@ -121,6 +121,9 @@ async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Re
         clear_token();
         return Ok(first);
     }
+    // Drain the rejected body: an unread response pins its HTTP/1.1
+    // connection, and a few of them exhaust the browser's pool for the host.
+    let _ = first.binary().await;
     refresh_once().await?;
     let second = make().await?;
     if second.status() == 401 {
@@ -390,13 +393,10 @@ pub async fn chapter_recap(
     get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
 }
 
+/// Registers and sends the code; a cooldown (429), relay outage (502), or
+/// Redis outage (503) comes back as an error so the sheet stays on the form.
 pub async fn signup(req: &SignupRequest) -> Result<(), String> {
-    let url = format!("{}/auth/signup", api_base());
-    let request = Request::post(&url)
-        .header("Content-Type", "application/json")
-        .body(serde_json::to_string(req).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    request.send().await.map_err(|e| e.to_string())?;
+    let _: serde_json::Value = post_once("/auth/signup", req).await?;
     Ok(())
 }
 
@@ -408,26 +408,52 @@ pub async fn login(req: &LoginRequest) -> Result<TokenResponse, String> {
     post_once("/auth/login", req).await
 }
 
+/// Rotates the token pair. A refused refresh token (401, or 400 for a
+/// malformed one) ends the session here, so the UI falls back to the guest
+/// view; a network or server failure keeps the tokens for the next try.
 pub async fn refresh() -> Result<TokenResponse, String> {
     let rt = refresh_token().ok_or_else(|| "no refresh token".to_string())?;
     let tokens: TokenResponse =
-        post_once("/auth/refresh", &RefreshTokenRequest { refresh_token: rt }).await?;
+        match post_once("/auth/refresh", &RefreshTokenRequest { refresh_token: rt }).await {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                if is_refusal(&e) {
+                    clear_token();
+                }
+                return Err(e);
+            }
+        };
     set_tokens(&tokens.access_token, &tokens.refresh_token);
     Ok(tokens)
 }
 
+/// The server rejected the credential itself, as opposed to being unreachable.
+fn is_refusal(error: &str) -> bool {
+    ["UNAUTHORIZED", "BAD_REQUEST", "VALIDATION_FAILED"]
+        .iter()
+        .any(|code| error.starts_with(code))
+}
+
+/// Signs out on this device first, then asks the server to revoke the
+/// session as a best effort: offline, the device is still signed out.
 pub async fn logout() -> Result<(), String> {
-    let url = format!("{}/auth/logout", api_base());
+    let access = token();
     let rt = refresh_token().unwrap_or_default();
-    let req = authed(Request::post(&url))
-        .header("Content-Type", "application/json")
+    clear_token();
+    let url = format!("{}/auth/logout", api_base());
+    let mut builder = Request::post(&url).header("Content-Type", "application/json");
+    if let Some(access) = access {
+        builder = builder.header("Authorization", &format!("Bearer {access}"));
+    }
+    builder
         .body(
             serde_json::to_string(&RefreshTokenRequest { refresh_token: rt })
                 .map_err(|e| e.to_string())?,
         )
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
         .map_err(|e| e.to_string())?;
-    req.send().await.map_err(|e| e.to_string())?;
-    clear_token();
     Ok(())
 }
 
@@ -622,26 +648,32 @@ pub async fn pending_count() -> usize {
         .unwrap_or(0)
 }
 
+thread_local! {
+    static DRAINING: RefCell<bool> = const { RefCell::new(false) };
+}
+
 /// Replays queued progress writes oldest-first; failures stay queued.
-/// Returns the number still pending.
+/// Returns the number still pending. Each replayed write is deleted by its
+/// own key, so a write queued during the replay survives it, and a second
+/// call while one runs returns at once instead of sending everything twice.
 pub async fn drain_pending() -> usize {
-    let ops: Vec<PendingProgress> = crate::storage::get_all(crate::storage::STORE_PENDING_SYNC)
-        .await
-        .unwrap_or_default();
-    if ops.is_empty() {
-        return 0;
+    let already = DRAINING.with(|f| f.replace(true));
+    if already {
+        return pending_count().await;
     }
-    let mut failed = Vec::new();
-    for op in ops {
-        if save_progress(&op.book_id, &op.update).await.is_err() {
-            failed.push(op);
+    let ops: Vec<(wasm_bindgen::JsValue, PendingProgress)> =
+        crate::storage::get_all_keyed(crate::storage::STORE_PENDING_SYNC)
+            .await
+            .unwrap_or_default();
+    let mut sent = Vec::new();
+    for (key, op) in ops {
+        if save_progress(&op.book_id, &op.update).await.is_ok() {
+            sent.push(key);
         }
     }
-    let _ = crate::storage::clear(crate::storage::STORE_PENDING_SYNC).await;
-    for op in &failed {
-        let _ = queue_pending_progress(&op.book_id, &op.update).await;
-    }
-    failed.len()
+    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &sent).await;
+    DRAINING.with(|f| f.replace(false));
+    pending_count().await
 }
 
 pub fn window_document() -> Option<web_sys::Document> {

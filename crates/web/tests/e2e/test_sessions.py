@@ -3,9 +3,19 @@ import json
 import time
 import urllib.request
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Browser, Page, expect
 
-from conftest import api_get, api_post as _post, assert_no_page_errors, goto, mailpit_otp as _mailpit_otp
+from conftest import (
+    API,
+    WEB,
+    api_get,
+    api_post as _post,
+    assert_no_page_errors,
+    goto,
+    install_fetch_shim,
+    mailpit_otp as _mailpit_otp,
+    register_reader,
+)
 
 
 def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str):
@@ -146,3 +156,119 @@ def test_guest_quote_merges_on_register(clean_page: Page, book_with_chapters: st
     with urllib.request.urlopen(req):
         pass
     assert_no_page_errors(page)
+
+
+def _sign_in_storage(tokens: dict) -> str:
+    return (
+        f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
+        f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
+    )
+
+
+def test_signup_inside_the_cooldown_stays_on_the_form(clean_page: Page):
+    page = clean_page
+    email = f"e2e-cooldown-{int(time.time() * 1000)}@example.com"
+    _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    goto(page, "/me")
+    page.click(".guest-shelf .btn-primary")
+    page.click(".sheet [role='tab']:has-text('Register')")
+    page.fill(".sheet input[type='text']", "Second Try")
+    page.fill(".sheet input[type='email']", email)
+    page.fill(".sheet input[type='password']", "E2EPassword123!")
+    page.click(".sheet button[type='submit']")
+    page.wait_for_timeout(1200)
+    expect(page.locator(".sheet .form-error")).to_be_visible()
+    expect(page.locator("#auth-title")).to_have_text("Create an account")
+    assert page.query_selector(".sheet .otp-input") is None, "no OTP step for a code never sent"
+    assert_no_page_errors(page)
+
+
+def test_garbage_tokens_show_the_guest_shelf(clean_page: Page):
+    page = clean_page
+    goto(page, "/")
+    page.evaluate(_sign_in_storage({"access_token": "garbage.access.token", "refresh_token": "rt_garbage"}))
+    goto(page, "/me")
+    expect(page.locator(".guest-shelf .btn-primary")).to_be_visible()
+    assert page.query_selector(".skeleton") is None, "no endless skeleton"
+    assert page.evaluate("() => localStorage.getItem('baca_access_token')") is None
+    assert_no_page_errors(page)
+
+
+def test_offline_sign_out_sticks_after_reload(clean_page: Page):
+    page = clean_page
+    tokens = register_reader("offline-out")
+    goto(page, "/")
+    page.evaluate(_sign_in_storage(tokens))
+    goto(page, "/me")
+    sign_out = page.get_by_role("button", name="Sign out", exact=True).last
+    expect(sign_out).to_be_visible()
+    page.context.set_offline(True)
+    try:
+        sign_out.click()
+        page.wait_for_timeout(500)
+        assert page.evaluate("() => localStorage.getItem('baca_access_token')") is None
+        assert page.evaluate("() => localStorage.getItem('baca_refresh_token')") is None
+    finally:
+        page.context.set_offline(False)
+    goto(page, "/me")
+    expect(page.locator(".guest-shelf .btn-primary")).to_be_visible()
+    assert_no_page_errors(page)
+
+
+PENDING_STORE = "pending_sync_queue"
+QUEUE_WRITE = """([store, record]) => new Promise((resolve, reject) => {
+  const open = indexedDB.open('project_baca_db');
+  open.onsuccess = () => {
+    const tx = open.result.transaction(store, 'readwrite');
+    tx.objectStore(store).add(record);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  };
+})"""
+QUEUED_ANCHORS = """store => new Promise(resolve => {
+  const open = indexedDB.open('project_baca_db');
+  open.onsuccess = () => {
+    const all = open.result.transaction(store, 'readonly').objectStore(store).getAll();
+    all.onsuccess = () => resolve(all.result.map(op => op.update.last_anchor_cfi));
+  };
+})"""
+
+
+def test_drain_keeps_writes_queued_meanwhile_and_never_doubles(browser: Browser, book_with_chapters: str):
+    book_id = book_with_chapters
+    chapter = api_get(f"/books/{book_id}")["chapters"][0]
+    tokens = register_reader("drain")
+    context = browser.new_context(color_scheme="dark", reduced_motion="reduce")
+    install_fetch_shim(context, hold=[f"/progress/{book_id}"])
+    context.add_init_script(_sign_in_storage(tokens))
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    sent: list[str] = []
+    page.on(
+        "request",
+        lambda r: sent.append(json.loads(r.post_data or "{}").get("last_anchor_cfi"))
+        if r.method == "PUT" and r.url.endswith(f"/progress/{book_id}")
+        else None,
+    )
+
+    def op(anchor: str) -> dict:
+        return {"book_id": book_id, "update": {"chapter_id": chapter["id"], "last_anchor_cfi": anchor, "completion_percentage": 5.0}}
+
+    try:
+        page.goto(f"{WEB}/read/{book_id}?chapter={chapter['chapter_number']}", wait_until="domcontentloaded")
+        page.wait_for_selector(".chapter-body")
+        page.wait_for_timeout(600)
+        page.evaluate(QUEUE_WRITE, [PENDING_STORE, op("p-901")])
+        page.evaluate("() => window.dispatchEvent(new Event('online'))")
+        page.wait_for_timeout(400)
+        page.evaluate(QUEUE_WRITE, [PENDING_STORE, op("p-902")])
+        page.evaluate("() => window.dispatchEvent(new Event('online'))")
+        page.wait_for_timeout(400)
+        page.evaluate("() => window.__release()")
+        page.wait_for_timeout(1500)
+        assert sent.count("p-901") == 1, f"replayed once, sent {sent}"
+        assert "p-902" in page.evaluate(QUEUED_ANCHORS, PENDING_STORE), "a write queued during the drain stays queued"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()

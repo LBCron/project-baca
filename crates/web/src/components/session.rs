@@ -65,12 +65,13 @@ impl Session {
         self.sheet_open.set(true);
     }
 
+    /// The device is signed out at once; the server revocation that follows
+    /// is best effort, so signing out offline still sticks after a reload.
     pub fn sign_out(&self) {
-        let session = *self;
+        self.profile.set(None);
+        self.authed.set(false);
         spawn_local(async move {
             let _ = api::logout().await;
-            session.profile.set(None);
-            session.authed.set(false);
         });
     }
 }
