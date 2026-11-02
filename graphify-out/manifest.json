@@ -1,21 +1,21 @@
 {
   "ARCHITECTURE.md": {
-    "mtime": 1791552282.265746,
-    "seen": 1791553459.0792484,
-    "ast_hash": "1649cf430ee6085147a21d4e66b801c6",
-    "semantic_hash": "1649cf430ee6085147a21d4e66b801c6"
+    "mtime": 1793660026.7639139,
+    "seen": 1793660062.201375,
+    "ast_hash": "9623c8661280f61664e2f3c2712b9e93",
+    "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1791552282.2668884,
-    "seen": 1791553459.07926,
-    "ast_hash": "ec601d8ddca01da2dc9a5ddfed5be608",
-    "semantic_hash": "ec601d8ddca01da2dc9a5ddfed5be608"
+    "mtime": 1793650247.042908,
+    "seen": 1793660062.2013922,
+    "ast_hash": "07359653473c33c304553d313b5be44d",
+    "semantic_hash": ""
   },
   "docker-compose.yml": {
-    "mtime": 1790402735.9435225,
-    "seen": 1791446784.4402058,
-    "ast_hash": "bc8d866d75598047e21efaf86b352604",
-    "semantic_hash": "bc8d866d75598047e21efaf86b352604"
+    "mtime": 1793646090.3803506,
+    "seen": 1793660062.201298,
+    "ast_hash": "4a6dff4794480f1caa6d5b5642b54e59",
+    "semantic_hash": ""
   },
   "assets/illustrations/admin-sorting-pigeonholes.png": {
     "mtime": 1790344268.8545263,
@@ -54,22 +54,22 @@
     "semantic_hash": "b073af73f598095f61d145e7d42ff9b8"
   },
   "CHANGELOG.md": {
-    "mtime": 1791552322.0674849,
-    "seen": 1791553459.079251,
-    "ast_hash": "4b6ca280f6d28128197df51d1ae3e925",
-    "semantic_hash": "4b6ca280f6d28128197df51d1ae3e925"
+    "mtime": 1793660026.8099554,
+    "seen": 1793660062.2013774,
+    "ast_hash": "a370018c0acc981b085565b157ebd2a7",
+    "semantic_hash": ""
   },
   "GUIDE.md": {
-    "mtime": 1791550639.0410507,
-    "seen": 1791550746.5216868,
-    "ast_hash": "38d758b034bbe446abe4b6f96a58b3cf",
-    "semantic_hash": "38d758b034bbe446abe4b6f96a58b3cf"
+    "mtime": 1793658710.2198014,
+    "seen": 1793660062.2013867,
+    "ast_hash": "47d6e779b5668b337f0aa1fa781a57cd",
+    "semantic_hash": ""
   },
   "NOTICE.md": {
-    "mtime": 1791445697.4493678,
-    "seen": 1791458012.6724553,
-    "ast_hash": "17bb5266cff751904a2486bf127f092c",
-    "semantic_hash": "17bb5266cff751904a2486bf127f092c"
+    "mtime": 1793651878.5342777,
+    "seen": 1793660062.2013893,
+    "ast_hash": "6ce6f740faf171d33c975dbff6a1d675",
+    "semantic_hash": ""
   },
   "crates/domain/Cargo.toml": {
     "mtime": 1790471614.1103034,
@@ -90,22 +90,22 @@
     "semantic_hash": "83aaaae627bd821b914aa0979211d7ed"
   },
   "crates/infra/src/lib.rs": {
-    "mtime": 1791441344.6619642,
-    "seen": 1791458012.6709397,
-    "ast_hash": "6002cad13cb5e9bbee1a2f5c3a38b6de",
-    "semantic_hash": "6002cad13cb5e9bbee1a2f5c3a38b6de"
+    "mtime": 1793652876.9922428,
+    "seen": 1793660062.2009733,
+    "ast_hash": "92e1aaefe89ede34c649508058269335",
+    "semantic_hash": ""
   },
   "crates/server/Cargo.toml": {
-    "mtime": 1791398485.837237,
-    "seen": 1791458012.6712415,
-    "ast_hash": "32d0e7b7784aef6d31511ffabc834115",
-    "semantic_hash": "32d0e7b7784aef6d31511ffabc834115"
+    "mtime": 1793645394.8146806,
+    "seen": 1793660062.201021,
+    "ast_hash": "abe240ac64e17953645fc0ddaccd462a",
+    "semantic_hash": ""
   },
   "crates/server/src/main.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.671296,
-    "ast_hash": "3db0183f63d86076b9f3dece54eec0f0",
-    "semantic_hash": "3db0183f63d86076b9f3dece54eec0f0"
+    "mtime": 1793644372.5605996,
+    "seen": 1793660062.201032,
+    "ast_hash": "e9f243cc3c5f6367631629523eb8fc3b",
+    "semantic_hash": ""
   },
   "crates/shared/Cargo.toml": {
     "mtime": 1790401154.1997745,
@@ -114,22 +114,22 @@
     "semantic_hash": "c423f85c9c223a89914148b043974b4e"
   },
   "crates/shared/src/lib.rs": {
-    "mtime": 1791441344.6699643,
-    "seen": 1791458012.6715,
-    "ast_hash": "18577a9fba37430e69a122c34ed4e5d2",
-    "semantic_hash": "18577a9fba37430e69a122c34ed4e5d2"
+    "mtime": 1793652908.5246315,
+    "seen": 1793660062.2011235,
+    "ast_hash": "38764a9b55c2f74b5c41b3969f7b8669",
+    "semantic_hash": ""
   },
   "crates/web/Cargo.toml": {
-    "mtime": 1791442797.3721445,
-    "seen": 1791458012.6715019,
-    "ast_hash": "ceeeb13ea6cd02c44f97176f223a7169",
-    "semantic_hash": "ceeeb13ea6cd02c44f97176f223a7169"
+    "mtime": 1793655171.7166276,
+    "seen": 1793660062.2011268,
+    "ast_hash": "a52ac7ca74bcddbefe689fa9be0aad17",
+    "semantic_hash": ""
   },
   "crates/web/src/lib.rs": {
-    "mtime": 1791443226.6590946,
-    "seen": 1791458012.6715305,
-    "ast_hash": "69e007b71e3b8c3b8068de6ca4720d37",
-    "semantic_hash": "69e007b71e3b8c3b8068de6ca4720d37"
+    "mtime": 1793652065.2478874,
+    "seen": 1793660062.201185,
+    "ast_hash": "ec2f405175a1bfbd9536f1fd143d6487",
+    "semantic_hash": ""
   },
   "crates/web/src/main.rs": {
     "mtime": 1790355168.8014588,
@@ -138,10 +138,10 @@
     "semantic_hash": "7aa2c064071de4dcbeba48d0f6c658f7"
   },
   "crates/web/index.html": {
-    "mtime": 1791443226.6590946,
-    "seen": 1791458012.672462,
-    "ast_hash": "0e0a88f1899ea36ba7f8ed9cab67f218",
-    "semantic_hash": "0e0a88f1899ea36ba7f8ed9cab67f218"
+    "mtime": 1793656695.7202008,
+    "seen": 1793660062.2014012,
+    "ast_hash": "ef637ddd6cb81b47130bb72a5c6cda2d",
+    "semantic_hash": ""
   },
   "scripts/migrate.sh": {
     "mtime": 1790402383.4186044,
@@ -150,16 +150,16 @@
     "semantic_hash": "22b7043627b2a384eb4855f03d4bd5e2"
   },
   "crates/server/src/lib.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.671294,
-    "ast_hash": "bcf6f32e76f2d2429ecbb20e73e0c9c2",
-    "semantic_hash": "bcf6f32e76f2d2429ecbb20e73e0c9c2"
+    "mtime": 1793652877.0011132,
+    "seen": 1793660062.2010283,
+    "ast_hash": "0d49febd10e4a07a5edddbb1d81f2773",
+    "semantic_hash": ""
   },
   "crates/server/tests/common/mod.rs": {
-    "mtime": 1791441344.6659641,
-    "seen": 1791458012.6714282,
-    "ast_hash": "e07bfe3eed29f95d0320a6662b58df32",
-    "semantic_hash": "e07bfe3eed29f95d0320a6662b58df32"
+    "mtime": 1793645394.8150227,
+    "seen": 1793660062.2010744,
+    "ast_hash": "011028afb185a5ffb32145f1e6ece0ff",
+    "semantic_hash": ""
   },
   "crates/server/tests/performance_test.rs": {
     "mtime": 1791441344.6689641,
@@ -240,10 +240,10 @@
     "semantic_hash": "128c905ded5da05993579ea0b94e3cdf"
   },
   "crates/infra/src/config.rs": {
-    "mtime": 1791441344.6619642,
-    "seen": 1791458012.6692083,
-    "ast_hash": "21a4591aed3fed3a0ac8830a12d43dc4",
-    "semantic_hash": "21a4591aed3fed3a0ac8830a12d43dc4"
+    "mtime": 1793646090.381065,
+    "seen": 1793660062.2007687,
+    "ast_hash": "275935ab42d98a164c18b8494daab9fe",
+    "semantic_hash": ""
   },
   "crates/infra/src/email.rs": {
     "mtime": 1791441344.6619642,
@@ -336,10 +336,10 @@
     "semantic_hash": "8abce9420ca06f76ab28b7c3f8dbf795"
   },
   "crates/infra/src/pool.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.6709433,
-    "ast_hash": "98b690c61c09d5d53a2cd5b65cea59a3",
-    "semantic_hash": "98b690c61c09d5d53a2cd5b65cea59a3"
+    "mtime": 1793644287.2983088,
+    "seen": 1793660062.2009768,
+    "ast_hash": "c932606ef9bc48b0bd5b5e0a26bd0560",
+    "semantic_hash": ""
   },
   "crates/infra/src/repositories/badge_repository.rs": {
     "mtime": 1790497596.4870338,
@@ -348,10 +348,10 @@
     "semantic_hash": "6a6c8a1894aad51dfe10e12638f10c1d"
   },
   "crates/infra/src/repositories/book_repository.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.6710618,
-    "ast_hash": "888ae101b0a8702ff74c467987a3b4dd",
-    "semantic_hash": "888ae101b0a8702ff74c467987a3b4dd"
+    "mtime": 1793652935.6848917,
+    "seen": 1793660062.2009864,
+    "ast_hash": "8124bb6d7372946fdacf2d74fd4d3aed",
+    "semantic_hash": ""
   },
   "crates/infra/src/repositories/mod.rs": {
     "mtime": 1790449239.4161499,
@@ -360,28 +360,28 @@
     "semantic_hash": "84122b34b6e3bf28256e062676586caf"
   },
   "crates/infra/src/repositories/progress_repository.rs": {
-    "mtime": 1791390584.9761205,
-    "seen": 1791458012.6711218,
-    "ast_hash": "652c250534ff3339eca72474b4ff8239",
-    "semantic_hash": "652c250534ff3339eca72474b4ff8239"
+    "mtime": 1793645309.0278263,
+    "seen": 1793660062.2009926,
+    "ast_hash": "cd29f6408d6da900fec53adc98e981cc",
+    "semantic_hash": ""
   },
   "crates/infra/src/security/jwt.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.6711798,
-    "ast_hash": "43788c65b2dd2415e2f1bf163d584416",
-    "semantic_hash": "43788c65b2dd2415e2f1bf163d584416"
+    "mtime": 1793645309.0274062,
+    "seen": 1793660062.201001,
+    "ast_hash": "a2c5b9dc692ddfaf8f4d771ad6e8a26f",
+    "semantic_hash": ""
   },
   "crates/infra/src/security/mod.rs": {
-    "mtime": 1791398485.837237,
-    "seen": 1791458012.6711817,
-    "ast_hash": "8b357bb420516c43e2c6ecf281c04e5a",
-    "semantic_hash": "8b357bb420516c43e2c6ecf281c04e5a"
+    "mtime": 1793645292.28432,
+    "seen": 1793660062.201004,
+    "ast_hash": "8bc93710ad86c36ea49a513727610d46",
+    "semantic_hash": ""
   },
   "crates/infra/src/security/otp.rs": {
-    "mtime": 1791398485.837237,
-    "seen": 1791458012.6711833,
-    "ast_hash": "710f0793426098dfa2af689b01a951ce",
-    "semantic_hash": "710f0793426098dfa2af689b01a951ce"
+    "mtime": 1793645810.6495435,
+    "seen": 1793660062.2010078,
+    "ast_hash": "a3b322cc060e47d4368f47a949c5d1ff",
+    "semantic_hash": ""
   },
   "crates/infra/src/security/password.rs": {
     "mtime": 1790474294.2118568,
@@ -396,10 +396,10 @@
     "semantic_hash": "135a8040109229d27f14f45e9c0bd723"
   },
   "crates/server/src/middleware/auth.rs": {
-    "mtime": 1790498142.4211292,
-    "seen": 1791446784.4396534,
-    "ast_hash": "3cf73566b4e6a6745ffc65ca5a4863ea",
-    "semantic_hash": "3cf73566b4e6a6745ffc65ca5a4863ea"
+    "mtime": 1793644308.0828922,
+    "seen": 1793660062.2010348,
+    "ast_hash": "5603bafd1af182998dec45458c457bdc",
+    "semantic_hash": ""
   },
   "crates/server/src/middleware/mod.rs": {
     "mtime": 1791390584.9767425,
@@ -408,10 +408,10 @@
     "semantic_hash": "92de90ff028cc87d9fcf3f98c29b8f28"
   },
   "crates/server/src/middleware/rate_limit.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.6713521,
-    "ast_hash": "a5abfdae1bb88e2daec459d6186e82e9",
-    "semantic_hash": "a5abfdae1bb88e2daec459d6186e82e9"
+    "mtime": 1793645822.3219953,
+    "seen": 1793660062.2010403,
+    "ast_hash": "6c8bde99b1efd0945ceb6db762aba818",
+    "semantic_hash": ""
   },
   "crates/server/src/middleware/role.rs": {
     "mtime": 1791390584.9770033,
@@ -420,16 +420,16 @@
     "semantic_hash": "1f373b951baa6509f45bd63168ecdf04"
   },
   "crates/server/src/routes/auth.rs": {
-    "mtime": 1791441344.6639643,
-    "seen": 1791458012.6713574,
-    "ast_hash": "ff29f8f6ec70c806d92ffbeb96e04a07",
-    "semantic_hash": "ff29f8f6ec70c806d92ffbeb96e04a07"
+    "mtime": 1793645822.3909938,
+    "seen": 1793660062.2010496,
+    "ast_hash": "746a5a24f5b5813b381c1e762eac3374",
+    "semantic_hash": ""
   },
   "crates/server/src/routes/books.rs": {
-    "mtime": 1791441344.6639643,
-    "seen": 1791458012.6713593,
-    "ast_hash": "e70cad5dde71fd8f2682d37fdfe16f89",
-    "semantic_hash": "e70cad5dde71fd8f2682d37fdfe16f89"
+    "mtime": 1793652882.3283553,
+    "seen": 1793660062.2010522,
+    "ast_hash": "8e1a709add4e889871c5435d4c799e33",
+    "semantic_hash": ""
   },
   "crates/server/src/routes/gamification.rs": {
     "mtime": 1791441344.6649642,
@@ -444,10 +444,10 @@
     "semantic_hash": "5f0e48aac9735c4e07127b4faa7d7e2d"
   },
   "crates/server/src/routes/progress.rs": {
-    "mtime": 1790497858.2206357,
-    "seen": 1791446784.4396915,
-    "ast_hash": "6b61166b1ab2d1c5396e363970ade9d3",
-    "semantic_hash": "6b61166b1ab2d1c5396e363970ade9d3"
+    "mtime": 1793645309.0281522,
+    "seen": 1793660062.2010672,
+    "ast_hash": "88a6250f198d57291ea4db718a029ef4",
+    "semantic_hash": ""
   },
   "graphify-out/memory/query_20260926_094921_81a36bc1_nah_pertanyaanmu_terkait_graf_seriusan_ga_paham__a.md": {
     "mtime": 1790416161.9933894,
@@ -456,10 +456,10 @@
     "semantic_hash": "b9d7743b83c4374a81394700c488e9f8"
   },
   "crates/infra/src/repositories/user_repository.rs": {
-    "mtime": 1790491831.6700516,
-    "seen": 1791446784.4396145,
-    "ast_hash": "f958455f6f5f8219d23a4d1ab6e0f67c",
-    "semantic_hash": "f958455f6f5f8219d23a4d1ab6e0f67c"
+    "mtime": 1793645259.9174507,
+    "seen": 1793660062.200998,
+    "ast_hash": "7e82f089cc27bf94d25eb151b833b195",
+    "semantic_hash": ""
   },
   "crates/server/tests/load_stress_test.rs": {
     "mtime": 1791441344.6689641,
@@ -516,46 +516,46 @@
     "semantic_hash": "cfb4af64449e3336532e580d84f8b18c"
   },
   "crates/infra/src/queue.rs": {
-    "mtime": 1791398485.836177,
-    "seen": 1791458012.6709461,
-    "ast_hash": "27b8a19921e5ea7dd3e5eab26532728c",
-    "semantic_hash": "27b8a19921e5ea7dd3e5eab26532728c"
+    "mtime": 1793646716.066475,
+    "seen": 1793660062.2009804,
+    "ast_hash": "cd77f8781a9bdb0527648338b8aab6ba",
+    "semantic_hash": ""
   },
   "crates/infra/src/storage/mod.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.671238,
-    "ast_hash": "f4c46d8bc0b9fc683e623fe3b890bfd3",
-    "semantic_hash": "f4c46d8bc0b9fc683e623fe3b890bfd3"
+    "mtime": 1793644362.650798,
+    "seen": 1793660062.2010148,
+    "ast_hash": "6d1184ac0ace8e0902fc21dc93f4ba32",
+    "semantic_hash": ""
   },
   "crates/infra/src/storage/s3.rs": {
-    "mtime": 1791441344.662964,
-    "seen": 1791458012.6712399,
-    "ast_hash": "2f37fb611884c9aa98262572ef440de5",
-    "semantic_hash": "2f37fb611884c9aa98262572ef440de5"
+    "mtime": 1793644357.7510624,
+    "seen": 1793660062.2010179,
+    "ast_hash": "96f3c282bf8217d155a473e852f64eab",
+    "semantic_hash": ""
   },
   "crates/server/src/routes/admin.rs": {
-    "mtime": 1791441344.6639643,
-    "seen": 1791458012.6713555,
-    "ast_hash": "bf4c653df1c7840fc5011cc41fa13c3e",
-    "semantic_hash": "bf4c653df1c7840fc5011cc41fa13c3e"
+    "mtime": 1793645316.4823964,
+    "seen": 1793660062.2010465,
+    "ast_hash": "6b249c044f15e874686b3c6afd1d038a",
+    "semantic_hash": ""
   },
   "python_worker/test_worker.py": {
-    "mtime": 1791441344.6789641,
-    "seen": 1791458012.6723025,
-    "ast_hash": "fbad882a0429af8aa9b1f59122b8beac",
-    "semantic_hash": "fbad882a0429af8aa9b1f59122b8beac"
+    "mtime": 1793646867.8972216,
+    "seen": 1793660062.2013452,
+    "ast_hash": "d60878ca92c4eb2a6200af488a3f8179",
+    "semantic_hash": ""
   },
   "python_worker/test_worker_live.py": {
-    "mtime": 1790493389.1891744,
-    "seen": 1791446784.4401586,
-    "ast_hash": "607a4f6e9ea8a93390f6d9eacb5417f8",
-    "semantic_hash": "607a4f6e9ea8a93390f6d9eacb5417f8"
+    "mtime": 1793646867.9010863,
+    "seen": 1793660062.2013476,
+    "ast_hash": "7cfb4621daa7f06d91229e3901f1214e",
+    "semantic_hash": ""
   },
   "python_worker/worker.py": {
-    "mtime": 1791441344.6789641,
-    "seen": 1791458012.672347,
-    "ast_hash": "813acbc8969234257a8a5180a78474f1",
-    "semantic_hash": "813acbc8969234257a8a5180a78474f1"
+    "mtime": 1793646867.879295,
+    "seen": 1793660062.2013502,
+    "ast_hash": "98dded3c88fe179994338a46f3b639a5",
+    "semantic_hash": ""
   },
   "python_worker/requirements.txt": {
     "mtime": 1790473602.6363869,
@@ -570,28 +570,28 @@
     "semantic_hash": "f58162f77bc87c1b7e7f5403a48c58b4"
   },
   "crates/web/src/api/mod.rs": {
-    "mtime": 1791441344.6709642,
-    "seen": 1791458012.6715057,
-    "ast_hash": "4e6c73caa166f0ff67f31b9d8edb1dbc",
-    "semantic_hash": "4e6c73caa166f0ff67f31b9d8edb1dbc"
+    "mtime": 1793657117.446925,
+    "seen": 1793660062.2011335,
+    "ast_hash": "792ac40956215638d64d729b0dc09fd3",
+    "semantic_hash": ""
   },
   "crates/web/src/components/auth.rs": {
-    "mtime": 1791441344.6709642,
-    "seen": 1791458012.671509,
-    "ast_hash": "98441e13c52a70d6bf1035421850fccb",
-    "semantic_hash": "98441e13c52a70d6bf1035421850fccb"
+    "mtime": 1793655157.7842667,
+    "seen": 1793660062.2011402,
+    "ast_hash": "c0fd9fa1ad1e61f50cfc5a12d1206a7c",
+    "semantic_hash": ""
   },
   "crates/web/src/components/header.rs": {
-    "mtime": 1791441344.6709642,
-    "seen": 1791458012.6715143,
-    "ast_hash": "9dfd052834f88e7175da1ba561dee0e5",
-    "semantic_hash": "9dfd052834f88e7175da1ba561dee0e5"
+    "mtime": 1793652065.2471683,
+    "seen": 1793660062.2011495,
+    "ast_hash": "075a1dc9dc6d9c6dfa724cf99d258267",
+    "semantic_hash": ""
   },
   "crates/web/src/components/insights.rs": {
-    "mtime": 1791441344.6709642,
-    "seen": 1791458012.6715171,
-    "ast_hash": "a69966e1989d287b4bce559bfc5eb3d9",
-    "semantic_hash": "a69966e1989d287b4bce559bfc5eb3d9"
+    "mtime": 1793655171.7179081,
+    "seen": 1793660062.2011566,
+    "ast_hash": "1666ba3725edf42df78ca45280795f6c",
+    "semantic_hash": ""
   },
   "crates/web/src/components/mod.rs": {
     "mtime": 1791441344.6709642,
@@ -600,28 +600,28 @@
     "semantic_hash": "42d049ddcbf495490aa69c68b79ab050"
   },
   "crates/web/src/i18n/mod.rs": {
-    "mtime": 1791443226.6590946,
-    "seen": 1791458012.6715293,
-    "ast_hash": "0c0447063368f8bc8f6b29bcb8a50102",
-    "semantic_hash": "0c0447063368f8bc8f6b29bcb8a50102"
+    "mtime": 1793655171.719113,
+    "seen": 1793660062.2011814,
+    "ast_hash": "aaf75348594ceccee60221ae33c866bb",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/admin.rs": {
-    "mtime": 1791443226.6600945,
-    "seen": 1791458012.6715832,
-    "ast_hash": "13fa70eb9a23464d34287344d913259a",
-    "semantic_hash": "13fa70eb9a23464d34287344d913259a"
+    "mtime": 1793652078.2798645,
+    "seen": 1793660062.2011917,
+    "ast_hash": "2fef1847ccecd1c729f626bc6e10f858",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/book.rs": {
-    "mtime": 1791442797.3741443,
-    "seen": 1791458012.6715848,
-    "ast_hash": "c65a9c27eaab67d7a29948d1c8421c29",
-    "semantic_hash": "c65a9c27eaab67d7a29948d1c8421c29"
+    "mtime": 1793652065.2480812,
+    "seen": 1793660062.201194,
+    "ast_hash": "7bdfa681bcafecf93db529090ab2d1bb",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/home.rs": {
-    "mtime": 1791443226.6600945,
-    "seen": 1791458012.6715882,
-    "ast_hash": "f61181467f5d3c435d849462510fa139",
-    "semantic_hash": "f61181467f5d3c435d849462510fa139"
+    "mtime": 1793656695.711201,
+    "seen": 1793660062.2011998,
+    "ast_hash": "15c8926b9ba76d4187ea3b5e12019743",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/mod.rs": {
     "mtime": 1790592482.1141396,
@@ -630,16 +630,16 @@
     "semantic_hash": "e60c5d9618f171b478941dc5556d6a7f"
   },
   "crates/web/src/pages/profile.rs": {
-    "mtime": 1791443226.6610947,
-    "seen": 1791458012.6716428,
-    "ast_hash": "efcf0ae50fb81be9c468dc3731b083a9",
-    "semantic_hash": "efcf0ae50fb81be9c468dc3731b083a9"
+    "mtime": 1793652051.7771456,
+    "seen": 1793660062.2012055,
+    "ast_hash": "7ea494fe4c501394ce47f65a1bc8b54d",
+    "semantic_hash": ""
   },
   "crates/web/src/storage/mod.rs": {
-    "mtime": 1791398485.841352,
-    "seen": 1791458012.67165,
-    "ast_hash": "0bb5eed28c21dbcce8546a745515f4b6",
-    "semantic_hash": "0bb5eed28c21dbcce8546a745515f4b6"
+    "mtime": 1793648473.8466456,
+    "seen": 1793660062.2012205,
+    "ast_hash": "b405cf695865f309c6b9c0a81d32c6d8",
+    "semantic_hash": ""
   },
   "assets/illustrations/rotaria-windmill.svg": {
     "mtime": 1790520677.209954,
@@ -648,10 +648,10 @@
     "semantic_hash": "6c620298b924ac694d7a354c8a7d43b8"
   },
   "crates/web/sw.js": {
-    "mtime": 1791441344.672964,
-    "seen": 1791458012.6716552,
-    "ast_hash": "014b8a18f07c4942485523c4638281d8",
-    "semantic_hash": "014b8a18f07c4942485523c4638281d8"
+    "mtime": 1793651113.935165,
+    "seen": 1793660062.201229,
+    "ast_hash": "6b60ff009ee7682371bf1dc35d62efc9",
+    "semantic_hash": ""
   },
   "scripts/pg_backup.sh": {
     "mtime": 1790574309.2166889,
@@ -660,10 +660,10 @@
     "semantic_hash": "9887267acfb8344de64d02b90a622792"
   },
   "docker-compose.prod.yml": {
-    "mtime": 1791441344.6779642,
-    "seen": 1791458012.672465,
-    "ast_hash": "b9d18c26cd8c17aca352f2dcd48e284a",
-    "semantic_hash": "b9d18c26cd8c17aca352f2dcd48e284a"
+    "mtime": 1793657344.7606025,
+    "seen": 1793660062.2012951,
+    "ast_hash": "313baac3c6bb459c5a23e4f31134732e",
+    "semantic_hash": ""
   },
   "crates/web/icons/apple-touch-icon.png": {
     "mtime": 1790574099.1451466,
@@ -690,16 +690,16 @@
     "semantic_hash": "268a3ef2235550543fd31484f30068f1"
   },
   "crates/web/src/pages/gallery.rs": {
-    "mtime": 1791398485.8409157,
-    "seen": 1791458012.6715865,
-    "ast_hash": "47d2f6e548660b7729c52b894f0eee8a",
-    "semantic_hash": "47d2f6e548660b7729c52b894f0eee8a"
+    "mtime": 1793649919.3468382,
+    "seen": 1793660062.2011976,
+    "ast_hash": "3664edb07c1b3cf7c218222ee8d56c75",
+    "semantic_hash": ""
   },
   "crates/web/src/unit_tests.rs": {
-    "mtime": 1791398485.841352,
-    "seen": 1791458012.6716533,
-    "ast_hash": "945706dcadcef7e850a06152b6aa5254",
-    "semantic_hash": "945706dcadcef7e850a06152b6aa5254"
+    "mtime": 1793655171.721231,
+    "seen": 1793660062.2012265,
+    "ast_hash": "ebaa7037cd3602f52042b7883715d9a6",
+    "semantic_hash": ""
   },
   "crates/web/tests/__init__.py": {
     "mtime": 1790590755.5812128,
@@ -714,10 +714,10 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "crates/web/tests/a11y/test_axe.py": {
-    "mtime": 1791441344.672964,
-    "seen": 1791458012.6718092,
-    "ast_hash": "87f324d3f835f2ad4c10cba3abcad0df",
-    "semantic_hash": "87f324d3f835f2ad4c10cba3abcad0df"
+    "mtime": 1793652188.9459255,
+    "seen": 1793660062.2012372,
+    "ast_hash": "7407321f9692dd1922a43b8e4561d25e",
+    "semantic_hash": ""
   },
   "crates/web/tests/component/__init__.py": {
     "mtime": 1790593111.3173933,
@@ -732,10 +732,10 @@
     "semantic_hash": "be42bbb03f3a914aac1c7579d7d4f57a"
   },
   "crates/web/tests/conftest.py": {
-    "mtime": 1791441344.672964,
-    "seen": 1791458012.671882,
-    "ast_hash": "1b6798f7cf5c9d923de45df9d9260bed",
-    "semantic_hash": "1b6798f7cf5c9d923de45df9d9260bed"
+    "mtime": 1793655171.7225554,
+    "seen": 1793660062.2012465,
+    "ast_hash": "ca1bdaffa7085383b3033de8f4de3fac",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/__init__.py": {
     "mtime": 1790590755.5782127,
@@ -744,10 +744,10 @@
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
   "crates/web/tests/e2e/test_aria.py": {
-    "mtime": 1791440366.7906659,
-    "seen": 1791458012.6719406,
-    "ast_hash": "fe3f68183d748f5e1643f6b3accebb2b",
-    "semantic_hash": "fe3f68183d748f5e1643f6b3accebb2b"
+    "mtime": 1793655171.722792,
+    "seen": 1793660062.201253,
+    "ast_hash": "9e106481ff1c3cc71a72370f8288cfd1",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_catalog.py": {
     "mtime": 1791443226.6622503,
@@ -756,16 +756,16 @@
     "semantic_hash": "dddb7ac398292718fa55e9e3f512bd29"
   },
   "crates/web/tests/e2e/test_reader_flow.py": {
-    "mtime": 1791442797.3755033,
-    "seen": 1791458012.6719477,
-    "ast_hash": "17c42ab733433f52c2056ba197497400",
-    "semantic_hash": "17c42ab733433f52c2056ba197497400"
+    "mtime": 1793656940.6157656,
+    "seen": 1793660062.2012675,
+    "ast_hash": "58dd37c212559b2bc8bf48aa1441d92a",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_sessions.py": {
-    "mtime": 1791398485.8423674,
-    "seen": 1791458012.6719515,
-    "ast_hash": "2254515f2887e6135e496622721bcfdd",
-    "semantic_hash": "2254515f2887e6135e496622721bcfdd"
+    "mtime": 1793655171.7236493,
+    "seen": 1793660062.2012742,
+    "ast_hash": "ea60bccfb3de7bc8cf6d58538cfecec5",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_smoke.py": {
     "mtime": 1790590650.3311694,
@@ -804,16 +804,16 @@
     "semantic_hash": "e65099a173c545a0d8d79bf8d042ed9a"
   },
   "crates/web/tests/requirements-test.txt": {
-    "mtime": 1790590706.9101183,
-    "seen": 1791458012.6724634,
-    "ast_hash": "2c133094eb742d6ba497c9a56a2b58be",
-    "semantic_hash": "2c133094eb742d6ba497c9a56a2b58be"
+    "mtime": 1793649561.9595358,
+    "seen": 1793660062.2014039,
+    "ast_hash": "e9ac0e7ffca0379f7a6f1abf48b828bd",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/admin_test.rs": {
-    "mtime": 1791441344.6659641,
-    "seen": 1791458012.67143,
-    "ast_hash": "91170ac308ffb983d05003862c9fe012",
-    "semantic_hash": "91170ac308ffb983d05003862c9fe012"
+    "mtime": 1793646717.8464437,
+    "seen": 1793660062.201078,
+    "ast_hash": "6181c6ab68c296c8afd852b2a4fbf530",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/api_boundary_test.rs": {
     "mtime": 1791441344.6669643,
@@ -822,16 +822,16 @@
     "semantic_hash": "f5761e4857d8b0a8c3ee2a014d11f5fb"
   },
   "crates/server/tests/it/auth_test.rs": {
-    "mtime": 1791441344.6669643,
-    "seen": 1791458012.6714342,
-    "ast_hash": "2b70e082f4f1a7522fa78f00d49c9a26",
-    "semantic_hash": "2b70e082f4f1a7522fa78f00d49c9a26"
+    "mtime": 1793651463.099529,
+    "seen": 1793660062.2010837,
+    "ast_hash": "db86a84bdcc18ae7c1fdf52d9fe6b9f8",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/catalog_test.rs": {
-    "mtime": 1791441344.6669643,
-    "seen": 1791458012.671436,
-    "ast_hash": "e2eb9b999e660d91b5953312dd5a266f",
-    "semantic_hash": "e2eb9b999e660d91b5953312dd5a266f"
+    "mtime": 1793652935.822888,
+    "seen": 1793660062.2010868,
+    "ast_hash": "61e50a48dbd469c8c298c471ab0b4815",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/database_test.rs": {
     "mtime": 1791398485.838656,
@@ -852,16 +852,16 @@
     "semantic_hash": "95791c134e21a52c712b02ed382d23ec"
   },
   "crates/server/tests/it/reliability_test.rs": {
-    "mtime": 1791441344.6679642,
-    "seen": 1791458012.671445,
-    "ast_hash": "5cd829d03c6735ec0322e64aaabcb3d1",
-    "semantic_hash": "5cd829d03c6735ec0322e64aaabcb3d1"
+    "mtime": 1793645394.8153062,
+    "seen": 1793660062.2011025,
+    "ast_hash": "08e3411d090adeb42a0850a790de76aa",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/security_owasp_test.rs": {
-    "mtime": 1791441344.6679642,
-    "seen": 1791458012.671447,
-    "ast_hash": "f1bdb7c2daea76704c694900241ccb4e",
-    "semantic_hash": "f1bdb7c2daea76704c694900241ccb4e"
+    "mtime": 1793645903.7053998,
+    "seen": 1793660062.2011056,
+    "ast_hash": "ce1abc37ad7244f8237b91356988f025",
+    "semantic_hash": ""
   },
   "crates/server/tests/it/semantic_ai_test.rs": {
     "mtime": 1791441344.6689641,
@@ -876,10 +876,10 @@
     "semantic_hash": "de8cdc3f00d83f270f9328c2b50ed625"
   },
   "crates/web/boot.js": {
-    "mtime": 1791441344.6699643,
-    "seen": 1791458012.6715038,
-    "ast_hash": "a091db0d56e5d4ba836e106e17cb5d70",
-    "semantic_hash": "a091db0d56e5d4ba836e106e17cb5d70"
+    "mtime": 1793657100.1765091,
+    "seen": 1793660062.2011297,
+    "ast_hash": "55efad743cfdbaa39038edd6288f644d",
+    "semantic_hash": ""
   },
   "crates/web/src/components/book_card.rs": {
     "mtime": 1791440366.789666,
@@ -900,10 +900,10 @@
     "semantic_hash": "e25d1d189b66b3d46fd0a256ca1bf916"
   },
   "crates/web/src/components/session.rs": {
-    "mtime": 1791390584.9825838,
-    "seen": 1791458012.6715221,
-    "ast_hash": "f6ee5df173051238ee30051a02286b36",
-    "semantic_hash": "f6ee5df173051238ee30051a02286b36"
+    "mtime": 1793648473.8457317,
+    "seen": 1793660062.201167,
+    "ast_hash": "6e4c6cfd3a3eaf26dc5dee7a53ddd856",
+    "semantic_hash": ""
   },
   "crates/web/src/components/shell.rs": {
     "mtime": 1791440366.789666,
@@ -930,16 +930,16 @@
     "semantic_hash": "18486532ee244a19f20b1397f9776f7e"
   },
   "crates/web/src/theme.rs": {
-    "mtime": 1791441344.672964,
-    "seen": 1791458012.6716516,
-    "ast_hash": "6948d31f474e619214ab8d2bfd64c7ab",
-    "semantic_hash": "6948d31f474e619214ab8d2bfd64c7ab"
+    "mtime": 1793652086.3908396,
+    "seen": 1793660062.2012234,
+    "ast_hash": "19e86dff27b21c4073fbb3f623ea4256",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_responsive.py": {
-    "mtime": 1791442797.3755033,
-    "seen": 1791458012.6719494,
-    "ast_hash": "4e7a95632e5d664649cc773f6796b714",
-    "semantic_hash": "4e7a95632e5d664649cc773f6796b714"
+    "mtime": 1793656558.2173202,
+    "seen": 1793660062.2012713,
+    "ast_hash": "7493d6f182f8cc89f47ee2dae12f3654",
+    "semantic_hash": ""
   },
   "assets/illustrations/admin-sorting-pigeonholes.webp": {
     "mtime": 1791395018.8637197,
@@ -1008,10 +1008,10 @@
     "semantic_hash": "98b08940ae9e3f2d2de26c76f6639f4f"
   },
   "crates/web/tests/visual/test_visual.py-snapshots/reader.png": {
-    "mtime": 1791442797.3761444,
-    "seen": 1791458012.672556,
-    "ast_hash": "86bbebc6cbf8dda0f8dccb398c6a9efc",
-    "semantic_hash": "86bbebc6cbf8dda0f8dccb398c6a9efc"
+    "mtime": 1793659339.8674045,
+    "seen": 1793660062.2016542,
+    "ast_hash": "4492800696e9178ad1390cb9864dee5a",
+    "semantic_hash": ""
   },
   "crates/server/src/routes/covers.rs": {
     "mtime": 1791441344.6639643,
@@ -1032,10 +1032,10 @@
     "semantic_hash": "cbb1d87ee9f59ae322dbe6da53f07e36"
   },
   "crates/web/src/components/focus.rs": {
-    "mtime": 1791441344.6709642,
-    "seen": 1791458012.6715126,
-    "ast_hash": "c69d6f947481d81ae9c7c363944fc788",
-    "semantic_hash": "c69d6f947481d81ae9c7c363944fc788"
+    "mtime": 1793655157.7857428,
+    "seen": 1793660062.2011464,
+    "ast_hash": "5642a30425ea12edbe1d668ae98fd692",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/reader/flip.rs": {
     "mtime": 1791442797.3741443,
@@ -1044,28 +1044,28 @@
     "semantic_hash": "9b69246d9e0464a63ef54e9921a6b4db"
   },
   "crates/web/src/pages/reader/layout.rs": {
-    "mtime": 1791442797.3755033,
-    "seen": 1791458012.6716468,
-    "ast_hash": "5d82f47bf1c596c43f07132c75661ba3",
-    "semantic_hash": "5d82f47bf1c596c43f07132c75661ba3"
+    "mtime": 1793652493.7157514,
+    "seen": 1793660062.2012115,
+    "ast_hash": "6d83d1f64ed6b91bde0da59880816977",
+    "semantic_hash": ""
   },
   "crates/web/src/pages/reader/mod.rs": {
-    "mtime": 1791442797.3755033,
-    "seen": 1791458012.6716483,
-    "ast_hash": "06b360dd4b0037bcab0c65760e0ce178",
-    "semantic_hash": "06b360dd4b0037bcab0c65760e0ce178"
+    "mtime": 1793655171.720339,
+    "seen": 1793660062.2012138,
+    "ast_hash": "8cf8d8f2c6c8b6ce86286950de6a3eb0",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_navigation.py": {
-    "mtime": 1791440366.7906659,
-    "seen": 1791458012.6719437,
-    "ast_hash": "618644a0317dca9783ac0d6f2c4c444c",
-    "semantic_hash": "618644a0317dca9783ac0d6f2c4c444c"
+    "mtime": 1793656558.2162309,
+    "seen": 1793660062.2012599,
+    "ast_hash": "401c4244cd86ccd8aa0ca5046ebb084f",
+    "semantic_hash": ""
   },
   "crates/web/tests/e2e/test_reader_flip.py": {
-    "mtime": 1791442797.3755033,
-    "seen": 1791458012.671946,
-    "ast_hash": "399f711dd72ff009d1088627bb46e393",
-    "semantic_hash": "399f711dd72ff009d1088627bb46e393"
+    "mtime": 1793647865.6535063,
+    "seen": 1793660062.2012649,
+    "ast_hash": "c66e8a85dedbda9957f3da5358a4d789",
+    "semantic_hash": ""
   },
   "assets/illustrations/rotaria-mark.svg": {
     "mtime": 1791440366.788666,
@@ -1074,10 +1074,10 @@
     "semantic_hash": "f235ad99d0d3f5d94061f40da0d898ae"
   },
   "knowledge/.gbrain-owner.json": {
-    "mtime": 1791552641.1765225,
-    "seen": 1791553459.0791783,
-    "ast_hash": "7b3e21b74c6b5ac31f2ccdfed56812fc",
-    "semantic_hash": "7b3e21b74c6b5ac31f2ccdfed56812fc"
+    "mtime": 1793650585.031507,
+    "seen": 1793660062.2013004,
+    "ast_hash": "c1e8ae87021b0a1d6efdebf8cd064ac0",
+    "semantic_hash": ""
   },
   "knowledge/skillpack.json": {
     "mtime": 1790455870.1374109,
@@ -1086,10 +1086,10 @@
     "semantic_hash": "bbed09f4964dcff7813f8eb53d67441d"
   },
   "AGENTS.md": {
-    "mtime": 1791552314.5692391,
-    "seen": 1791553459.0792456,
-    "ast_hash": "64e4809ced604045f62f8807290793f3",
-    "semantic_hash": "64e4809ced604045f62f8807290793f3"
+    "mtime": 1793649781.2537959,
+    "seen": 1793660062.201372,
+    "ast_hash": "7045effd07b7f170e3d777c2e981783d",
+    "semantic_hash": ""
   },
   "CLAUDE.md": {
     "mtime": 1791552314.5702393,
@@ -1122,10 +1122,10 @@
     "semantic_hash": "b67793dfe9d840c1730d39a49cc9b915"
   },
   "knowledge/log.md": {
-    "mtime": 1791552422.5356462,
-    "seen": 1791553459.079331,
-    "ast_hash": "a98f8e347a5b7b065d345bf426071798",
-    "semantic_hash": "a98f8e347a5b7b065d345bf426071798"
+    "mtime": 1793658778.2749996,
+    "seen": 1793660062.2014272,
+    "ast_hash": "79cefd5f04cb465e117617a4ee63ba89",
+    "semantic_hash": ""
   },
   "knowledge/skills/brain-router/SKILL.md": {
     "mtime": 1790455870.1294107,
@@ -1146,10 +1146,10 @@
     "semantic_hash": "81e946672cde1e05ce6f2fc4983f9457"
   },
   "Cargo.toml": {
-    "mtime": 1791441344.6609643,
-    "seen": 1791458012.6686094,
-    "ast_hash": "5e8a624ce73c8cdb5af40d80ba785ab5",
-    "semantic_hash": "5e8a624ce73c8cdb5af40d80ba785ab5"
+    "mtime": 1793657188.1986701,
+    "seen": 1793660062.2006762,
+    "ast_hash": "9a5be664a44d7641f451b843dc847f49",
+    "semantic_hash": ""
   },
   "knowledge/audits/2026-09-27/REPORT.md": {
     "mtime": 1790527407.727332,
@@ -1164,16 +1164,16 @@
     "semantic_hash": "fd094bb1259f425f7023e6a44a450ff5"
   },
   "knowledge/decisions.md": {
-    "mtime": 1791552528.493825,
-    "seen": 1791553459.0792713,
-    "ast_hash": "8bfb045153c67206fbb30273753f983a",
-    "semantic_hash": "8bfb045153c67206fbb30273753f983a"
+    "mtime": 1793649764.6816638,
+    "seen": 1793660062.201418,
+    "ast_hash": "2583472b019db9eb8bf8495c672f26e1",
+    "semantic_hash": ""
   },
   "knowledge/manual-qa.md": {
-    "mtime": 1791552407.1434011,
-    "seen": 1791553459.079335,
-    "ast_hash": "d03d54eb13f42742b93c5f0a3abf7af9",
-    "semantic_hash": "d03d54eb13f42742b93c5f0a3abf7af9"
+    "mtime": 1793658741.8136916,
+    "seen": 1793660062.2014298,
+    "ast_hash": "723f9b41a95f75412f2cd378acf02f8c",
+    "semantic_hash": ""
   },
   "knowledge/product.md": {
     "mtime": 1791552394.6214194,
@@ -1182,94 +1182,28 @@
     "semantic_hash": "62f7f0963990fa72c824c3ba4e1f05d2"
   },
   "knowledge/tickets/README.md": {
-    "mtime": 1791552207.9939246,
-    "seen": 1791553459.0793388,
-    "ast_hash": "b2f3400dbcdc4f88b303f88600b45405",
-    "semantic_hash": "b2f3400dbcdc4f88b303f88600b45405"
-  },
-  "knowledge/tickets/TICK-001-redis-reconnect-and-boot-fail-fast.md": {
-    "mtime": 1791552086.9289317,
-    "seen": 1791553459.07934,
-    "ast_hash": "117f784dee7ef1e481b24fbc14b16961",
-    "semantic_hash": "117f784dee7ef1e481b24fbc14b16961"
-  },
-  "knowledge/tickets/TICK-002-reader-position-integrity.md": {
-    "mtime": 1791552086.9309318,
-    "seen": 1791553459.079342,
-    "ast_hash": "3b0e2ce60b4b603d97aba37d4358b264",
-    "semantic_hash": "3b0e2ce60b4b603d97aba37d4358b264"
-  },
-  "knowledge/tickets/TICK-003-auth-hardening-followups.md": {
-    "mtime": 1791552086.9329317,
-    "seen": 1791553459.0793436,
-    "ast_hash": "7dd15598b7f487f59d69bac3a0352055",
-    "semantic_hash": "7dd15598b7f487f59d69bac3a0352055"
-  },
-  "knowledge/tickets/TICK-004-web-session-client.md": {
-    "mtime": 1791552086.9349318,
-    "seen": 1791553459.0793455,
-    "ast_hash": "fb1694ea2763c7800e85ec07a4ea6923",
-    "semantic_hash": "fb1694ea2763c7800e85ec07a4ea6923"
-  },
-  "knowledge/tickets/TICK-005-ingestion-worker-resilience.md": {
-    "mtime": 1791552128.808677,
-    "seen": 1791553459.0793474,
-    "ast_hash": "8983008662da9cf6fc42a05c0e6b2afb",
-    "semantic_hash": "8983008662da9cf6fc42a05c0e6b2afb"
-  },
-  "knowledge/tickets/TICK-006-rate-limit-followups.md": {
-    "mtime": 1791552128.8106768,
-    "seen": 1791553459.079349,
-    "ast_hash": "a922d3db47606596fc93bc56f3101390",
-    "semantic_hash": "a922d3db47606596fc93bc56f3101390"
-  },
-  "knowledge/tickets/TICK-007-edge-and-compose-hygiene.md": {
-    "mtime": 1791552128.812677,
-    "seen": 1791553459.0793517,
-    "ast_hash": "53fd2a54fd3f0c984137d1777e260166",
-    "semantic_hash": "53fd2a54fd3f0c984137d1777e260166"
-  },
-  "knowledge/tickets/TICK-008-wasm-bundle-slimming.md": {
-    "mtime": 1791552128.8156767,
-    "seen": 1791553459.0793538,
-    "ast_hash": "f49857afce2aa40dc10b1561497e5bf8",
-    "semantic_hash": "f49857afce2aa40dc10b1561497e5bf8"
-  },
-  "knowledge/tickets/TICK-009-service-worker-and-self-hosted-fonts.md": {
-    "mtime": 1791552185.9723787,
-    "seen": 1791553459.0793557,
-    "ast_hash": "67d3875ce4bf8ec00d4bad15073aa0dc",
-    "semantic_hash": "67d3875ce4bf8ec00d4bad15073aa0dc"
-  },
-  "knowledge/tickets/TICK-010-shell-accessibility-polish.md": {
-    "mtime": 1791552407.1794615,
-    "seen": 1791553459.079358,
-    "ast_hash": "93c30fdb9ab9892debaff28a5da9de06",
-    "semantic_hash": "93c30fdb9ab9892debaff28a5da9de06"
+    "mtime": 1793658741.8375382,
+    "seen": 1793660062.2014425,
+    "ast_hash": "213dcf10ec804c569cd7eeac1c39c3dc",
+    "semantic_hash": ""
   },
   "knowledge/tickets/TICK-011-responsive-followups.md": {
-    "mtime": 1791552185.9763787,
-    "seen": 1791553459.07936,
-    "ast_hash": "28a8f0209e712afbb2e76951b21b4957",
-    "semantic_hash": "28a8f0209e712afbb2e76951b21b4957"
-  },
-  "knowledge/tickets/TICK-012-reader-enhancements.md": {
-    "mtime": 1791552185.9783788,
-    "seen": 1791553459.0793617,
-    "ast_hash": "a3fbab7bc0eef79534d223a8b800e25a",
-    "semantic_hash": "a3fbab7bc0eef79534d223a8b800e25a"
+    "mtime": 1793652751.34314,
+    "seen": 1793660062.201445,
+    "ast_hash": "c9ddbb3f50c62533541326c1ca818a7c",
+    "semantic_hash": ""
   },
   "knowledge/tickets/TICK-013-tauri-shell.md": {
-    "mtime": 1791552185.9803786,
-    "seen": 1791553459.0793638,
-    "ast_hash": "572e57226dc246540fddde1acfdde55a",
-    "semantic_hash": "572e57226dc246540fddde1acfdde55a"
+    "mtime": 1793658741.8196914,
+    "seen": 1793660062.2014475,
+    "ast_hash": "733d3a7dc2ba884fbb4f15d084514032",
+    "semantic_hash": ""
   },
   "knowledge/tickets/TICK-014-launch-gate-and-trademark.md": {
-    "mtime": 1791552185.9823785,
-    "seen": 1791553459.079366,
-    "ast_hash": "7eac7abcf706c159e3e59ffded7131cb",
-    "semantic_hash": "7eac7abcf706c159e3e59ffded7131cb"
+    "mtime": 1793646950.8304439,
+    "seen": 1793660062.2014503,
+    "ast_hash": "62ef17f12ffa01f5c92ce08a0c8c7032",
+    "semantic_hash": ""
   },
   "knowledge/audits/2026-09-27/01-home.png": {
     "mtime": 1790524157.6331418,
@@ -1366,5 +1300,575 @@
     "seen": 1791553459.0793958,
     "ast_hash": "547a6e0663094453f0babd76a0ef6428",
     "semantic_hash": "547a6e0663094453f0babd76a0ef6428"
+  },
+  ".github/actions/dev-stack/action.yml": {
+    "mtime": 1793649585.6090896,
+    "seen": 1793660062.2006397,
+    "ast_hash": "23a6f3a8879cfc2b535914c0ba4b05a5",
+    "semantic_hash": ""
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1793656225.4327655,
+    "seen": 1793660062.2006624,
+    "ast_hash": "c031690a51b0b9b79d3351e655155b58",
+    "semantic_hash": ""
+  },
+  ".github/workflows/release.yml": {
+    "mtime": 1793649617.9655013,
+    "seen": 1793660062.2006686,
+    "ast_hash": "51ae1c0392bf79d8c3265ca43ab2a14e",
+    "semantic_hash": ""
+  },
+  "apps/tauri/Cargo.toml": {
+    "mtime": 1793657188.0696726,
+    "seen": 1793660062.2006805,
+    "ast_hash": "7f60ef3ea010d60f7722bdc6418206dd",
+    "semantic_hash": ""
+  },
+  "apps/tauri/build.rs": {
+    "mtime": 1793657188.0776722,
+    "seen": 1793660062.2006834,
+    "ast_hash": "1be34a5c61c2c35365de3dab14298f0b",
+    "semantic_hash": ""
+  },
+  "apps/tauri/capabilities/default.json": {
+    "mtime": 1793657188.093672,
+    "seen": 1793660062.2006872,
+    "ast_hash": "b265ec79ce77573340472fa37d478a3a",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/build.gradle.kts": {
+    "mtime": 1793657668.226911,
+    "seen": 1793660062.2006905,
+    "ast_hash": "da2b1e3de8792144b45284a75a17d8a7",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/java/io/github/aprxty3/rotaria/MainActivity.kt": {
+    "mtime": 1793658266.124699,
+    "seen": 1793660062.2006927,
+    "ast_hash": "a8478f501aa4aa225c6bc0b90e96b3af",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/build.gradle.kts": {
+    "mtime": 1793657668.2259111,
+    "seen": 1793660062.2006958,
+    "ast_hash": "5ba0a5f9feff21c972b7816db34715ce",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/buildSrc/build.gradle.kts": {
+    "mtime": 1793657668.229911,
+    "seen": 1793660062.2006984,
+    "ast_hash": "415e42bc9df5a27a27d50c980d2484ae",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/buildSrc/src/main/java/io/github/aprxty3/rotaria/kotlin/BuildTask.kt": {
+    "mtime": 1793657668.229911,
+    "seen": 1793660062.2007012,
+    "ast_hash": "03080d9c71c5adf6d13b61bff7c5ce5a",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/buildSrc/src/main/java/io/github/aprxty3/rotaria/kotlin/RustPlugin.kt": {
+    "mtime": 1793657668.229911,
+    "seen": 1793660062.200704,
+    "ast_hash": "633f17b36dc0188d2f9c536a4f4be393",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/gradlew": {
+    "mtime": 1793657668.2267945,
+    "seen": 1793660062.2007074,
+    "ast_hash": "a43be8432bac3ffd05b3769aa42fe996",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/settings.gradle": {
+    "mtime": 1793657668.226911,
+    "seen": 1793660062.20071,
+    "ast_hash": "abd11d894caa36e33edcd381ba11f330",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/acl-manifests.json": {
+    "mtime": 1793657427.613345,
+    "seen": 1793660062.2007124,
+    "ast_hash": "1dbeb53383d6e9e34d6da22dc4a10c73",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/android-schema.json": {
+    "mtime": 1793657744.9724844,
+    "seen": 1793660062.2007148,
+    "ast_hash": "aaf21e8047ba9a82210b3da903c940b5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/capabilities.json": {
+    "mtime": 1793657427.6356084,
+    "seen": 1793660062.2007172,
+    "ast_hash": "926a4197115bbe5feb33772895524ade",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/desktop-schema.json": {
+    "mtime": 1793657427.6356084,
+    "seen": 1793660062.2007196,
+    "ast_hash": "aaf21e8047ba9a82210b3da903c940b5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/linux-schema.json": {
+    "mtime": 1793657427.6333447,
+    "seen": 1793660062.200722,
+    "ast_hash": "aaf21e8047ba9a82210b3da903c940b5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/schemas/mobile-schema.json": {
+    "mtime": 1793657744.9734843,
+    "seen": 1793660062.2007244,
+    "ast_hash": "aaf21e8047ba9a82210b3da903c940b5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/src/lib.rs": {
+    "mtime": 1793658485.628548,
+    "seen": 1793660062.2007272,
+    "ast_hash": "02c8332e5440b9726aa5bb9f9a456ef5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/src/main.rs": {
+    "mtime": 1793657188.0826724,
+    "seen": 1793660062.2007303,
+    "ast_hash": "15dffc075dd9fd95728eef02bb478229",
+    "semantic_hash": ""
+  },
+  "apps/tauri/tauri.conf.json": {
+    "mtime": 1793659468.230375,
+    "seen": 1793660062.2007332,
+    "ast_hash": "b678b8492a56e5ad43179260966ed8de",
+    "semantic_hash": ""
+  },
+  "crates/infra/src/counter.rs": {
+    "mtime": 1793645897.9525125,
+    "seen": 1793660062.2007713,
+    "ast_hash": "663f42aa91b9d60d313daf1b93218de5",
+    "semantic_hash": ""
+  },
+  "crates/web/src/pages/reader/tools.rs": {
+    "mtime": 1793653199.1161942,
+    "seen": 1793660062.2012177,
+    "ast_hash": "18d62d3e65f9e7accd6e9bbef8439a4a",
+    "semantic_hash": ""
+  },
+  "crates/web/tests/e2e/test_offline_shell.py": {
+    "mtime": 1793657202.5264146,
+    "seen": 1793660062.201262,
+    "ast_hash": "6859d929894ef4751de03255ba81be29",
+    "semantic_hash": ""
+  },
+  "scripts/check_bundle_budget.py": {
+    "mtime": 1793660026.7654352,
+    "seen": 1793660062.2013521,
+    "ast_hash": "19af4318155dd142afcbd9dbccb31a01",
+    "semantic_hash": ""
+  },
+  "scripts/release_notes.py": {
+    "mtime": 1793649610.3906226,
+    "seen": 1793660062.2013664,
+    "ast_hash": "839e2a5eb35699d8974d14f12d042c03",
+    "semantic_hash": ""
+  },
+  "crates/web/fonts/OFL-EBGaramond.txt": {
+    "mtime": 1793649863.6942108,
+    "seen": 1793660062.201394,
+    "ast_hash": "9166a25d533447579c7c3af6dc8e0bdb",
+    "semantic_hash": ""
+  },
+  "crates/web/fonts/OFL-Newsreader.txt": {
+    "mtime": 1793649863.6959264,
+    "seen": 1793660062.2013967,
+    "ast_hash": "18b1799c268d8ac577c6aa8597f5b404",
+    "semantic_hash": ""
+  },
+  "crates/web/fonts/OFL-PlusJakartaSans.txt": {
+    "mtime": 1793649863.698565,
+    "seen": 1793660062.2013988,
+    "ast_hash": "028e355944f58645eb2a8d190e6b24f6",
+    "semantic_hash": ""
+  },
+  "knowledge/tickets/TICK-015-vercel-web-deploy.md": {
+    "mtime": 1793649764.687726,
+    "seen": 1793660062.201453,
+    "ast_hash": "a5dbb11793aef0e40f2511fa5ec84344",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014585,
+    "ast_hash": "331411a21199dcbb3fd3e9dc180ff090",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014604,
+    "ast_hash": "c922c31dd0772e0569d6b9982345a3cc",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014632,
+    "ast_hash": "331411a21199dcbb3fd3e9dc180ff090",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014654,
+    "ast_hash": "c988238f35e59dcfa66d0402fcef5454",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.201468,
+    "ast_hash": "b08cc46c43b78ade95ffa710f2c85ee9",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014701,
+    "ast_hash": "c988238f35e59dcfa66d0402fcef5454",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014723,
+    "ast_hash": "2bd12d99c8151b74c78129ad7ef78af8",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014742,
+    "ast_hash": "8c4be6f31e044cc8a1ac39e45d50d9dd",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014763,
+    "ast_hash": "2bd12d99c8151b74c78129ad7ef78af8",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014785,
+    "ast_hash": "7b9be1ceb98e9e2c1ac1562b705c679e",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014806,
+    "ast_hash": "023cdbfd0bd363e1da6b48eb91d873f2",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png": {
+    "mtime": 1793657668.2289112,
+    "seen": 1793660062.2014835,
+    "ast_hash": "7b9be1ceb98e9e2c1ac1562b705c679e",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
+    "mtime": 1793657668.2294414,
+    "seen": 1793660062.2014859,
+    "ast_hash": "f83434b1cfc97752a5182da19b9869c8",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657668.2294414,
+    "seen": 1793660062.201488,
+    "ast_hash": "56c4fd013ccd4ac84787fcba327abc37",
+    "semantic_hash": ""
+  },
+  "apps/tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png": {
+    "mtime": 1793657668.2294414,
+    "seen": 1793660062.2014904,
+    "ast_hash": "f83434b1cfc97752a5182da19b9869c8",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/128x128.png": {
+    "mtime": 1793657367.817435,
+    "seen": 1793660062.2014923,
+    "ast_hash": "11ecd4c1072fc42b6dce9e4fe21334a6",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/128x128@2x.png": {
+    "mtime": 1793657367.8344347,
+    "seen": 1793660062.2014945,
+    "ast_hash": "9c6c916d7efc2867b00a1f19cdc273f6",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/32x32.png": {
+    "mtime": 1793657367.7994354,
+    "seen": 1793660062.2014966,
+    "ast_hash": "b7b571e721454cf449cc230639e52772",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/64x64.png": {
+    "mtime": 1793657367.806435,
+    "seen": 1793660062.2014985,
+    "ast_hash": "eb4fcaedc7a480c3a3c21ca8e37dcc75",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square107x107Logo.png": {
+    "mtime": 1793657367.4114423,
+    "seen": 1793660062.2015007,
+    "ast_hash": "8b3f9da57fdef62b864436eb7d27d02d",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square142x142Logo.png": {
+    "mtime": 1793657367.4214423,
+    "seen": 1793660062.2015026,
+    "ast_hash": "b1bb7ac0b65d1c117f0822c64ce5b15f",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square150x150Logo.png": {
+    "mtime": 1793657367.434442,
+    "seen": 1793660062.2015045,
+    "ast_hash": "b46eb61b2acface7de1f4a66e28176b3",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square284x284Logo.png": {
+    "mtime": 1793657367.4554415,
+    "seen": 1793660062.2015064,
+    "ast_hash": "1b1a247f4cede41c2ae253cef970704f",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square30x30Logo.png": {
+    "mtime": 1793657367.378443,
+    "seen": 1793660062.2015083,
+    "ast_hash": "ad3158ae7591cad2832914cbe93aa268",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square310x310Logo.png": {
+    "mtime": 1793657367.480441,
+    "seen": 1793660062.2015104,
+    "ast_hash": "77ab40fc2d3461aa6411e249ceb2d5cd",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square44x44Logo.png": {
+    "mtime": 1793657367.3854427,
+    "seen": 1793660062.2015123,
+    "ast_hash": "033715fab64f90c3c6a4a4f6afafdfcf",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square71x71Logo.png": {
+    "mtime": 1793657367.3924427,
+    "seen": 1793660062.2015142,
+    "ast_hash": "2771c9202d4ffe858d695be2570f720c",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/Square89x89Logo.png": {
+    "mtime": 1793657367.4004426,
+    "seen": 1793660062.2015164,
+    "ast_hash": "df1df025f9de2fcda9aeacb4d40d6d90",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/StoreLogo.png": {
+    "mtime": 1793657367.3664432,
+    "seen": 1793660062.2015183,
+    "ast_hash": "4a85d84260e18cb098cc5229c843576e",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-hdpi/ic_launcher.png": {
+    "mtime": 1793657368.2664268,
+    "seen": 1793660062.2015204,
+    "ast_hash": "dceabdc35d848c25c332d4821156a7ad",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-hdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657368.1684287,
+    "seen": 1793660062.2015224,
+    "ast_hash": "a4367cfa0f14ef18d21138b5a7772b80",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-hdpi/ic_launcher_round.png": {
+    "mtime": 1793657368.2594268,
+    "seen": 1793660062.201525,
+    "ast_hash": "1fee91cf7c80c8011e0cdcd8e3b0e7a7",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-mdpi/ic_launcher.png": {
+    "mtime": 1793657368.2794266,
+    "seen": 1793660062.2015278,
+    "ast_hash": "e0bfcf344fee0eb7f06185b086a5d9dc",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-mdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657368.1794283,
+    "seen": 1793660062.2015305,
+    "ast_hash": "4f961cf06f9a9a14409e3c1d1d0e71eb",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-mdpi/ic_launcher_round.png": {
+    "mtime": 1793657368.2724266,
+    "seen": 1793660062.201533,
+    "ast_hash": "76bbe273c699b24da6958f0745768016",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xhdpi/ic_launcher.png": {
+    "mtime": 1793657368.2964263,
+    "seen": 1793660062.2015355,
+    "ast_hash": "6e8b4b29ef584b25a5acdc5a7fe3e185",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657368.1954281,
+    "seen": 1793660062.2015383,
+    "ast_hash": "12e5057b6111f0379b4496fee813a92e",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xhdpi/ic_launcher_round.png": {
+    "mtime": 1793657368.2884264,
+    "seen": 1793660062.2015407,
+    "ast_hash": "d796bd3b3b311403f1bdabeb6fa20c5f",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxhdpi/ic_launcher.png": {
+    "mtime": 1793657368.3204257,
+    "seen": 1793660062.2015429,
+    "ast_hash": "fb7308c929674d60f2036fc137d9ba78",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657368.2164278,
+    "seen": 1793660062.201545,
+    "ast_hash": "baf4f41e0cee0a5ee14a7aa7f46c6fea",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxhdpi/ic_launcher_round.png": {
+    "mtime": 1793657368.309426,
+    "seen": 1793660062.201547,
+    "ast_hash": "bd613dddff7fad6492754343ccee7957",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxxhdpi/ic_launcher.png": {
+    "mtime": 1793657368.3504252,
+    "seen": 1793660062.201549,
+    "ast_hash": "68f2c37bc7b76828ea0063ceeef8e9a3",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png": {
+    "mtime": 1793657368.2514272,
+    "seen": 1793660062.2015512,
+    "ast_hash": "fdec6b63de6fbdcb7e9e724200624ba4",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/android/mipmap-xxxhdpi/ic_launcher_round.png": {
+    "mtime": 1793657368.3354256,
+    "seen": 1793660062.201553,
+    "ast_hash": "1b4b998a7b8fbd19cd02bda164523e96",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/icon.png": {
+    "mtime": 1793657367.8584342,
+    "seen": 1793660062.2015553,
+    "ast_hash": "031efc34ff685da9fb2179325c648185",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-20x20@1x.png": {
+    "mtime": 1793657367.870307,
+    "seen": 1793660062.2015572,
+    "ast_hash": "ad95104584c90432ca3363a62e410509",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-20x20@2x-1.png": {
+    "mtime": 1793657367.8658733,
+    "seen": 1793660062.2015593,
+    "ast_hash": "27ee1559e8a757f9fe2d9afe593f7c55",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-20x20@2x.png": {
+    "mtime": 1793657367.8758633,
+    "seen": 1793660062.2015615,
+    "ast_hash": "27ee1559e8a757f9fe2d9afe593f7c55",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-20x20@3x.png": {
+    "mtime": 1793657367.882434,
+    "seen": 1793660062.2015631,
+    "ast_hash": "0e5d46a9b40998ed31fb19decd8f2411",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-29x29@1x.png": {
+    "mtime": 1793657367.8944335,
+    "seen": 1793660062.2015655,
+    "ast_hash": "0d90db9abe16d87571262b43f2650ea3",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-29x29@2x-1.png": {
+    "mtime": 1793657367.8884337,
+    "seen": 1793660062.2015674,
+    "ast_hash": "46b9aaeb0461b55fe544770e20809e08",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-29x29@2x.png": {
+    "mtime": 1793657367.9014335,
+    "seen": 1793660062.2015696,
+    "ast_hash": "46b9aaeb0461b55fe544770e20809e08",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-29x29@3x.png": {
+    "mtime": 1793657367.9094334,
+    "seen": 1793660062.201572,
+    "ast_hash": "173d61213829f64fe889b4e57c0bb931",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-40x40@1x.png": {
+    "mtime": 1793657367.9235716,
+    "seen": 1793660062.2015738,
+    "ast_hash": "27ee1559e8a757f9fe2d9afe593f7c55",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-40x40@2x-1.png": {
+    "mtime": 1793657367.916433,
+    "seen": 1793660062.2015762,
+    "ast_hash": "a40bacc28a7f0dc5ea8bbd960b9fb65a",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-40x40@2x.png": {
+    "mtime": 1793657367.9294329,
+    "seen": 1793660062.2015781,
+    "ast_hash": "a40bacc28a7f0dc5ea8bbd960b9fb65a",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-40x40@3x.png": {
+    "mtime": 1793657367.9394329,
+    "seen": 1793660062.201581,
+    "ast_hash": "bf50ba50ebfd74fcc11e1e398baed139",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-512@2x.png": {
+    "mtime": 1793657368.150429,
+    "seen": 1793660062.2015836,
+    "ast_hash": "4186e2f92d0b5a7917de6def7965d369",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-60x60@2x.png": {
+    "mtime": 1793657367.9484327,
+    "seen": 1793660062.201586,
+    "ast_hash": "bf50ba50ebfd74fcc11e1e398baed139",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-60x60@3x.png": {
+    "mtime": 1793657367.9614325,
+    "seen": 1793660062.201588,
+    "ast_hash": "cc2b29dbd18e6c7f7464ee181bee65f5",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-76x76@1x.png": {
+    "mtime": 1793657367.969432,
+    "seen": 1793660062.20159,
+    "ast_hash": "c64ace639924ed042efa401e9f433b05",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-76x76@2x.png": {
+    "mtime": 1793657367.979432,
+    "seen": 1793660062.2015922,
+    "ast_hash": "0f9ba780636f0299829c3e220a8d1e29",
+    "semantic_hash": ""
+  },
+  "apps/tauri/icons/ios/AppIcon-83.5x83.5@2x.png": {
+    "mtime": 1793657367.9904318,
+    "seen": 1793660062.2015946,
+    "ast_hash": "479d9e909e5587a7164cbea293c9e28c",
+    "semantic_hash": ""
   }
 }
