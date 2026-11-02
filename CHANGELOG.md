@@ -4,34 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
-### Fixed
-- Phone home: the "picks" rail started flush with the screen edge instead of the content edge (scroll snapping ignored the rail's padding), and cards with long titles grew wider than the rest; the search tab no longer leaves the focused field under the sticky header (the scroll was aimed before the page settled).
-- Sheets: closing one by a click no longer throws "closure invoked after being dropped" twice (the click still bubbled to listeners the close had freed; the close now waits for the dispatch to end); sheets opened over the reader keep the shell's ink instead of the page's; search forms inside sheets keep their one-line pill; ghost buttons on the reader's finale card take the page's ink.
-- Dual-screen devices: a window spanning two hinged screens reads as a spread with the spine on the hinge; below 1024 px it used to run one column straight through the hinge. The responsive matrix now also runs in Indonesian (the suite browser is English, so ID copy had never been checked) and emulates hinges through Chromium display features.
-- Shell accessibility: Tab and Shift+Tab stay inside open sheets; the focused search field clears the sticky header on phones; the error toast passes AA on Paper (it was 2.85:1); English counts read "1 chapter", "1 day in a row", "1 reader"; the theme toggle names the theme it switches to and the shell follows a system scheme change until a theme is chosen; running heads and tab labels grow to 0.7 and 0.75 rem; the empty shelf promises the first badge after the first minute, as the badge rule grants it.
-- Deploys reach returning readers: the service worker serves unhashed files (boot.js, icons, illustrations, manifest) network-first and keeps one shell entry instead of one per visited URL; `Caddyfile.prod` stops marking unhashed files immutable and no longer touches the cache policy of API responses. The three house fonts are self-hosted, so the app boots and keeps its typography without Google Fonts, offline included; the CSP drops both Google origins.
-- Session client: a signup refused by the cooldown or an outage stays on the form with the message; a refused refresh token returns the UI to the guest view instead of an avatar over an endless skeleton; signing out offline sticks after a reload; the pending-write drain runs once at a time and keeps writes queued during it; a rejected 401 body is drained so repeated expiries cannot exhaust the browser's connections to the API.
-- Reader position: reopening a book lands on the saved page even when the position arrives after the chapter, and page one no longer overwrites it; a late answer for a chapter already left is dropped; leaving or closing the tab inside the save debounce keeps the page just turned; the spread starts at a 1024 px window; Space on a focused control activates it; pinch zoom works; the chapter title link scrolls to the chapter list.
-- Ingestion worker: dead-worker recovery works on Redis 7 (`XAUTOCLAIM` answers with three values and was never unpacked); a running job keeps its claim, so a long book is not ingested twice; SIGTERM releases the active job within the stop grace; replaying a dead letter is atomic; archived books are never republished; oversized EPUB metadata is clipped instead of failing the job; read timeouts are retried; the Gemini key moved from the URL to `x-goog-api-key`.
-- Redis restarts no longer break login and bearer routes until an API restart: one reconnecting handle serves every request, an outage answers 503 instead of 401, and the next request after recovery reconnects. In production the server exits when Postgres or Redis is unreachable at boot; S3 calls stop after 15 s; request-id spans no longer leak across awaits.
+## [0.1.0] — 2026-11-03
 
-### Security
-- Deploy surface trimmed: dev compose ports bind to `127.0.0.1`; `Caddyfile.prod` drops the `Server` banner on API and error responses; production refuses `SMTP_SECURITY=none`; server and worker images run as uid 10001 (the server image gains the `wget` its healthcheck calls); ingestion and dead-letter streams are capped at about 10000 entries.
-- Rate limits cannot be gamed or stuck: every counter is `INCR` plus `EXPIRE NX` in one transaction (auth, AI, public, signup, lockouts, OTP); a revoked token counts in the guest AI bucket; production refuses to boot with a public cap but no proxy trust, and configuration errors exit with a message instead of a panic.
-- Account takeover and abuse paths closed: a signup with a different password cannot replace the password of a registration whose code is pending (429 until it expires); OTP attempts are counted atomically, so parallel guesses cannot pass the three-attempt limit; the refresh grace window refuses a successor killed by revoke-all; password change revokes sessions before writing the new hash; emails are trimmed and lowercased, and a concurrent duplicate signup answers 409; progress writes and the active shelf ignore draft and archived books; only the EPUB upload route accepts bodies above 2 MB.
-- Client address comes from one header: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` (default `x-forwarded-for`) is read; `Caddyfile.prod` strips the other address headers. The default JWT secret is refused whenever proxy headers are trusted.
-- Worker sanitizer re-escapes decoded character references, so markup hidden in entities stays text.
-- Draft and archived books answer 404 on chapter, insight, and offline-bundle routes.
-- SMTP through `lettre` with STARTTLS (`SMTP_SECURITY=starttls|none`); Gemini key sent in `x-goog-api-key`; connection strings, recipients, and OTPs masked in logs.
-- Swagger and OpenAPI unmounted in production; `/health` answers 503 without a database; `Cache-Control: no-store` on auth and bearer responses; validation errors stop echoing values; search queries capped at 200 characters.
-- Logout blacklists the session's last access token; heartbeat gate is one atomic `SET NX EX`; a duplicate quote save returns the existing row; `PATCH /admin/books/{id}` to `processing` is 409.
-- Strict script CSP: a Trunk post-build hook externalizes the inline bootstrap, `script-src` drops `unsafe-inline`, `make test-web-full` fails on any inline script.
-- OTP lock answers 429 with `Retry-After` after three wrong codes.
-- Audit hardening (2026-10-07): 50 MB EPUB uploads past axum's default body limit; atomic refresh rotation (`GETDEL`, 30 s grace); unverified accounts behave like a wrong password; signup fails closed on SMTP (502); password change returns a fresh pair; heartbeat credit clamped to 90 s per user; admin guard re-reads the user row; HSTS on the API; SPA CSP in both Caddyfiles.
-- Earlier hardening (ADR-20 to ADR-27): SHA-256 refresh storage with family revocation on replay; two-layer login lockout; signup SMTP cap; OTP lock without deletion; fail-closed 503 on Redis outage for auth and AI paths; EPUB magic check and worker zip guard; CORS allowlist; server-minted request ids; avatar URL allowlist; guest merge transactional with a 100-record cap.
-
-### Changed
-- WebAssembly bundle down from 2.83 MB to 1.47 MB raw (909 KB to 573 KB gzip): a `wasm-release` Cargo profile and `wasm-opt -Oz` in `make build-web`, which the edge image also runs; the build fails above 1.8 MB raw or 700 KB gzip. Unused `web-sys` features dropped.
+First release: the reader, the curator desk, the ingestion worker, and the deployment stack as they stand on this date. A 0.y version is initial development under semantic versioning; the public launch waits on the launch gate (staging domain, live email, trademark search).
 
 ### Added
 - Tauri 2 app shell (`apps/tauri`) for Android and desktop around the same web bundle: the API base is injected at run time, no service worker inside the app, `rotaria://book/<id>` links open the book (also on a cold start), and Android keeps the page between the system bars. Verified on an Android 16 emulator: catalog from the host API, a book opened by deep link, page turns by swipe, and reading a saved book in airplane mode. `make app-dev`, `app-build`, `app-test`, `app-android-dev`, `app-android-build`.
@@ -50,7 +25,23 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `GET /api/v1/me/streak`; `PUBLIC_RATE_LIMIT_PER_MINUTE` public read cap on the shared limiter engine; functional server suites consolidated in `crates/server/tests/it` with lean debug profiles.
 - Milestones 04 to 07 (2026-09-27 and 28): dual-mode embeddings and scoped HNSW quote search; atomic cards and recaps from `tldr_cache`; saved quotes with SVG cards; MinIO storage, admin upload (202), Python worker with DLQ and reclaim; job monitor and drop-off funnel; Leptos web reader with five routes; 401 auto-refresh; PWA manifest, service worker, offline reader, pending-write queue; production images, `docker-compose.prod.yml`, `Caddyfile.prod`, `.env.production.example`; `crates/domain` with DB-free tests; `make purge-test-debris`; `scripts/pg_backup.sh`.
 
+### Changed
+- WebAssembly bundle down from 2.83 MB to 1.47 MB raw (909 KB to 573 KB gzip; 1.57 MB and 608 KB in this release with the reader tools): a `wasm-release` Cargo profile and `wasm-opt -Oz` in `make build-web`, which the edge image also runs; the build fails above 1.8 MB raw or 700 KB gzip. Unused `web-sys` features dropped.
+
+### Removed
+- Documentation consolidated (2026-10-09): `DISTRIBUTED.md`, `assets/README.md`, and `python_worker/README.md` folded into `ARCHITECTURE.md`; one agent rule file (`AGENTS.md`).
+- The unversioned `/api/*` alias; `/api/v1/*` is the only API surface.
+
 ### Fixed
+- Phone home: the "picks" rail started flush with the screen edge instead of the content edge (scroll snapping ignored the rail's padding), and cards with long titles grew wider than the rest; the search tab no longer leaves the focused field under the sticky header (the scroll was aimed before the page settled).
+- Sheets: closing one by a click no longer throws "closure invoked after being dropped" twice (the click still bubbled to listeners the close had freed; the close now waits for the dispatch to end); sheets opened over the reader keep the shell's ink instead of the page's; search forms inside sheets keep their one-line pill; ghost buttons on the reader's finale card take the page's ink.
+- Dual-screen devices: a window spanning two hinged screens reads as a spread with the spine on the hinge; below 1024 px it used to run one column straight through the hinge. The responsive matrix now also runs in Indonesian (the suite browser is English, so ID copy had never been checked) and emulates hinges through Chromium display features.
+- Shell accessibility: Tab and Shift+Tab stay inside open sheets; the focused search field clears the sticky header on phones; the error toast passes AA on Paper (it was 2.85:1); English counts read "1 chapter", "1 day in a row", "1 reader"; the theme toggle names the theme it switches to and the shell follows a system scheme change until a theme is chosen; running heads and tab labels grow to 0.7 and 0.75 rem; the empty shelf promises the first badge after the first minute, as the badge rule grants it.
+- Deploys reach returning readers: the service worker serves unhashed files (boot.js, icons, illustrations, manifest) network-first and keeps one shell entry instead of one per visited URL; `Caddyfile.prod` stops marking unhashed files immutable and no longer touches the cache policy of API responses. The three house fonts are self-hosted, so the app boots and keeps its typography without Google Fonts, offline included; the CSP drops both Google origins.
+- Session client: a signup refused by the cooldown or an outage stays on the form with the message; a refused refresh token returns the UI to the guest view instead of an avatar over an endless skeleton; signing out offline sticks after a reload; the pending-write drain runs once at a time and keeps writes queued during it; a rejected 401 body is drained so repeated expiries cannot exhaust the browser's connections to the API.
+- Reader position: reopening a book lands on the saved page even when the position arrives after the chapter, and page one no longer overwrites it; a late answer for a chapter already left is dropped; leaving or closing the tab inside the save debounce keeps the page just turned; the spread starts at a 1024 px window; Space on a focused control activates it; pinch zoom works; the chapter title link scrolls to the chapter list.
+- Ingestion worker: dead-worker recovery works on Redis 7 (`XAUTOCLAIM` answers with three values and was never unpacked); a running job keeps its claim, so a long book is not ingested twice; SIGTERM releases the active job within the stop grace; replaying a dead letter is atomic; archived books are never republished; oversized EPUB metadata is clipped instead of failing the job; read timeouts are retried; the Gemini key moved from the URL to `x-goog-api-key`.
+- Redis restarts no longer break login and bearer routes until an API restart: one reconnecting handle serves every request, an outage answers 503 instead of 401, and the next request after recovery reconnects. In production the server exits when Postgres or Redis is unreachable at boot; S3 calls stop after 15 s; request-id spans no longer leak across awaits.
 - Anchors scroll after content loads and stop under the sticky header; the search tab focuses the field; sheets close on Escape and return focus; the upload input is keyboard-reachable; remaining aria labels translated.
 - Signals read after awaits use `try_get`; toasts dedupe with `role=alert` for errors; catalog, book, and reader show a network error with retry; the admin poll stops on unmount; shelf skeletons; service worker shell fallback and asset pruning; Paper contrast passes AA.
 - Reader root used `min-height` and never paginated long chapters; it is a fixed-height flex column; insight sheets fetch on open; measure capped at 1440 px.
@@ -58,59 +49,25 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - Save Offline key mismatch (`book_id` vs `id`, IndexedDB v2) and typed chapter records; shared header and button styles; hero dot labels and faint contrasts.
 - Docs and comments: spec tracers removed from code, SSOT corrections in SRS and ERD, history re-sorted newest first.
 
-### Removed
-- Documentation consolidated (2026-10-09): `DISTRIBUTED.md`, `assets/README.md`, and `python_worker/README.md` folded into `ARCHITECTURE.md`; one agent rule file (`AGENTS.md`).
-- The unversioned `/api/*` alias; `/api/v1/*` is the only API surface.
-
-## [0.2.1] — 2026-09-26
-
-### Added
-- **Milestone 01 (Infrastructure & Entities):** Strongly-typed modular configuration system (`ServerConfig`, `DatabaseConfig`, `RedisConfig`, `AuthConfig`, `StorageConfig`, `EmailConfig`, `AiConfig`) loaded via `dotenvy`; dynamic SeaORM and Redis connection pools; 13 SeaORM entity models with `postgres-vector` and `PgVector` 768-dim support.
-- **Milestone 02 (Authentication & Guest Reconciliation):** Complete authentication lifecycle (`/api/v1/auth/signup`, `verify-otp`, `login`, `refresh`, `logout`, `/api/v1/me`); Argon2id password hashing; Redis OTP with SHA-256 and 3-attempt limit; single-use refresh token rotation; async SMTP delivery via Mailpit; guest progress reconciliation (`/api/v1/progress/merge`) with SQL upsert and `GREATEST` progress resolution; RBAC middleware (`require_admin`).
-- **Milestone 03 (Catalog Backend & Reader API):** Public catalog with cursor-based pagination and multi-filter criteria (`/api/v1/books`); typo-tolerant search (<3ms via `pg_trgm` and `word_similarity`); chapter delivery and offline reading bundles (`/api/v1/books/{id}/offline-bundle`); EPUB CFI reading progress synchronization (`/api/v1/progress/{book_id}`) and active position retrieval; daily streak gamification with heartbeat logging (`/api/v1/activity/heartbeat`); and badges system (`/api/v1/badges`, `/api/v1/me/badges`).
-- **Database Index Optimization (Migration 07):** Added dedicated B-tree indexes for all Foreign Key columns to eliminate sequential scans during cascading deletes; consolidated unique indexes; and added `idx_books_published_year_id` on `books (publication_year DESC NULLS LAST, id ASC) WHERE status = 'published'` to enable zero-sort catalog pagination.
-- **Automated Testing Modules:** Expanded test suite to 67 automated tests covering database integrity (`database_test.rs`), load and stress concurrency (`load_stress_test.rs`), API boundary and error envelope contracts (`api_boundary_test.rs`), and OWASP ASVS compliance (`security_owasp_test.rs`).
-- **Edge Transport Architecture:** Adopted Caddy Reverse Proxy for HTTP/3 (QUIC over UDP 443) edge termination with automatic TLS and HTTP/2 over TCP fallback; preserved stateless TCP Axum backend on port 8080 (ADR-17).
-
-### Changed
-- **Redis Connection Optimization:** Pre-initialized multiplexed Tokio Redis connection in `AppState` (`state.get_redis_conn().await`), eliminating socket recreation overhead across requests.
-- **Argon2id Thread Offloading:** Offloaded CPU-intensive password hashing to Tokio blocking thread pool (`tokio::task::spawn_blocking`) with calibrated parameters (19MB, 2 iterations, 1 lane) and optimized dev compilation flags (`opt-level = 3`), reducing login p95 latency from >600ms to 52ms.
-- **README Redesign:** Rewrote [README.md](README.md) to provide an accessible, welcoming overview of Project Baca's literary vision, problem statement, reader features, and architecture for a general audience.
-
 ### Security
-- **OWASP ASVS Hardening:** Injected mandatory global security headers (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `Alt-Svc`); sanitized internal database errors (CWE-209); implemented IP spoofing defense prioritizing Cloudflare `CF-Connecting-IP`; added standard RFC rate-limit headers (`X-RateLimit-*`, `Retry-After`).
-- **Account Abuse Controls:** 60-second OTP email cooldown; 15-minute brute-force lockout after 5 failed login attempts; JWT `jti` blacklisting on logout; multi-session revocation (`/api/v1/auth/revoke-all`); and constant-time dummy password verification preventing user email timing enumeration.
+- Deploy surface trimmed: dev compose ports bind to `127.0.0.1`; `Caddyfile.prod` drops the `Server` banner on API and error responses; production refuses `SMTP_SECURITY=none`; server and worker images run as uid 10001 (the server image gains the `wget` its healthcheck calls); ingestion and dead-letter streams are capped at about 10000 entries.
+- Rate limits cannot be gamed or stuck: every counter is `INCR` plus `EXPIRE NX` in one transaction (auth, AI, public, signup, lockouts, OTP); a revoked token counts in the guest AI bucket; production refuses to boot with a public cap but no proxy trust, and configuration errors exit with a message instead of a panic.
+- Account takeover and abuse paths closed: a signup with a different password cannot replace the password of a registration whose code is pending (429 until it expires); OTP attempts are counted atomically, so parallel guesses cannot pass the three-attempt limit; the refresh grace window refuses a successor killed by revoke-all; password change revokes sessions before writing the new hash; emails are trimmed and lowercased, and a concurrent duplicate signup answers 409; progress writes and the active shelf ignore draft and archived books; only the EPUB upload route accepts bodies above 2 MB.
+- Client address comes from one header: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` (default `x-forwarded-for`) is read; `Caddyfile.prod` strips the other address headers. The default JWT secret is refused whenever proxy headers are trusted.
+- Worker sanitizer re-escapes decoded character references, so markup hidden in entities stays text.
+- Draft and archived books answer 404 on chapter, insight, and offline-bundle routes.
+- SMTP through `lettre` with STARTTLS (`SMTP_SECURITY=starttls|none`); Gemini key sent in `x-goog-api-key`; connection strings, recipients, and OTPs masked in logs.
+- Swagger and OpenAPI unmounted in production; `/health` answers 503 without a database; `Cache-Control: no-store` on auth and bearer responses; validation errors stop echoing values; search queries capped at 200 characters.
+- Logout blacklists the session's last access token; heartbeat gate is one atomic `SET NX EX`; a duplicate quote save returns the existing row; `PATCH /admin/books/{id}` to `processing` is 409.
+- Strict script CSP: a Trunk post-build hook externalizes the inline bootstrap, `script-src` drops `unsafe-inline`, `make test-web-full` fails on any inline script.
+- OTP lock answers 429 with `Retry-After` after three wrong codes.
+- Audit hardening (2026-10-07): 50 MB EPUB uploads past axum's default body limit; atomic refresh rotation (`GETDEL`, 30 s grace); unverified accounts behave like a wrong password; signup fails closed on SMTP (502); password change returns a fresh pair; heartbeat credit clamped to 90 s per user; admin guard re-reads the user row; HSTS on the API; SPA CSP in both Caddyfiles.
+- Earlier hardening (ADR-20 to ADR-27): SHA-256 refresh storage with family revocation on replay; two-layer login lockout; signup SMTP cap; OTP lock without deletion; fail-closed 503 on Redis outage for auth and AI paths; EPUB magic check and worker zip guard; CORS allowlist; server-minted request ids; avatar URL allowlist; guest merge transactional with a 100-record cap.
 
-## [0.2.0] — 2026-09-25
-
-### Added
-- **Open Knowledge Format (OKF v0.2):** Full SSOT specification vault in `knowledge/` (`prd.md`, `erd.md`, `ux-flow.md`, `frd.md`, `srs.md`, `index.md`, `log.md`).
-- **Graphify Knowledge Graph:** Codebase graph extraction (nodes, edges, communities) in `graphify-out/`.
-- **Obsidian Vault Export:** Structured markdown vault notes in `obsidian-vault/`.
-- **Workspace Agent Rules:** Agent governance in `.agents/rules/okf_memory.md`, `.agents/rules/graphify.md`, and `.agents/workflows/graphify.md`.
-- **Multi-Agent Guidelines:** Added [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), [MEMORY.md](MEMORY.md), [GEMINI.md](GEMINI.md), [GUIDE.md](GUIDE.md), [DISTRIBUTED.md](DISTRIBUTED.md), [NOTICE.md](NOTICE.md).
-- **System Specifications:** 23 REST API contracts, multi-layer security model in `knowledge/srs.md`.
-- **Database Schema & Index Matrix:** 16 PostgreSQL 17 indexes including partial GIN and HNSW in `knowledge/erd.md`.
-- **UX Flows & Wireframes:** Navigation layout and guest-to-cloud sync flows in `knowledge/ux-flow.md`.
-- **Functional Requirements:** Specifications across 7 system modules in `knowledge/frd.md`.
-- **OpenAPI & Swagger UI:** Integrated `utoipa` with Swagger UI at `/swagger-ui` and raw JSON spec at `/api-docs/openapi.json`.
-- **4-Tier Test Suite:** Smoke, integration, performance SLA (p95 < 50ms), and reliability tests with `mockall`, `claims`, `pretty_assertions`, and `rstest`.
-
-### Changed
-- **Embedding Engine:** Standardized on 768-dim Dual-Mode Provider (Google GenAI API and FastEmbed CPU ONNX), eliminating external Triton inference servers and halving HNSW memory usage.
-- **Search Strategy:** Adopted PostgreSQL 17 FTS + `pg_trgm` GIN indexes (<3ms) in place of Elasticsearch to save memory and eliminate dual-write overhead.
-- **Message Broker:** Adopted Redis Streams as the single queue for ingestion and email delivery.
-- **Style Policy:** Enforced Zero Emoji Policy across all documentation and codebase.
-- **Visual Theme:** Standardized on Vintage Literary (1900–1950) editorial theme with reactive bilingual switching `[ID|EN]`.
-
-### Security
-- Defense-in-depth architecture: Cloudflare edge rate limits, Redis sliding-window limits, SameSite CSRF cookies, Argon2id password hashing, and SHA-256 hashed 6-digit OTPs.
-- Environment isolation: Added `.env.example` and gitignore rules for private specifications.
-
-## [0.1.0] — 2026-09-25
-
-### Added
-- **Project Initialization:** Created monorepo blueprint [ARCHITECTURE.md](ARCHITECTURE.md) and [README.md](README.md).
-- **Local Infrastructure:** Configured [docker-compose.yml](docker-compose.yml) for PostgreSQL 17 + pgvector, Redis 7, MinIO, and Mailpit.
-- **Legal Copyright Analysis:** Verified public domain copyright compliance (life of author + 70 years under Indonesian Law 28/2014 and international terms).
-- **Visual Asset Catalog:** Cataloged 5 vintage pen-and-ink illustrations in `assets/README.md`.
+### Foundations (2026-09-25 to 2026-09-28, before any release)
+These milestones were once headed 0.1.0, 0.2.0, and 0.2.1 but never shipped; they are folded in here.
+- Workspace of five crates (`domain`, `shared`, `infra`, `server`, `web`), typed configuration from the environment, SeaORM entities and seven paired migrations, PostgreSQL 17 with pgvector and `pg_trgm`, Redis 7, MinIO, and Mailpit in the dev compose.
+- Authentication: signup with a six-digit OTP stored as SHA-256 in Redis, Argon2id passwords off the async runtime, JWT access tokens with rotating refresh tokens, logout and revoke-all, guest progress merge.
+- Catalog with cursor paging, trigram and FTS search, chapter delivery, offline bundles, reading progress anchors, streak heartbeats, and badges.
+- Caddy as the TLS and HTTP/3 edge in front of a plain TCP Axum service; OpenAPI through utoipa; OWASP-oriented headers, rate-limit headers, and login lockouts.
+- Corrections to what those headings claimed: email is sent directly over SMTP (no Redis Streams email queue), and there are no CSRF cookies, since the API takes bearer tokens only.

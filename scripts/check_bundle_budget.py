@@ -3,10 +3,10 @@
 
 Usage: check_bundle_budget.py <dist dir>
 
-The budget sits about a fifth above the measured bundle (1.47 MB raw,
-573 KB gzip with the `wasm-release` profile and `wasm-opt -Oz`), so a
-feature can land, but an accidental dependency or a lost optimisation pass
-fails the build. Standard library only.
+The budget sits above the measured bundle (1.57 MB raw, 608 KB gzip in
+0.1.0 with the `wasm-release` profile and `wasm-opt -Oz`), so a feature can
+land, but an accidental dependency or a lost optimisation pass fails the
+build. Standard library only.
 """
 import gzip
 import sys
