@@ -1946,6 +1946,18 @@ img {
     column-gap: calc(56px * 2);
 }
 
+/* Two screens side by side: the spine sits on the hinge, and the gap
+   between the pages is never narrower than the hinge. The gap stays twice
+   the side padding, which the page stride in layout.rs relies on. */
+@media (horizontal-viewport-segments: 2) {
+    .reader.spread .reader-viewport {
+        --hinge: calc(env(viewport-segment-left 1 0, 0px) - env(viewport-segment-right 0 0, 0px));
+        --page-pad: max(56px, calc(var(--hinge) / 2 + 16px));
+        padding-inline: var(--page-pad);
+        column-gap: calc(var(--page-pad) * 2);
+    }
+}
+
 .reader.spread .page-head-left {
     left: 56px;
 }

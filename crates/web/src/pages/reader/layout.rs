@@ -34,11 +34,24 @@ pub fn paddings(el: &HtmlElement) -> Paddings {
 }
 
 pub fn columns_for(window_width: i32) -> usize {
-    if window_width >= TWO_COLUMN_MIN_WIDTH {
+    if window_width >= TWO_COLUMN_MIN_WIDTH || spans_two_screens() {
         2
     } else {
         1
     }
+}
+
+/// A window spread across two side-by-side screens (a hinged dual-screen
+/// device). A single column would run through the hinge; a spread puts the
+/// spine on it, and `main.css` widens the gap to at least the hinge.
+fn spans_two_screens() -> bool {
+    web_sys::window()
+        .and_then(|w| {
+            w.match_media("(horizontal-viewport-segments: 2)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|m| m.matches())
 }
 
 pub fn window_width() -> i32 {

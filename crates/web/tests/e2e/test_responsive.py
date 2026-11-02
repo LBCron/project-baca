@@ -2,7 +2,9 @@
 
 Layout, not pixels: no horizontal overflow, the right chrome per width
 (tab bar vs header navigation, dock vs inline actions), tap targets at
-least 24px, and a long chapter that really paginates everywhere.
+least 24px, and a long chapter that really paginates everywhere. The fit
+matrix runs in both interface languages, and a window spanning two
+hinged screens keeps text off the hinge.
 """
 import pytest
 from playwright.sync_api import Browser
@@ -42,12 +44,13 @@ LONG_CHAPTER = "<h2>Probe</h2>" + "".join(
 )
 
 
-def _page_at(browser: Browser, width: int, height: int):
+def _page_at(browser: Browser, width: int, height: int, locale: str = "en-US"):
     context = browser.new_context(
         viewport={"width": width, "height": height},
         is_mobile=width < 1024,
         has_touch=width < 1024,
         reduced_motion="reduce",
+        locale=locale,
     )
     page = context.new_page()
     errors: list[str] = []
@@ -61,9 +64,10 @@ def _visible(page, selector: str) -> bool:
     return bool(el and el.is_visible())
 
 
+@pytest.mark.parametrize("locale", ["en-US", "id-ID"])
 @pytest.mark.parametrize("name,width,height", VIEWPORTS, ids=[v[0] for v in VIEWPORTS])
-def test_home_and_book_fit_viewport(browser: Browser, book_with_chapters: str, name, width, height):
-    context, page = _page_at(browser, width, height)
+def test_home_and_book_fit_viewport(browser: Browser, book_with_chapters: str, name, width, height, locale):
+    context, page = _page_at(browser, width, height, locale)
     try:
         phone = width < 768
         page.goto(f"{WEB}/", wait_until="networkidle")
@@ -125,6 +129,48 @@ def test_reader_paginates_long_chapter(browser: Browser, book_with_chapters: str
         assert page.evaluate("document.querySelector('.reader-viewport').scrollLeft") == page.evaluate(
             "document.querySelector('.reader-viewport').clientWidth"
         ), f"{name}: one turn must advance exactly one viewport width"
+        assert page.errors == [], page.errors[:3]  # type: ignore[attr-defined]
+    finally:
+        context.close()
+
+
+HINGE_CUTS = """([a, b]) => [...document.querySelectorAll('.chapter-body p, .chapter-body h2')]
+  .flatMap(e => [...e.getClientRects()])
+  .filter(r => r.width > 0 && r.right > 0 && r.left < innerWidth)
+  .filter(r => r.left < b && r.right > a).length"""
+SCROLL_PAGE = "() => { const v = document.querySelector('.reader-viewport'); return Math.round(v.scrollLeft / v.clientWidth); }"
+
+
+# (width, hinge offset, hinge width): a spanned dual-screen phone below the
+# desktop breakpoint, one above it, and a wide hinge.
+@pytest.mark.parametrize("width,offset,hinge", [(980, 478, 24), (1114, 545, 24), (980, 450, 80)])
+def test_two_screen_spread_keeps_text_off_the_hinge(browser: Browser, book_with_chapters: str, width, offset, hinge):
+    context, page = _page_at(browser, width, 720)
+    try:
+        cdp = context.new_cdp_session(page)
+        cdp.send(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": width, "height": 720, "deviceScaleFactor": 1, "mobile": True,
+                "displayFeature": {"orientation": "vertical", "offset": offset, "maskLength": hinge},
+            },
+        )
+        chapter = api_get(f"/books/{book_with_chapters}")["chapters"][0]["chapter_number"]
+        page.goto(f"{WEB}/read/{book_with_chapters}?chapter={chapter}", wait_until="networkidle")
+        page.wait_for_selector(".chapter-body")
+        page.evaluate(
+            "html => { document.querySelector('.chapter-body').innerHTML = html; window.dispatchEvent(new Event('resize')); }",
+            LONG_CHAPTER,
+        )
+        page.wait_for_timeout(700)
+        assert page.evaluate("() => matchMedia('(horizontal-viewport-segments: 2)').matches")
+        assert page.evaluate("() => document.querySelector('.reader').classList.contains('spread')")
+        hinge_span = [offset, offset + hinge]
+        assert page.evaluate(HINGE_CUTS, hinge_span) == 0, "page one crosses the hinge"
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(300)
+        assert page.evaluate(SCROLL_PAGE) == 1
+        assert page.evaluate(HINGE_CUTS, hinge_span) == 0, "the next spread crosses the hinge"
         assert page.errors == [], page.errors[:3]  # type: ignore[attr-defined]
     finally:
         context.close()
