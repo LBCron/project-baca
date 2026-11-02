@@ -9,15 +9,25 @@ use sha2::{Digest, Sha256};
 use shared::AppError;
 
 const OTP_TTL_SECONDS: u64 = 600; // 10 minutes
-const MAX_OTP_ATTEMPTS: u32 = 3;
+const MAX_OTP_ATTEMPTS: i64 = 3;
 const OTP_LOCK_SECONDS: i64 = 300; // 5-minute cooldown after exhausting attempts
 
 #[derive(Debug, Serialize, Deserialize)]
 struct OtpRecord {
     pub hash: String,
-    pub attempts: u32,
-    #[serde(default)]
-    pub locked_until: Option<i64>,
+}
+
+/// Redis key of the pending code for `email`; it lives as long as the code.
+pub fn otp_key(email: &str) -> String {
+    format!("otp:{email}")
+}
+
+fn attempts_key(email: &str) -> String {
+    format!("otp:attempts:{email}")
+}
+
+fn redis_error(context: &str, e: redis::RedisError) -> AppError {
+    AppError::Internal(format!("{context}: {e}"))
 }
 
 /// Computes SHA-256 hex digest of OTP string
@@ -34,95 +44,88 @@ pub fn generate_numeric_otp() -> String {
     format!("{:06}", otp)
 }
 
-/// Generates a random 6-digit numeric OTP and stores its SHA-256 hash in Redis
+/// Generates a random 6-digit numeric OTP and stores its SHA-256 hash in
+/// Redis. A new code starts with a clean attempt count.
 pub async fn generate_and_store_otp(
     redis: &mut crate::RedisConn,
     email: &str,
 ) -> Result<String, AppError> {
     let otp_str = generate_numeric_otp();
-    let hash = hash_otp(&otp_str);
+    let json_val = serde_json::to_string(&OtpRecord {
+        hash: hash_otp(&otp_str),
+    })
+    .map_err(|e| AppError::Internal(format!("Failed to serialize OTP record: {e}")))?;
 
-    let record = OtpRecord {
-        hash,
-        attempts: 0,
-        locked_until: None,
-    };
-    let json_val = serde_json::to_string(&record)
-        .map_err(|e| AppError::Internal(format!("Failed to serialize OTP record: {e}")))?;
-
-    let redis_key = format!("otp:{email}");
-    let _: () = redis
-        .set_ex(&redis_key, json_val, OTP_TTL_SECONDS)
+    let _: () = redis::pipe()
+        .atomic()
+        .set_ex(otp_key(email), json_val, OTP_TTL_SECONDS)
+        .ignore()
+        .del(attempts_key(email))
+        .ignore()
+        .query_async(redis)
         .await
-        .map_err(|e| AppError::Internal(format!("Redis set_ex failed for OTP: {e}")))?;
+        .map_err(|e| redis_error("Redis write failed for OTP", e))?;
 
     Ok(otp_str)
 }
 
-/// Verifies a 6-digit OTP against its Redis record, enforcing attempt limits
+/// Verifies a 6-digit OTP against its Redis record, enforcing attempt limits.
+///
+/// The attempt is counted with one atomic `INCR` before the hash is
+/// compared, so parallel guesses each take their own slot and anything past
+/// the third is refused unseen.
 pub async fn verify_and_consume_otp(
     redis: &mut crate::RedisConn,
     email: &str,
     otp: &str,
 ) -> Result<bool, AppError> {
-    let redis_key = format!("otp:{email}");
     let record_str: Option<String> = redis
-        .get(&redis_key)
+        .get(otp_key(email))
         .await
-        .map_err(|e| AppError::Internal(format!("Redis get failed for OTP: {e}")))?;
-
-    let record_str = match record_str {
-        Some(s) => s,
-        None => return Ok(false),
+        .map_err(|e| redis_error("Redis get failed for OTP", e))?;
+    let Some(record_str) = record_str else {
+        return Ok(false);
+    };
+    let Ok(record) = serde_json::from_str::<OtpRecord>(&record_str) else {
+        let _: Result<(), _> = redis.del(otp_key(email)).await;
+        return Ok(false);
     };
 
-    let mut record: OtpRecord = match serde_json::from_str(&record_str) {
-        Ok(r) => r,
-        Err(_) => {
-            let _: () = redis.del(&redis_key).await.unwrap_or(());
-            return Ok(false);
-        }
-    };
+    let (attempt,): (i64,) = redis::pipe()
+        .atomic()
+        .cmd("SET")
+        .arg(attempts_key(email))
+        .arg(0)
+        .arg("NX")
+        .arg("EX")
+        .arg(OTP_TTL_SECONDS)
+        .ignore()
+        .incr(attempts_key(email), 1)
+        .query_async(redis)
+        .await
+        .map_err(|e| redis_error("Redis attempt count failed for OTP", e))?;
 
-    let now = chrono::Utc::now().timestamp();
-    if let Some(locked_until) = record.locked_until {
-        if now < locked_until {
-            return Err(AppError::RateLimited {
-                retry_after: (locked_until - now).max(1) as u64,
-            });
-        }
+    if attempt > MAX_OTP_ATTEMPTS {
+        let ttl: i64 = redis
+            .ttl(attempts_key(email))
+            .await
+            .unwrap_or(OTP_LOCK_SECONDS);
+        return Err(AppError::RateLimited {
+            retry_after: ttl.max(1) as u64,
+        });
     }
 
-    record.attempts += 1;
-
-    let computed_hash = hash_otp(otp);
-    if record.hash == computed_hash {
-        let _: () = redis.del(&redis_key).await.unwrap_or(());
+    if record.hash == hash_otp(otp) {
+        let _: Result<(), _> = redis.del(&[otp_key(email), attempts_key(email)]).await;
         return Ok(true);
     }
 
-    if record.attempts >= MAX_OTP_ATTEMPTS {
-        record.locked_until = Some(now + OTP_LOCK_SECONDS);
-        let locked_json = serde_json::to_string(&record).unwrap_or(record_str);
-        let ttl: i64 = redis.ttl(&redis_key).await.unwrap_or(300);
-        let remaining_ttl = if ttl > 0 { ttl as u64 } else { 300 };
-        let _: () = redis
-            .set_ex(&redis_key, locked_json, remaining_ttl)
-            .await
-            .unwrap_or(());
+    if attempt == MAX_OTP_ATTEMPTS {
+        let _: Result<(), _> = redis.expire(attempts_key(email), OTP_LOCK_SECONDS).await;
         return Err(AppError::RateLimited {
             retry_after: OTP_LOCK_SECONDS as u64,
         });
     }
-
-    // Save incremented attempts with remaining TTL
-    let ttl: i64 = redis.ttl(&redis_key).await.unwrap_or(300);
-    let remaining_ttl = if ttl > 0 { ttl as u64 } else { 300 };
-    let updated_json = serde_json::to_string(&record).unwrap_or(record_str);
-    let _: () = redis
-        .set_ex(&redis_key, updated_json, remaining_ttl)
-        .await
-        .unwrap_or(());
 
     Ok(false)
 }

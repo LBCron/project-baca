@@ -22,7 +22,11 @@ pub async fn get_active_progress(
     db: &DatabaseConnection,
     user_id: Uuid,
 ) -> Result<Option<ActiveProgressDto>, AppError> {
+    // Progress on a book that was unpublished later stays stored but must
+    // not surface its title or cover on the shelf.
     let progress = user_reading_progress::Entity::find()
+        .inner_join(books::Entity)
+        .filter(books::Column::Status.eq("published"))
         .filter(user_reading_progress::Column::UserId.eq(user_id))
         .filter(user_reading_progress::Column::IsFinished.eq(false))
         .order_by_desc(user_reading_progress::Column::LastReadAt)
@@ -77,6 +81,8 @@ pub async fn update_progress(
     book_id: Uuid,
     req: &UpdateProgressRequest,
 ) -> Result<(), AppError> {
+    crate::ensure_book_published(db, book_id).await?;
+
     // Validate chapter belongs to book
     let chapter = chapters::Entity::find_by_id(req.chapter_id)
         .one(db)

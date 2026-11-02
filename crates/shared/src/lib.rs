@@ -94,6 +94,18 @@ pub enum AppError {
 
 // Authentication & User DTOs
 
+/// Canonical form of an address: one account and one lockout key per
+/// mailbox, whatever case or padding the client sent.
+pub fn normalize_email(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+fn deserialize_email<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    String::deserialize(deserializer).map(|email| normalize_email(&email))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SignupRequest {
@@ -105,6 +117,7 @@ pub struct SignupRequest {
     ))]
     pub display_name: String,
 
+    #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
 
@@ -115,6 +128,7 @@ pub struct SignupRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VerifyOtpRequest {
+    #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
 
@@ -125,6 +139,7 @@ pub struct VerifyOtpRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LoginRequest {
+    #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
 

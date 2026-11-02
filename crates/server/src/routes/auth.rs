@@ -16,7 +16,7 @@ use chrono::Utc;
 use infra::{
     activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
     entities::users, find_user_by_email, find_user_by_id, generate_and_store_otp,
-    generate_refresh_token, hash_password_async, issue_access_token, list_sessions,
+    generate_refresh_token, hash_password_async, issue_access_token, list_sessions, otp_key,
     revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
     revoke_refresh_token, revoke_session, send_otp_email, store_refresh_token, touch_session,
     update_inactive_credentials, update_user_password, update_user_profile,
@@ -35,6 +35,13 @@ use uuid::Uuid;
 use validator::Validate;
 
 const INVALID_CREDENTIALS: &str = "Invalid email or password";
+
+fn redis_unavailable(error: redis::RedisError) -> HttpError {
+    tracing::warn!(target: "server::auth", error = %error, "Redis command failed");
+    HttpError(AppError::ServiceUnavailable {
+        retry_after: infra::REDIS_RETRY_AFTER_SECS,
+    })
+}
 
 fn now_secs() -> usize {
     Utc::now().timestamp() as usize
@@ -196,26 +203,49 @@ pub async fn signup(
         .await
         .map_err(HttpError::from)?;
 
-    let password_hash = hash_password_async(req.password.clone())
-        .await
-        .map_err(HttpError::from)?;
-
-    if let Some(user) = existing_user {
-        if user.is_active {
+    match existing_user {
+        Some(user) if user.is_active => {
             return Err(HttpError(AppError::Conflict(
                 "An account with this email is already registered".to_string(),
             )));
         }
-
-        // Unverified user requesting new registration: update credentials
-        update_inactive_credentials(&state.db, user, &req.display_name, &password_hash)
-            .await
-            .map_err(HttpError::from)?;
-    } else {
-        // Create new inactive user awaiting OTP verification
-        create_inactive_user(&state.db, &req.email, &req.display_name, &password_hash)
-            .await
-            .map_err(HttpError::from)?;
+        Some(user) => {
+            // While a code is pending, only whoever chose the password may ask
+            // for a fresh one; anyone else would plant their own password and
+            // wait for the owner to type the code that arrives.
+            let pending_secs: i64 = redis_conn
+                .ttl(otp_key(&req.email))
+                .await
+                .map_err(redis_unavailable)?;
+            if pending_secs > 0 {
+                let same_registrant = match &user.password_hash {
+                    Some(hash) => verify_password_async(req.password.clone(), hash.clone())
+                        .await
+                        .map_err(HttpError::from)?,
+                    None => false,
+                };
+                if !same_registrant {
+                    return Err(HttpError(AppError::RateLimited {
+                        retry_after: pending_secs as u64,
+                    }));
+                }
+            } else {
+                let password_hash = hash_password_async(req.password.clone())
+                    .await
+                    .map_err(HttpError::from)?;
+                update_inactive_credentials(&state.db, user, &req.display_name, &password_hash)
+                    .await
+                    .map_err(HttpError::from)?;
+            }
+        }
+        None => {
+            let password_hash = hash_password_async(req.password.clone())
+                .await
+                .map_err(HttpError::from)?;
+            create_inactive_user(&state.db, &req.email, &req.display_name, &password_hash)
+                .await
+                .map_err(HttpError::from)?;
+        }
     }
 
     let otp = generate_and_store_otp(&mut redis_conn, &req.email)
@@ -635,15 +665,14 @@ pub async fn change_password(
         .await
         .map_err(HttpError::from)?;
 
-    update_user_password(&state.db, auth.id, &new_hash)
-        .await
-        .map_err(HttpError::from)?;
-
     // Revoking other sessions on password change is the safe default: a
-    // compromised password must not leave attacker sessions alive. The
-    // revocation also kills the caller's current pair, so a fresh one is
-    // handed back instead of forcing a second login.
-    let tokens = if req.revoke_other_sessions.unwrap_or(true) {
+    // compromised password must not leave attacker sessions alive. Revoke
+    // first, write second (as account deletion does): if revocation fails the
+    // old password stays, rather than a new password beside live attacker
+    // sessions. The revocation also kills the caller's current pair, so a
+    // fresh one is handed back instead of forcing a second login.
+    let revoke_sessions = req.revoke_other_sessions.unwrap_or(true);
+    if revoke_sessions {
         revoke_all_user_sessions(
             &mut redis_conn,
             auth.id,
@@ -651,6 +680,13 @@ pub async fn change_password(
         )
         .await
         .map_err(HttpError::from)?;
+    }
+
+    update_user_password(&state.db, auth.id, &new_hash)
+        .await
+        .map_err(HttpError::from)?;
+
+    let tokens = if revoke_sessions {
         // Stamped one second past the revocation cut, which compares whole
         // seconds; otherwise the fresh pair would be born revoked.
         Some(issue_token_pair(&state, &mut redis_conn, &user, now_secs() + 1, &headers).await?)

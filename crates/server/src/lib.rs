@@ -6,7 +6,7 @@ pub mod routes;
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, State},
+    extract::State,
     http::{header, HeaderName, HeaderValue, Request, Response, StatusCode},
     middleware as axum_mw,
     response::IntoResponse,
@@ -398,12 +398,6 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         }
     };
 
-    // Multipart EPUB uploads need more than axum's 2 MB default; the handler
-    // still enforces the 50 MB product limit while streaming.
-    let admin_router = routes::admin_routes().layer(DefaultBodyLimit::max(
-        routes::admin::MAX_EPUB_BYTES + 64 * 1024,
-    ));
-
     Router::new()
         .merge(swagger_routes(&state))
         .route("/health", get(health_check))
@@ -417,7 +411,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .nest("/api/v1/books", quotes_router)
         .nest("/api/v1/books", public(routes::insights_routes()))
         .nest("/api/v1/quotes", routes::saved_quotes_routes())
-        .nest("/api/v1/admin", admin_router)
+        .nest("/api/v1/admin", routes::admin_routes())
         .fallback(not_found_handler)
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))

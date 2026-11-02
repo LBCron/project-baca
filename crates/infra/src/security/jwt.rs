@@ -455,12 +455,23 @@ async fn resolve_consumed_token(
         .get(format!("rotation_grace:{old_hash}"))
         .await
         .unwrap_or(None);
-    Ok(match successor {
-        Some(refresh_token) => RefreshOutcome::Rotated {
-            user_id,
-            refresh_token,
-        },
-        None => RefreshOutcome::Replayed { user_id },
+    let Some(refresh_token) = successor else {
+        return Ok(RefreshOutcome::Replayed { user_id });
+    };
+    // Revoke-all or a logout inside the window killed the successor; handing
+    // it back would mint access tokens for a session that no longer exists.
+    let successor_live: bool = redis
+        .exists(refresh_key(&refresh_token))
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to check refresh successor: {e}")))?;
+    if !successor_live {
+        return Err(AppError::Unauthorized(
+            "Invalid or expired refresh token".to_string(),
+        ));
+    }
+    Ok(RefreshOutcome::Rotated {
+        user_id,
+        refresh_token,
     })
 }
 

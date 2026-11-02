@@ -267,17 +267,24 @@ pub async fn provision_verified_user(
 /// TCP relay in front of a real service, so one app instance can lose its
 /// dependency while the shared dev server keeps running for other tests.
 /// `cut` drops every relayed connection and stops listening; `restore`
-/// listens again on the same port.
+/// listens again on the same port. A tripping relay instead drops just the
+/// connection whose client write contains every needle, which fails one
+/// chosen command deterministically.
 #[allow(dead_code)]
 pub struct TcpRelay {
     port: u16,
     upstream: String,
+    trip: &'static [&'static str],
     task: Option<JoinHandle<()>>,
 }
 
 #[allow(dead_code)]
 impl TcpRelay {
     pub async fn start(upstream: &str) -> Self {
+        Self::start_tripping(upstream, &[]).await
+    }
+
+    pub async fn start_tripping(upstream: &str, trip: &'static [&'static str]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("relay must bind an ephemeral port");
@@ -285,6 +292,7 @@ impl TcpRelay {
         let mut relay = Self {
             port,
             upstream: upstream.to_string(),
+            trip,
             task: None,
         };
         relay.serve(listener);
@@ -297,14 +305,15 @@ impl TcpRelay {
 
     fn serve(&mut self, listener: TcpListener) {
         let upstream = self.upstream.clone();
+        let trip = self.trip;
         self.task = Some(tokio::spawn(async move {
             // Dropping the set on abort aborts every relayed connection.
             let mut connections = JoinSet::new();
-            while let Ok((mut inbound, _)) = listener.accept().await {
+            while let Ok((inbound, _)) = listener.accept().await {
                 let upstream = upstream.clone();
                 connections.spawn(async move {
-                    if let Ok(mut outbound) = TcpStream::connect(&upstream).await {
-                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    if let Ok(outbound) = TcpStream::connect(&upstream).await {
+                        relay_connection(inbound, outbound, trip).await;
                     }
                 });
             }
@@ -324,6 +333,43 @@ impl TcpRelay {
             .expect("relay must rebind its port");
         self.serve(listener);
     }
+}
+
+async fn relay_connection(inbound: TcpStream, outbound: TcpStream, trip: &[&str]) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut client_read, mut client_write) = inbound.into_split();
+    let (mut server_read, mut server_write) = outbound.into_split();
+    let upstream = async {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = match client_read.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            let chunk = &buf[..n];
+            let tripped = !trip.is_empty()
+                && trip
+                    .iter()
+                    .all(|needle| chunk.windows(needle.len()).any(|w| w == needle.as_bytes()));
+            if tripped || server_write.write_all(chunk).await.is_err() {
+                return;
+            }
+        }
+    };
+    let downstream = tokio::io::copy(&mut server_read, &mut client_write);
+    tokio::select! {
+        _ = upstream => {},
+        _ = downstream => {},
+    }
+}
+
+/// Redis URL of `config` rerouted through a relay on `port`.
+#[allow(dead_code)]
+pub fn redis_url_via(config: &AppConfig, port: u16) -> String {
+    config
+        .redis
+        .url
+        .replacen(&redis_upstream(config), &format!("127.0.0.1:{port}"), 1)
 }
 
 /// `host:port` of the Redis server a config points at.

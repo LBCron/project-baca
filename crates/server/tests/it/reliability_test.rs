@@ -181,12 +181,8 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
 #[tokio::test]
 async fn test_redis_outage_answers_503_and_heals_without_restart() {
     let base = AppConfig::from_env().unwrap_or_default();
-    let upstream = common::redis_upstream(&base);
-    let mut relay = common::TcpRelay::start(&upstream).await;
-    let relay_url = base
-        .redis
-        .url
-        .replacen(&upstream, &format!("127.0.0.1:{}", relay.port()), 1);
+    let mut relay = common::TcpRelay::start(&common::redis_upstream(&base)).await;
+    let relay_url = common::redis_url_via(&base, relay.port());
     let harness = TestHarness::with_config(|c| c.redis.url = relay_url).await;
     let mut redis = harness
         .live_only()

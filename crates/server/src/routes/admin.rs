@@ -6,7 +6,7 @@ use crate::{
     AppState,
 };
 use axum::{
-    extract::{Multipart, Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, patch, post},
@@ -35,7 +35,13 @@ pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/books", get(list_catalog))
-        .route("/books/upload", post(upload_book))
+        // Multipart EPUB uploads need more than axum's 2 MB default; the
+        // handler still enforces the 50 MB product limit while streaming.
+        // Every other admin route keeps the default.
+        .route(
+            "/books/upload",
+            post(upload_book).layer(DefaultBodyLimit::max(MAX_EPUB_BYTES + 64 * 1024)),
+        )
         .route("/books/{book_id}", patch(patch_book))
         .route("/jobs/{job_id}", get(ingestion_status))
         .route("/dlq", get(list_dlq))

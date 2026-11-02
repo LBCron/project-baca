@@ -105,7 +105,7 @@ pub async fn merge_guest_progress(
                 .one(&txn)
                 .await
                 .map_err(|e| HttpError(AppError::Database(format!("Book lookup failed: {e}"))))?;
-            if book_exists.is_none() {
+            if !book_exists.is_some_and(|book| book.status == "published") {
                 let _ = txn.rollback().await;
                 return Err(HttpError(AppError::NotFound(format!(
                     "Book not found: {}",

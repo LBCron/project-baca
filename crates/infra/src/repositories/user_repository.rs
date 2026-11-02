@@ -3,6 +3,7 @@
 use chrono::Utc;
 use sea_orm::{
     ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    SqlErr,
 };
 use shared::AppError;
 use uuid::Uuid;
@@ -51,10 +52,14 @@ pub async fn create_inactive_user(
         updated_at: Set(Utc::now().into()),
     };
 
-    new_user
-        .insert(db)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to insert inactive user: {e}")))
+    new_user.insert(db).await.map_err(|e| match e.sql_err() {
+        // Two signups for one address raced past the lookup; the loser
+        // answers like any other taken address.
+        Some(SqlErr::UniqueConstraintViolation(_)) => {
+            AppError::Conflict("An account with this email is already registered".to_string())
+        }
+        _ => AppError::Database(format!("Failed to insert inactive user: {e}")),
+    })
 }
 
 /// Updates credentials of an inactive user re-requesting registration.

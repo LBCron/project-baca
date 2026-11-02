@@ -28,6 +28,7 @@ jsonwebtoken = { workspace = true }
 
 
 [dev-dependencies]
+futures = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 claims = { workspace = true }

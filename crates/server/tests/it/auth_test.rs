@@ -1495,3 +1495,325 @@ async fn test_sessions_list_single_revoke_and_keep_current() {
     assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
     harness.cleanup().await;
 }
+
+fn unique_ip(prefix: &str) -> String {
+    let n = Uuid::new_v4().as_u128();
+    format!("{prefix}.{}.{}", (n % 250) as u8, ((n >> 8) % 250) as u8)
+}
+
+fn json_post(uri: &str, ip: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(common::CLIENT_IP_HEADER, ip)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn signup_body(email: &str, password: &str) -> Value {
+    serde_json::json!({ "display_name": "Pending Owner", "email": email, "password": password })
+}
+
+/// Pins the pending code for `email` to `424242`.
+async fn plant_known_otp(redis: &mut infra::RedisConn, email: &str) {
+    let record = serde_json::json!({ "hash": infra::hash_otp("424242") }).to_string();
+    let _: () = redis
+        .set_ex(infra::otp_key(email), record, 600)
+        .await
+        .unwrap();
+}
+
+/// A signup for an address whose code is still pending cannot replace the
+/// registrant's password; the registrant re-sending the same form can still
+/// ask for a fresh code.
+#[tokio::test]
+async fn test_signup_cannot_overwrite_a_pending_registration() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_ip("198.19");
+    let email = harness.track_email_owned(format!("pending_{}@example.com", Uuid::new_v4()));
+    let owner_pw = "OwnerChoice123!";
+    let cooldown = format!("otp:cooldown:{email}");
+
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&email, owner_pw),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let _: () = redis.del(&cooldown).await.unwrap();
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&email, "AttackerPick123!"),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after: u64 = resp.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (1..=600).contains(&retry_after),
+        "retry after {retry_after}"
+    );
+
+    let _: () = redis.del(&cooldown).await.unwrap();
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&email, owner_pw),
+        ))
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "owner may ask for a new code"
+    );
+
+    plant_known_otp(&mut redis, &email).await;
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/verify-otp",
+            &ip,
+            serde_json::json!({ "email": email, "otp": "424242" }),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = harness.send_request(login_req(&email, owner_pw, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "owner password survives");
+    let resp = harness
+        .send_request(login_req(&email, "AttackerPick123!", &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
+}
+
+/// Ten wrong guesses fired at once: the count is atomic, so at most three
+/// are compared and the rest answer 429, and the right code is then locked.
+#[tokio::test]
+async fn test_parallel_wrong_otps_are_counted_atomically() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_ip("198.19");
+    let email = harness.track_email_owned(format!("otprace_{}@example.com", Uuid::new_v4()));
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&email, "RaceOwner123!"),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    plant_known_otp(&mut redis, &email).await;
+
+    let verify = |otp: &str| {
+        json_post(
+            "/api/v1/auth/verify-otp",
+            &ip,
+            serde_json::json!({ "email": email, "otp": otp }),
+        )
+    };
+    let statuses: Vec<StatusCode> =
+        futures::future::join_all((0..10).map(|_| harness.send_request(verify("000000"))))
+            .await
+            .iter()
+            .map(|r| r.status())
+            .collect();
+    let compared = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::BAD_REQUEST)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert!(compared <= 3, "{statuses:?}");
+    assert_eq!(compared + refused, 10, "{statuses:?}");
+
+    let resp = harness.send_request(verify("424242")).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    harness.cleanup().await;
+}
+
+/// The grace window hands back a successor only while it is alive:
+/// after revoke-all, replaying the consumed token is a 401.
+#[tokio::test]
+async fn test_refresh_grace_after_revoke_all_is_refused() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_ip("198.19");
+    let (_, first_refresh) = provision_verified_user(&harness, &mut redis, "grace", &ip).await;
+
+    let (resp, rotated) = harness
+        .send_json_request(refresh_req(&first_refresh, &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let access = rotated["data"]["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let revoke = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/revoke-all")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .header("authorization", format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(harness.send_request(revoke).await.status(), StatusCode::OK);
+
+    let resp = harness.send_request(refresh_req(&first_refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
+}
+
+/// When the revocation stamp cannot be written, the password change fails
+/// before the hash is replaced: the old password still signs in.
+#[tokio::test]
+async fn test_password_change_keeps_old_hash_when_revocation_fails() {
+    let base = infra::AppConfig::from_env().unwrap_or_default();
+    let relay = common::TcpRelay::start_tripping(
+        &common::redis_upstream(&base),
+        &["SETEX", "user_revoked_before:"],
+    )
+    .await;
+    let relay_url = common::redis_url_via(&base, relay.port());
+    let harness = TestHarness::with_config(|c| c.redis.url = relay_url).await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_ip("198.19");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "pwfail", &ip).await;
+    let me = Request::builder()
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_, profile) = harness.send_json_request(me).await;
+    let email = profile["data"]["email"].as_str().unwrap().to_string();
+
+    let change = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "current_password": common::PROVISIONED_PASSWORD,
+                "new_password": "Replacement123!"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = harness.send_request(change).await;
+    assert!(resp.status().is_server_error(), "got {}", resp.status());
+
+    let resp = harness
+        .send_request(login_req(&email, common::PROVISIONED_PASSWORD, &ip))
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "old password must still work"
+    );
+    let resp = harness
+        .send_request(login_req(&email, "Replacement123!", &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
+}
+
+/// Case and padding variants of one address are one account and one
+/// lockout key; a second signup for it is a 409.
+#[tokio::test]
+async fn test_email_variants_are_one_account() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_ip("198.19");
+    let id = Uuid::new_v4();
+    let canonical = harness.track_email_owned(format!("case_{id}@example.com"));
+    let shouted = format!("  Case_{id}@Example.COM ");
+    let password = "CaseFolded123!";
+
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&shouted, password),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    plant_known_otp(&mut redis, &canonical).await;
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/verify-otp",
+            &ip,
+            serde_json::json!({ "email": shouted, "otp": "424242" }),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    for variant in [canonical.as_str(), shouted.as_str()] {
+        let resp = harness
+            .send_request(login_req(variant, password, &ip))
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK, "login as {variant:?}");
+    }
+    let _: () = redis
+        .del(format!("otp:cooldown:{canonical}"))
+        .await
+        .unwrap();
+    let resp = harness
+        .send_request(json_post(
+            "/api/v1/auth/signup",
+            &ip,
+            signup_body(&canonical.to_uppercase(), password),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    harness.cleanup().await;
+}
+
+/// Two signups for one new address at once never answer 5xx; the
+/// repository maps the unique violation of the loser to a conflict.
+#[tokio::test]
+async fn test_concurrent_signups_never_fail_with_5xx() {
+    let harness = TestHarness::new().await;
+    harness.live_only().await.expect("live Redis required");
+    let email = harness.track_email_owned(format!("twin_{}@example.com", Uuid::new_v4()));
+    let (a, b) = tokio::join!(
+        harness.send_request(json_post(
+            "/api/v1/auth/signup",
+            &unique_ip("198.19"),
+            signup_body(&email, "TwinSignup123!"),
+        )),
+        harness.send_request(json_post(
+            "/api/v1/auth/signup",
+            &unique_ip("198.19"),
+            signup_body(&email, "TwinSignup123!"),
+        )),
+    );
+    let statuses = [a.status(), b.status()];
+    assert!(statuses.contains(&StatusCode::CREATED), "{statuses:?}");
+    assert!(
+        statuses.iter().all(|s| !s.is_server_error()),
+        "{statuses:?}"
+    );
+
+    let twice = harness.track_email_owned(format!("twice_{}@example.com", Uuid::new_v4()));
+    infra::create_inactive_user(&harness.state.db, &twice, "Twice", "hash")
+        .await
+        .unwrap();
+    let again = infra::create_inactive_user(&harness.state.db, &twice, "Twice", "hash").await;
+    assert!(
+        matches!(again, Err(shared::AppError::Conflict(_))),
+        "{again:?}"
+    );
+    harness.cleanup().await;
+}

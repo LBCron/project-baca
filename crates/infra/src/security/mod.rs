@@ -16,7 +16,7 @@ pub use jwt::{
     issue_access_token, list_sessions, revoke_other_sessions_keeping, revoke_session,
     touch_session, SessionMeta, SessionRecord,
 };
-pub use otp::{generate_and_store_otp, hash_otp, verify_and_consume_otp};
+pub use otp::{generate_and_store_otp, hash_otp, otp_key, verify_and_consume_otp};
 pub use password::{
     hash_password, hash_password_async, verify_password, verify_password_async, DUMMY_ARGON2_HASH,
 };

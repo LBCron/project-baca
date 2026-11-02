@@ -1028,3 +1028,25 @@ async fn test_admin_patch_refuses_processing_status() {
     assert_eq!(still_draft.status, "draft");
     harness.cleanup().await;
 }
+
+/// Only the upload route accepts 50 MB bodies; a 3 MB JSON body on
+/// `PATCH /admin/books/{id}` is refused at the default 2 MB limit.
+#[tokio::test]
+async fn test_admin_json_routes_keep_the_default_body_limit() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let draft_id = seed_status_book(&harness, "draft").await;
+    let padding = "x".repeat(3 * 1024 * 1024);
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/v1/admin/books/{draft_id}"))
+        .header("authorization", format!("Bearer {}", ctx.admin_token))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "status": "archived", "padding": padding }).to_string(),
+        ))
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    harness.cleanup().await;
+}

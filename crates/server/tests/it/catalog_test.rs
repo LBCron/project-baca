@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use common::TestHarness;
 use infra::entities::{book_tags, books, chapters, tags, users};
-use sea_orm::{ActiveModelTrait, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
 struct SeededCatalog {
@@ -692,5 +692,85 @@ async fn test_unpublished_books_hide_chapters_and_insights() {
             assert_eq!(body["error"]["code"], "NOT_FOUND", "{status} {uri}");
         }
     }
+    harness.cleanup().await;
+}
+
+/// Progress writes on a draft book answer 404 (single and merge), and a
+/// stored position on a book unpublished later stays off the shelf.
+#[tokio::test]
+async fn test_progress_ignores_unpublished_books() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live services required");
+    let ip = format!("198.19.77.{}", (Uuid::new_v4().as_u128() % 250) as u8);
+    let (token, _) = common::provision_verified_user(&harness, &mut redis, "draftprog", &ip).await;
+    let (draft_id, draft_chapter) = seed_book_with_chapter(&harness, "draft").await;
+    let (later_id, later_chapter) = seed_book_with_chapter(&harness, "published").await;
+    let bearer = |method: &str, uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let position = |chapter: Uuid| {
+        serde_json::json!({
+            "chapter_id": chapter,
+            "last_anchor_cfi": "p-3",
+            "completion_percentage": 12.5
+        })
+    };
+
+    let resp = harness
+        .send_request(bearer(
+            "PUT",
+            format!("/api/v1/progress/{draft_id}"),
+            position(draft_chapter),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let merge = serde_json::json!({ "records": [{
+        "book_id": draft_id,
+        "last_chapter_id": draft_chapter,
+        "last_anchor_cfi": "p-3",
+        "completion_percentage": 12.5,
+        "last_read_at": Utc::now()
+    }]});
+    let resp = harness
+        .send_request(bearer("POST", "/api/v1/progress/merge".to_string(), merge))
+        .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let resp = harness
+        .send_request(bearer(
+            "PUT",
+            format!("/api/v1/progress/{later_id}"),
+            position(later_chapter),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::Status,
+            sea_orm::sea_query::Expr::value("archived"),
+        )
+        .filter(books::Column::Id.eq(later_id))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+    let (resp, active) = harness
+        .send_json_request(bearer(
+            "GET",
+            "/api/v1/progress/active".to_string(),
+            serde_json::json!({}),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        active["data"].is_null() || active["data"]["book_id"] != serde_json::json!(later_id),
+        "{active}"
+    );
     harness.cleanup().await;
 }

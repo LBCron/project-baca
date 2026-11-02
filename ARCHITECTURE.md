@@ -39,18 +39,19 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 | `GET /books/{id}/chapters/{ref}/atomic-cards`, `.../recap` | none | `ref` is a chapter number or chapter UUID; 404 for unpublished books |
 | `POST /books/{id}/quotes/search` | optional bearer | AI limiter; HNSW cosine search scoped `WHERE book_id = $1` |
 | `POST /quotes/save`, `POST /quotes/save-batch`, `GET /quotes`, `GET /quotes/{id}/card` | bearer | duplicate save returns the existing row with 200 `saved:false`; batch up to 50 with per-item outcome; card is owner-only SVG |
-| `GET /progress/active`, `PUT /progress/{book_id}`, `POST /progress/merge` | bearer | merge is transactional, capped at 100 records, `GREATEST` percentage |
+| `GET /progress/active`, `PUT /progress/{book_id}`, `POST /progress/merge` | bearer | published books only (404 otherwise; active skips books unpublished later); merge is transactional, capped at 100 records, `GREATEST` percentage |
 | `POST /activity/heartbeat` | bearer | one rewarded heartbeat per user per 60 s (atomic `SET NX EX`), credit clamped to 90 s |
 | `GET /badges` | none | badge catalog |
-| `GET /admin/books`, `POST /admin/books/upload`, `PATCH /admin/books/{id}`, `GET /admin/jobs/{id}`, `GET /admin/dlq`, `POST /admin/dlq/{id}/replay`, `GET /admin/analytics/drop-off` | bearer, role `admin` re-read from the user row | upload: `.epub`, 50 MB, 202 with job id and a stream event; status changes follow `BookStatus::can_transition_to` (409 otherwise) |
+| `GET /admin/books`, `POST /admin/books/upload`, `PATCH /admin/books/{id}`, `GET /admin/jobs/{id}`, `GET /admin/dlq`, `POST /admin/dlq/{id}/replay`, `GET /admin/analytics/drop-off` | bearer, role `admin` re-read from the user row | upload: `.epub`, 50 MB (the only route above axum's 2 MB body default), 202 with job id and a stream event; status changes follow `BookStatus::can_transition_to` (409 otherwise) |
 | `/swagger-ui`, `/api-docs/openapi.json` (root) | none | not mounted when `APP_ENV=production`; no edge route |
 
 Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias no longer exists.
 
 ## 4. Security model
 
-- Passwords: Argon2id (19 MiB, 2 iterations). OTP: six digits, SHA-256 in Redis, 10 min TTL, three attempts then a 5 min lock.
-- Tokens: HS256 access token (1440 min in dev, 60 min in production compose); refresh token stored as a SHA-256 hash with a session record (device label, IP prefix, last access `jti`), rotated atomically (`GETDEL`, 30 s grace for concurrent tabs); a replayed token revokes the family including access tokens. Logout and per-device revocation blacklist the last access `jti`.
+- Passwords: Argon2id (19 MiB, 2 iterations). OTP: six digits, SHA-256 in Redis, 10 min TTL; attempts are counted with an atomic `INCR` before the comparison, three misses lock the code for 5 min.
+- Signup: emails are trimmed and lowercased at deserialization, so case variants are one account and one lockout key; a concurrent duplicate answers 409. While a code is pending, a signup with a different password answers 429 until it expires, so nobody can plant a password on someone else's registration; the same password gets a fresh code.
+- Tokens: HS256 access token (1440 min in dev, 60 min in production compose); refresh token stored as a SHA-256 hash with a session record (device label, IP prefix, last access `jti`), rotated atomically (`GETDEL`, 30 s grace for concurrent tabs, handing back the successor only while it is still live); a replayed token revokes the family including access tokens. Logout and per-device revocation blacklist the last access `jti`.
 - Lockouts: 5 failures per (email, IP) and 20 per email lock login for 15 min; unverified accounts behave like a wrong password.
 - Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted.
 - Headers: the API sets HSTS, `nosniff`, frame denial, referrer policy, COOP and CORP, a permissions policy, its own CSP, and `Cache-Control: no-store` on `/auth/*` and on every bearer response. Caddy sets the SPA headers, including a CSP with `script-src 'self' 'wasm-unsafe-eval'` and no inline scripts (a Trunk post-build hook moves the bootstrap into a hashed `boot-*.js`).
