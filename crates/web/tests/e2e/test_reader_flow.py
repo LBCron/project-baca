@@ -4,7 +4,7 @@ import json
 import urllib.request
 
 import pytest
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Page, expect
 
 from conftest import (
     API,
@@ -101,8 +101,8 @@ FIRST_PARAGRAPH_ON_PAGE = """n => {
 }"""
 
 
-def _reader_context(browser: Browser, **shim):
-    context = browser.new_context(viewport={"width": 900, "height": 800}, reduced_motion="reduce", color_scheme="dark")
+def _reader_context(new_context, **shim):
+    context = new_context(viewport={"width": 900, "height": 800}, reduced_motion="reduce", color_scheme="dark")
     install_fetch_shim(context, chapters=3, **shim)
     page = context.new_page()
     errors: list[str] = []
@@ -149,9 +149,9 @@ def _reopens_saved_page(page: Page, book_id: str, saved_anchor) -> None:
     assert saved_anchor() == expected, "the saved page is not overwritten by page one"
 
 
-def test_guest_reopens_saved_page_when_position_is_slow(browser: Browser, book_with_chapters: str):
+def test_guest_reopens_saved_page_when_position_is_slow(new_context, book_with_chapters: str):
     book_id = book_with_chapters
-    context, page, errors = _reader_context(browser, delay=[f"/books/{book_id}"])
+    context, page, errors = _reader_context(new_context, delay=[f"/books/{book_id}"])
     try:
         _reopens_saved_page(page, book_id, lambda: (_guest_record(page, book_id) or {}).get("last_anchor_cfi"))
         assert errors == [], errors[:3]
@@ -159,10 +159,10 @@ def test_guest_reopens_saved_page_when_position_is_slow(browser: Browser, book_w
         context.close()
 
 
-def test_account_reopens_saved_page_when_position_is_slow(browser: Browser, book_with_chapters: str):
+def test_account_reopens_saved_page_when_position_is_slow(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     tokens = register_reader("position")
-    context, page, errors = _reader_context(browser, delay=[f"/books/{book_id}", "/progress/active"])
+    context, page, errors = _reader_context(new_context, delay=[f"/books/{book_id}", "/progress/active"])
     context.add_init_script(
         f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
         f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
@@ -174,10 +174,10 @@ def test_account_reopens_saved_page_when_position_is_slow(browser: Browser, book
         context.close()
 
 
-def test_stale_chapter_answer_is_dropped(browser: Browser, book_with_chapters: str):
+def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     chapters = api_get(f"/books/{book_id}")["chapters"]
-    context, page, errors = _reader_context(browser, hold=[f"/books/{book_id}/chapters/2"])
+    context, page, errors = _reader_context(new_context, hold=[f"/books/{book_id}/chapters/2"])
     try:
         _open(page, book_id)
         page.keyboard.press("End")
@@ -197,9 +197,9 @@ def test_stale_chapter_answer_is_dropped(browser: Browser, book_with_chapters: s
         context.close()
 
 
-def test_leaving_inside_the_debounce_saves_the_new_page(browser: Browser, book_with_chapters: str):
+def test_leaving_inside_the_debounce_saves_the_new_page(new_context, book_with_chapters: str):
     book_id = book_with_chapters
-    context, page, errors = _reader_context(browser)
+    context, page, errors = _reader_context(new_context)
     try:
         _open(page, book_id)
         page.keyboard.press("ArrowRight")
@@ -259,8 +259,8 @@ LOCAL_QUOTES = """() => new Promise(resolve => {
 })"""
 
 
-def _context(browser: Browser, viewport=PHONE, tokens: dict | None = None):
-    context = browser.new_context(viewport=viewport, reduced_motion="reduce", color_scheme="dark")
+def _context(new_context, viewport=PHONE, tokens: dict | None = None):
+    context = new_context(viewport=viewport, reduced_motion="reduce", color_scheme="dark")
     if tokens:
         context.add_init_script(
             f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
@@ -272,10 +272,10 @@ def _context(browser: Browser, viewport=PHONE, tokens: dict | None = None):
     return context, page, errors
 
 
-def test_chapter_drawer_jumps_and_saves_the_position(browser: Browser, book_with_chapters: str):
+def test_chapter_drawer_jumps_and_saves_the_position(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     chapters = api_get(f"/books/{book_id}")["chapters"]
-    context, page, errors = _context(browser)
+    context, page, errors = _context(new_context)
     try:
         _open(page, book_id, settle_ms=1500)
         page.click(".reader-title")
@@ -294,8 +294,8 @@ def test_chapter_drawer_jumps_and_saves_the_position(browser: Browser, book_with
         context.close()
 
 
-def test_chapter_end_card_shows_once_per_chapter(browser: Browser, book_with_chapters: str):
-    context, page, errors = _context(browser)
+def test_chapter_end_card_shows_once_per_chapter(new_context, book_with_chapters: str):
+    context, page, errors = _context(new_context)
     try:
         _open(page, book_with_chapters, settle_ms=1500)
         page.keyboard.press("End")
@@ -330,8 +330,8 @@ def _save_selection(page: Page, index: int = 1) -> str:
     return text
 
 
-def test_selected_text_becomes_a_guest_quote(browser: Browser, book_with_chapters: str):
-    context, page, errors = _context(browser)
+def test_selected_text_becomes_a_guest_quote(new_context, book_with_chapters: str):
+    context, page, errors = _context(new_context)
     try:
         _open(page, book_with_chapters, settle_ms=1500)
         text = _save_selection(page)
@@ -341,9 +341,9 @@ def test_selected_text_becomes_a_guest_quote(browser: Browser, book_with_chapter
         context.close()
 
 
-def test_selected_text_becomes_an_account_quote(browser: Browser, book_with_chapters: str):
+def test_selected_text_becomes_an_account_quote(new_context, book_with_chapters: str):
     tokens = register_reader("quote")
-    context, page, errors = _context(browser, tokens=tokens)
+    context, page, errors = _context(new_context, tokens=tokens)
     try:
         _open(page, book_with_chapters, settle_ms=1500)
         text = _save_selection(page)
@@ -365,8 +365,8 @@ def _search(page: Page, query: str):
     return hits
 
 
-def test_book_search_opens_the_page_that_holds_the_hit(browser: Browser, book_with_chapters: str):
-    context, page, errors = _context(browser)
+def test_book_search_opens_the_page_that_holds_the_hit(new_context, book_with_chapters: str):
+    context, page, errors = _context(new_context)
     try:
         _open(page, book_with_chapters, settle_ms=1500)
         hits = _search(page, "surat")
@@ -382,9 +382,9 @@ def test_book_search_opens_the_page_that_holds_the_hit(browser: Browser, book_wi
         context.close()
 
 
-def test_book_search_works_offline_from_the_saved_copy(browser: Browser, book_with_chapters: str):
+def test_book_search_works_offline_from_the_saved_copy(new_context, book_with_chapters: str):
     book_id = book_with_chapters
-    context, page, errors = _context(browser)
+    context, page, errors = _context(new_context)
     try:
         page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
         save = '[aria-label="Save for offline reading"]'
