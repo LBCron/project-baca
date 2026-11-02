@@ -4,8 +4,12 @@
 # image serve any DOMAIN; override with --build-arg API_BASE_URL=... when the
 # API lives elsewhere.
 FROM rust:1.94-bookworm AS webbuild
+# Prebuilt Trunk, pinned like CI (.github/workflows/ci.yml): compiling the
+# latest one needs a newer rustc than this image and takes minutes.
+ARG TRUNK_VERSION=v0.22.1
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk --locked
+    && curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-$(uname -m)-unknown-linux-gnu.tar.gz" \
+       | tar -xz -C /usr/local/bin
 WORKDIR /app
 COPY Cargo.toml Cargo.lock Makefile ./
 COPY crates ./crates
