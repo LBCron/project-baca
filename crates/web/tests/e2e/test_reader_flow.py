@@ -102,7 +102,7 @@ FIRST_PARAGRAPH_ON_PAGE = """n => {
 
 
 def _reader_context(new_context, **shim):
-    context = new_context(viewport={"width": 900, "height": 800}, reduced_motion="reduce", color_scheme="dark")
+    context = new_context(viewport={"width": 900, "height": 800}, reduced_motion="reduce")
     install_fetch_shim(context, chapters=3, **shim)
     page = context.new_page()
     errors: list[str] = []
@@ -260,7 +260,7 @@ LOCAL_QUOTES = """() => new Promise(resolve => {
 
 
 def _context(new_context, viewport=PHONE, tokens: dict | None = None):
-    context = new_context(viewport=viewport, reduced_motion="reduce", color_scheme="dark")
+    context = new_context(viewport=viewport, reduced_motion="reduce")
     if tokens:
         context.add_init_script(
             f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
