@@ -1,0 +1,25 @@
+[package]
+name = "rotaria-app"
+version = "0.1.0"
+edition = "2021"
+description = "Rotaria as an Android, iOS, and desktop app: the web bundle inside a Tauri shell"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aprxty3/project-baca"
+publish = false
+
+# Its own workspace: the root workspace (and `make check`) stays free of the
+# WebView toolchain this crate needs.
+[workspace]
+
+[lib]
+name = "rotaria_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+serde_json = "1"
+uuid = "1"

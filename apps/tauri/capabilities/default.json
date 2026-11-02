@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The reader window loads only the bundled web app; it calls no Tauri command.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

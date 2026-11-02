@@ -209,6 +209,28 @@ build-web:
 	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --cargo-profile wasm-release --public-url / --dist $(WEB_DIST)
 	@python3 scripts/check_bundle_budget.py $(WEB_DIST)
 
+# Tauri shell (apps/tauri, `cargo install tauri-cli --version "^2" --locked`).
+# The app injects APP_API_BASE as window.__ROTARIA_API__; desktop needs
+# webkit2gtk-4.1, Android needs ANDROID_HOME, NDK_HOME, and JAVA_HOME, and an
+# emulator reaches the host API at 10.0.2.2.
+APP_API_BASE ?= http://localhost:8080/api/v1
+APP_ANDROID_API_BASE ?= http://10.0.2.2:8080/api/v1
+APP_ANDROID_TARGET ?= x86_64
+app-dev:
+	@cd apps/tauri && ROTARIA_API_BASE=$(APP_API_BASE) cargo tauri dev
+
+app-build:
+	@cd apps/tauri && ROTARIA_API_BASE=$(APP_API_BASE) cargo tauri build
+
+app-test:
+	@cd apps/tauri && cargo test
+
+app-android-dev:
+	@cd apps/tauri && ROTARIA_API_BASE=$(APP_ANDROID_API_BASE) cargo tauri android dev
+
+app-android-build:
+	@cd apps/tauri && ROTARIA_API_BASE=$(APP_ANDROID_API_BASE) cargo tauri android build --apk --debug --target $(APP_ANDROID_TARGET)
+
 # Production compose stack (see .env.production.example). Dev stack stays
 # on docker-compose.yml with host ports 5433/6380/9005/9006.
 prod-build:
@@ -243,5 +265,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

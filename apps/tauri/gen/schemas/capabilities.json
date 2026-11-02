@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"The reader window loads only the bundled web app; it calls no Tauri command.","local":true,"windows":["main"],"permissions":["core:default"]}}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Rotaria",
+  "version": "0.1.0",
+  "identifier": "io.github.aprxty3.rotaria",
+  "build": {
+    "frontendDist": "../../crates/web/dist",
+    "devUrl": "http://127.0.0.1:3000",
+    "beforeDevCommand": { "script": "make dev-web", "cwd": "../..", "wait": false },
+    "beforeBuildCommand": { "script": "make build-web", "cwd": "../.." }
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https: http://localhost:8080 http://10.0.2.2:8080; connect-src 'self' ipc: http://ipc.localhost https: http://localhost:8080 http://10.0.2.2:8080; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "category": "Education",
+    "shortDescription": "Public-domain books on a paper-like page",
+    "license": "MIT OR Apache-2.0",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["rotaria"], "appLink": false }],
+      "desktop": { "schemes": ["rotaria"] }
+    }
+  }
+}

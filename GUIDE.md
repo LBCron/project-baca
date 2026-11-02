@@ -20,7 +20,8 @@ Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](AR
 - Trunk (`cargo install trunk`). `cargo-watch` is optional; `make dev-server` falls back to `cargo run`.
 - Docker Compose v2.
 - Python 3.11+ and `uv` (worker and janitor).
-- Web suite: a venv at `~/.venvs/webapp-testing` with `pytest`, `pytest-playwright`, `pillow`, and Playwright Chromium and Firefox installed.
+- Web suite: a venv at `~/.venvs/webapp-testing` from `crates/web/tests/requirements-test.txt`, with Playwright Chromium and Firefox installed.
+- App shell (optional): `cargo install tauri-cli --version "^2" --locked`; desktop needs webkit2gtk-4.1; Android needs the SDK with `ANDROID_HOME`, `NDK_HOME`, and `JAVA_HOME` set.
 
 ## 2. Services (`make db-up`)
 
@@ -64,6 +65,16 @@ make worker            # after make worker-install
 - Every response carries a server-minted `x-request-id`; client values are ignored.
 - Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
+
+App shell:
+
+```bash
+make app-test                         # deep-link routing unit tests
+make app-dev                          # desktop window on the dev API
+make app-android-build                # debug APK (x86_64 emulator) talking to 10.0.2.2:8080
+adb install -r apps/tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> io.github.aprxty3.rotaria
+```
 
 ## 5. Tests
 
