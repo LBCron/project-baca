@@ -142,7 +142,11 @@ fn test_english_counts_take_the_singular_for_one() {
         Lang::En.text_n("minutes_left", 1),
         "~1 minute left in this chapter"
     );
-    assert_eq!(Lang::En.text_n("xp", 1), "1 XP", "no singular row, base text");
+    assert_eq!(
+        Lang::En.text_n("xp", 1),
+        "1 XP",
+        "no singular row, base text"
+    );
     assert_eq!(Lang::Id.text_n("chapters_count", 1), "1 bab");
     assert_eq!(Lang::Id.text_n("streak_days", 1), "1 hari berturut-turut");
 }
