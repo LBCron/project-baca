@@ -96,6 +96,8 @@ graphify-out/2026-*/**
 .graphify/
 .graphify_*
 .graphify_labels.json*
+# Database dumps from scripts/pg_backup.sh hold user data
+backups/
 
 # ------------------------------------------------------------------------------
 # 8. Obsidian Local State & Workspace
