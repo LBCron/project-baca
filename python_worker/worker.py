@@ -22,12 +22,15 @@ import json
 import logging
 import os
 import random
+import signal
 import socket
 import sys
+import threading
 import time
 import urllib.request
 import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -179,6 +182,17 @@ def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     return chunks
 
 
+# Widths of the VARCHAR columns the parsed metadata lands in; an EPUB that
+# overflows them must not fail the job after its embeddings were paid for.
+TITLE_MAX_CHARS = 255
+AUTHOR_MAX_CHARS = 255
+LANGUAGE_MAX_CHARS = 10
+
+
+def clip(value: str, limit: int) -> str:
+    return value.strip()[:limit].rstrip()
+
+
 @dataclass
 class ParsedChapter:
     title: str
@@ -269,9 +283,9 @@ def parse_epub(data: bytes) -> ParsedEpub:
         node = opf.find(path, ns)
         return node.text.strip() if node is not None and node.text else ""
 
-    title = find_text("opf:metadata/dc:title")
-    author = find_text("opf:metadata/dc:creator")
-    language = find_text("opf:metadata/dc:language") or "en"
+    title = clip(find_text("opf:metadata/dc:title"), TITLE_MAX_CHARS)
+    author = clip(find_text("opf:metadata/dc:creator"), AUTHOR_MAX_CHARS)
+    language = clip(find_text("opf:metadata/dc:language"), LANGUAGE_MAX_CHARS) or "en"
 
     manifest: dict[str, tuple[str, str]] = {}
     for item in opf.findall("opf:manifest/opf:item", ns):
@@ -332,7 +346,7 @@ def parse_epub(data: bytes) -> ParsedEpub:
                 break
         chapters.append(
             ParsedChapter(
-                title=heading or f"Chapter {len(chapters) + 1}",
+                title=clip(heading, TITLE_MAX_CHARS) or f"Chapter {len(chapters) + 1}",
                 html=cleaned,
                 text=text,
                 word_count=len(text.split()),
@@ -411,9 +425,16 @@ def backoff_seconds(retry: int, retry_after: str | None = None, jitter: float = 
     return float(retry * retry) * (1.0 + max(0.0, min(jitter, 0.2)))
 
 
-def _gemini_post(url: str, payload: dict, timeout: int = 60, job_id: str = "") -> dict:
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
+
+
+def _gemini_post(
+    url: str, payload: dict, api_key: str, timeout: int = 60, job_id: str = ""
+) -> dict:
     """POSTs to Gemini, retrying transient failures with quadratic backoff.
-    Logs the job id and model, never the URL (it carries the key)."""
+
+    The key travels in `x-goog-api-key`, never in the URL, because
+    `HTTPError` keeps the URL and logs or proxies could then leak it."""
     import urllib.error
 
     body = json.dumps(payload).encode("utf-8")
@@ -421,7 +442,9 @@ def _gemini_post(url: str, payload: dict, timeout: int = 60, job_id: str = "") -
     last_error = "Gemini API unreachable"
     for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
         request = urllib.request.Request(
-            url, data=body, headers={"Content-Type": "application/json"}
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         )
         retry_after = None
         try:
@@ -432,7 +455,9 @@ def _gemini_post(url: str, payload: dict, timeout: int = 60, job_id: str = "") -
                 raise RuntimeError(f"Gemini API rejected the request (HTTP {exc.code})") from exc
             last_error = f"Gemini API unavailable (HTTP {exc.code})"
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
-        except urllib.error.URLError:
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            # A timeout while reading the body is a TimeoutError, not a
+            # URLError, and deserves the same retry as a failed connect.
             last_error = "Gemini API unreachable"
         if attempt == LLM_MAX_ATTEMPTS:
             break
@@ -449,10 +474,7 @@ def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[
     """Returns one embedding vector per input text via batchEmbedContents."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.embedding_model}:batchEmbedContents?key={settings.gemini_api_key}"
-    )
+    url = f"{GEMINI_BASE_URL}{settings.embedding_model}:batchEmbedContents"
     all_vectors: list[list[float]] = []
     for offset in range(0, len(texts), 20):
         batch = texts[offset : offset + 20]
@@ -466,7 +488,7 @@ def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[
                 for text in batch
             ]
         }
-        result = _gemini_post(url, payload, job_id=job_id)
+        result = _gemini_post(url, payload, settings.gemini_api_key, job_id=job_id)
         embeddings = result.get("embeddings", [])
         if len(embeddings) != len(batch):
             raise RuntimeError(f"Embedding batch returned {len(embeddings)} for {len(batch)} texts")
@@ -531,12 +553,9 @@ def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
     """Calls the text LLM and parses the JSON object response."""
     if not settings.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.llm_model}:generateContent?key={settings.gemini_api_key}"
-    )
+    url = f"{GEMINI_BASE_URL}{settings.llm_model}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    result = _gemini_post(url, payload, timeout=120, job_id=job_id)
+    result = _gemini_post(url, payload, settings.gemini_api_key, timeout=120, job_id=job_id)
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -570,6 +589,9 @@ def convert_cover_to_webp(cover_bytes: bytes) -> tuple[bytes, str]:
         return buffer.getvalue(), "image/webp"
 
 
+ARCHIVED_ERROR = "Book is archived; it was not republished"
+
+
 def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
     """Runs the full 5-phase pipeline for one stream message (raises on failure)."""
     import pg8000.dbapi  # noqa: F401  (ensures driver import errors surface here)
@@ -593,12 +615,18 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
         # Metadata backfill: fill only blank admin-provided fields.
         cur.execute(
-            "SELECT title, author, language FROM books WHERE id = %s",
+            "SELECT title, author, language, status FROM books WHERE id = %s",
             (book_id,),
         )
         row = cur.fetchone()
         if row is None:
             raise RuntimeError(f"Book row missing: {book_id}")
+        if row[3] == "archived":
+            # A curator archived it; a replay must neither republish it nor
+            # spend embeddings on it.
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s is archived; ingestion skipped", book_id)
+            return
         updates: dict[str, str] = {}
         if (not row[0] or row[0] == "Unknown") and parsed.title:
             updates["title"] = parsed.title
@@ -745,10 +773,16 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         minutes = max(1, total_words // 200)
         cur.execute(
             """UPDATE books SET total_words = %s, estimated_reading_minutes = %s,
-                      status = 'published', updated_at = NOW() WHERE id = %s""",
+                      status = 'published', updated_at = NOW()
+               WHERE id = %s AND status <> 'archived'""",
             (total_words, minutes, book_id),
         )
+        published = cur.rowcount > 0
         conn.commit()
+        if not published:
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s was archived during ingestion; left archived", book_id)
+            return
         set_job(redis_client, job_id, "published", 100)
         LOG.info("book %s published (%d words)", book_id, total_words)
     finally:
@@ -764,6 +798,75 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
 # Consumer loop
 
+
+class WorkerShutdown(BaseException):
+    """Raised from the SIGTERM/SIGINT handler. A BaseException so the
+    pipeline's `except Exception` guards cannot swallow it."""
+
+
+def _raise_shutdown(signum, _frame) -> None:
+    raise WorkerShutdown(signal.Signals(signum).name)
+
+
+def claim_heartbeat_seconds(reclaim_idle_ms: int) -> float:
+    """Refresh often enough that an entry never looks idle to `XAUTOCLAIM`."""
+    return max(0.2, min(60.0, reclaim_idle_ms / 3000))
+
+
+@contextmanager
+def keep_claimed(redis_client, settings: Settings, consumer: str, msg_id: str):
+    """Keeps a stream entry claimed while its job runs.
+
+    `XAUTOCLAIM` measures idle time from the last delivery, and a long book
+    outlives `RECLAIM_IDLE_MS`; without a refresh another replica would take
+    the entry mid-job and ingest it twice. `XCLAIM ... JUSTID` resets the
+    idle time without counting a delivery."""
+    stop = threading.Event()
+    interval = claim_heartbeat_seconds(settings.reclaim_idle_ms)
+
+    def beat() -> None:
+        while not stop.wait(interval):
+            try:
+                redis_client.xclaim(
+                    settings.stream, settings.group, consumer, 0, [msg_id], justid=True
+                )
+            except Exception as exc:  # noqa: BLE001 - a missed beat is retried
+                LOG.warning("claim refresh for %s failed: %s", msg_id, exc)
+
+    thread = threading.Thread(target=beat, name=f"claim-{msg_id}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def reclaim_idle(redis_client, settings: Settings, consumer: str) -> list:
+    """Takes over one entry idle past `RECLAIM_IDLE_MS` (dead-worker
+    recovery). Redis 7 answers XAUTOCLAIM with three values (next cursor,
+    entries, deleted ids) and Redis 6.2 with two; only the entries matter."""
+    try:
+        reply = redis_client.xautoclaim(
+            settings.stream,
+            settings.group,
+            consumer,
+            min_idle_time=settings.reclaim_idle_ms,
+            start_id="0-0",
+            count=1,
+        )
+    except Exception as exc:  # noqa: BLE001 - reclaim is best-effort
+        LOG.warning("xautoclaim failed: %s", exc)
+        return []
+    return list(reply[1]) if reply and len(reply) > 1 else []
+
+
+def release_job(redis_client, job_id: str) -> None:
+    """Hands an interrupted job back: the attempt does not count, the entry
+    stays pending for another worker, and the curator sees it queued."""
+    redis_client.hincrby(f"job:{job_id}", "attempts", -1)
+    set_job(redis_client, job_id, "queued", 0)
+
 def ensure_group(redis_client, settings: Settings) -> None:
     try:
         redis_client.xgroup_create(
@@ -774,15 +877,19 @@ def ensure_group(redis_client, settings: Settings) -> None:
             raise
 
 
-def run(once: bool = False) -> int:
+def run(once: bool = False, settings: Settings | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    settings = Settings()
+    settings = settings or Settings()
     redis_client = make_redis(settings)
     ensure_group(redis_client, settings)
     consumer = f"{socket.gethostname()}-{os.getpid()}"
     processed = 0
+    # `docker stop` sends SIGTERM and kills ten seconds later; raising here
+    # interrupts even a blocking Gemini call, so the job is released in time.
+    signal.signal(signal.SIGTERM, _raise_shutdown)
+    signal.signal(signal.SIGINT, _raise_shutdown)
 
     while True:
         try:
@@ -796,22 +903,7 @@ def run(once: bool = False) -> int:
             continue
         entries = [entry for _, batch in (messages or []) for entry in batch]
         if not entries:
-            # Reclaim entries idle over 5 min (dead-worker recovery).
-            try:
-                _, entries = (
-                    redis_client.xautoclaim(
-                        settings.stream,
-                        settings.group,
-                        consumer,
-                        min_idle_time=settings.reclaim_idle_ms,
-                        start_id="0-0",
-                        count=1,
-                    )
-                    or (None, [])
-                )
-            except Exception as exc:  # noqa: BLE001 - reclaim is best-effort
-                LOG.warning("xautoclaim failed: %s", exc)
-                entries = []
+            entries = reclaim_idle(redis_client, settings, consumer)
         if not entries:
             if once:
                 break
@@ -824,9 +916,14 @@ def run(once: bool = False) -> int:
                 except (TypeError, ValueError):
                     attempts = 0
                 try:
-                    process_message(msg_id, fields, settings)
+                    with keep_claimed(redis_client, settings, consumer, msg_id):
+                        process_message(msg_id, fields, settings)
                     redis_client.xack(settings.stream, settings.group, msg_id)
                     processed += 1
+                except WorkerShutdown:
+                    release_job(redis_client, job_id)
+                    LOG.info("shutdown: job %s released unacknowledged", job_id)
+                    raise
                 except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
                     LOG.exception("job %s failed: %s", job_id, exc)
                     if attempts >= 3:
@@ -849,7 +946,11 @@ def dead_letter(redis_client, settings: Settings, job_id: str, exc: Exception) -
 
 
 def main() -> None:
-    sys.exit(run(once="--once" in sys.argv[1:]))
+    try:
+        sys.exit(run(once="--once" in sys.argv[1:]))
+    except WorkerShutdown as reason:
+        LOG.info("worker stopped by %s", reason)
+        sys.exit(0)
 
 
 if __name__ == "__main__":

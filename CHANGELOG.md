@@ -5,6 +5,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Fixed
+- Ingestion worker: dead-worker recovery works on Redis 7 (`XAUTOCLAIM` answers with three values and was never unpacked); a running job keeps its claim, so a long book is not ingested twice; SIGTERM releases the active job within the stop grace; replaying a dead letter is atomic; archived books are never republished; oversized EPUB metadata is clipped instead of failing the job; read timeouts are retried; the Gemini key moved from the URL to `x-goog-api-key`.
 - Redis restarts no longer break login and bearer routes until an API restart: one reconnecting handle serves every request, an outage answers 503 instead of 401, and the next request after recovery reconnects. In production the server exits when Postgres or Redis is unreachable at boot; S3 calls stop after 15 s; request-id spans no longer leak across awaits.
 
 ### Security

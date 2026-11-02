@@ -96,6 +96,8 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     restart: always
+    # tini as PID 1 forwards SIGTERM to the worker, which releases its job.
+    init: true
     depends_on:
       postgres:
         condition: service_healthy

@@ -1050,3 +1050,76 @@ async fn test_admin_json_routes_keep_the_default_body_limit() {
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
     harness.cleanup().await;
 }
+
+/// Two replays of one dead letter at once re-queue it exactly once.
+#[tokio::test]
+async fn test_concurrent_dlq_replays_requeue_once() {
+    use redis::AsyncCommands;
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
+    let ctx = seed_users(&harness).await;
+    let job_id = Uuid::new_v4().to_string();
+    let book_id = Uuid::new_v4();
+    let _: () = redis
+        .hset_multiple(
+            format!("job:{job_id}"),
+            &[
+                ("status", "failed"),
+                ("book_id", book_id.to_string().as_str()),
+                ("storage_path", format!("raw-epubs/{book_id}.epub").as_str()),
+            ],
+        )
+        .await
+        .unwrap();
+    let entry_id: String = redis
+        .xadd(
+            infra::INGESTION_DLQ_STREAM,
+            "*",
+            &[("job_id", job_id.as_str()), ("error", "probe failure")],
+        )
+        .await
+        .unwrap();
+    let replay = || {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/admin/dlq/{entry_id}/replay"))
+            .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (a, b) = tokio::join!(
+        harness.send_request(replay()),
+        harness.send_request(replay())
+    );
+    let mut statuses = [a.status(), b.status()];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::NOT_FOUND]);
+
+    let main: redis::streams::StreamRangeReply = redis
+        .xrevrange_count(infra::INGESTION_STREAM, "+", "-", 100)
+        .await
+        .unwrap();
+    let requeued: Vec<String> = main
+        .ids
+        .iter()
+        .filter(|e| {
+            e.map
+                .get("job_id")
+                .and_then(|v| redis::from_redis_value::<String>(v).ok())
+                .as_deref()
+                == Some(job_id.as_str())
+        })
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(requeued.len(), 1, "exactly one re-queued entry");
+    let _: () = redis
+        .xdel(infra::INGESTION_STREAM, &requeued)
+        .await
+        .unwrap();
+    let _: () = redis.del(format!("job:{job_id}")).await.unwrap();
+    harness.cleanup().await;
+}

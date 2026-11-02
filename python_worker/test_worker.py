@@ -190,7 +190,7 @@ class RetryAndRecapTests(unittest.TestCase):
 
         with mock.patch.object(worker.urllib.request, "urlopen", fake_urlopen), \
              mock.patch.object(worker.time, "sleep") as sleep:
-            result = worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {}, job_id="j1")
+            result = worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k", job_id="j1")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 3)
         self.assertEqual([round(c.args[0]) for c in sleep.call_args_list], [2, 2], "Retry-After drives the wait")
@@ -202,7 +202,7 @@ class RetryAndRecapTests(unittest.TestCase):
         with mock.patch.object(worker.urllib.request, "urlopen", always_busy), \
              mock.patch.object(worker.time, "sleep") as sleep, \
              self.assertRaises(RuntimeError):
-            worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {})
+            worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k")
         self.assertEqual(sleep.call_count, worker.LLM_MAX_ATTEMPTS - 1)
 
         def forbidden(request, timeout):
@@ -211,7 +211,7 @@ class RetryAndRecapTests(unittest.TestCase):
         with mock.patch.object(worker.urllib.request, "urlopen", forbidden), \
              mock.patch.object(worker.time, "sleep") as sleep, \
              self.assertRaises(RuntimeError):
-            worker._gemini_post("https://x/v1beta/models/m:generateContent?key=k", {})
+            worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k")
         self.assertEqual(sleep.call_count, 0, "client errors are not retried")
 
     def test_recap_input_lists_earlier_chapters_then_current_text(self):
@@ -243,3 +243,136 @@ class StreamCapTest(unittest.TestCase):
         self.assertEqual(args[0], "stream:epub_ingestion:dlq")
         self.assertEqual(args[1], {"job_id": "job-1", "error": "boom"})
         self.assertEqual(kwargs, {"maxlen": 10_000, "approximate": True})
+
+
+class GeminiTransportTest(unittest.TestCase):
+    def capture(self):
+        seen = []
+
+        def fake_urlopen(request, timeout):
+            seen.append(request)
+            return io.BytesIO(b'{"embeddings": [{"values": [0.5, 0.5]}], "candidates": [{"content": {"parts": [{"text": "{}"}]}}]}')
+
+        return seen, fake_urlopen
+
+    def test_key_travels_in_a_header_never_the_url(self):
+        settings = worker.Settings(gemini_api_key="secret-key", embedding_dim=2)
+        seen, fake = self.capture()
+        with mock.patch.object(worker.urllib.request, "urlopen", fake):
+            worker.embed_batch(["one"], settings)
+            worker.generate_json("prompt", settings)
+        self.assertEqual(len(seen), 2)
+        for request in seen:
+            self.assertNotIn("key=", request.full_url)
+            self.assertNotIn("secret-key", request.full_url)
+            self.assertEqual(request.get_header("X-goog-api-key"), "secret-key")
+
+    def test_read_phase_timeouts_are_retried(self):
+        calls = []
+
+        def slow_then_ok(request, timeout):
+            calls.append(1)
+            if len(calls) == 1:
+                raise TimeoutError("The read operation timed out")
+            if len(calls) == 2:
+                raise ConnectionResetError("peer reset")
+            return io.BytesIO(b'{"ok": true}')
+
+        with mock.patch.object(worker.urllib.request, "urlopen", slow_then_ok), \
+             mock.patch.object(worker.time, "sleep"):
+            self.assertEqual(worker._gemini_post("https://x/models/m:generateContent", {}, "k"), {"ok": True})
+        self.assertEqual(len(calls), 3)
+
+
+class ColumnWidthTest(unittest.TestCase):
+    def test_oversized_metadata_is_clipped_to_column_widths(self):
+        long_title = "T" * 400
+        data = make_epub([("H" * 300, "Body words here.")], title=long_title, language="x" * 30)
+        parsed = parse_epub(data)
+        self.assertEqual(len(parsed.title), worker.TITLE_MAX_CHARS)
+        self.assertEqual(len(parsed.language), worker.LANGUAGE_MAX_CHARS)
+        self.assertLessEqual(len(parsed.chapters[0].title), worker.TITLE_MAX_CHARS)
+
+
+class FakeCursor:
+    """Answers the pipeline's first SELECT with a fixed book row."""
+
+    def __init__(self, status):
+        self.status = status
+        self.statements = []
+        self.rowcount = 0
+
+    def execute(self, sql, params=()):
+        self.statements.append(sql)
+
+    def fetchone(self):
+        return ("Title", "Author", "en", self.status)
+
+    def close(self):
+        pass
+
+
+class ArchivedBookTest(unittest.TestCase):
+    def test_archived_book_is_skipped_before_any_paid_call(self):
+        cursor = FakeCursor("archived")
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        redis_client = mock.Mock()
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        with mock.patch.object(worker, "make_redis", return_value=redis_client), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch") as embed, \
+             mock.patch.object(worker, "generate_json") as generate:
+            worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        embed.assert_not_called()
+        generate.assert_not_called()
+        self.assertFalse(any("status = 'published'" in sql for sql in cursor.statements))
+        last_status = redis_client.hset.call_args.kwargs["mapping"]
+        self.assertEqual(last_status["status"], "failed")
+        self.assertEqual(last_status["error"], worker.ARCHIVED_ERROR)
+
+
+class ClaimAndShutdownTest(unittest.TestCase):
+    def test_heartbeat_stays_inside_the_reclaim_window(self):
+        self.assertEqual(worker.claim_heartbeat_seconds(300_000), 60.0)
+        self.assertLess(worker.claim_heartbeat_seconds(2_000), 2.0)
+        self.assertGreater(worker.claim_heartbeat_seconds(0), 0.0, "no busy loop at idle 0")
+
+    def test_keep_claimed_refreshes_the_entry_while_the_job_runs(self):
+        client = mock.Mock()
+        settings = worker.Settings(reclaim_idle_ms=900)
+        with worker.keep_claimed(client, settings, "c1", "5-0"):
+            worker.time.sleep(1.0)
+        self.assertGreaterEqual(client.xclaim.call_count, 2)
+        args, kwargs = client.xclaim.call_args
+        self.assertEqual(args, (settings.stream, settings.group, "c1", 0, ["5-0"]))
+        self.assertEqual(kwargs, {"justid": True})
+        calls = client.xclaim.call_count
+        worker.time.sleep(0.5)
+        self.assertEqual(client.xclaim.call_count, calls, "heartbeat stops with the job")
+
+    def test_shutdown_is_not_swallowed_by_pipeline_guards(self):
+        self.assertFalse(issubclass(worker.WorkerShutdown, Exception))
+
+    def test_released_job_does_not_burn_an_attempt(self):
+        client = mock.Mock()
+        worker.release_job(client, "j9")
+        client.hincrby.assert_called_once_with("job:j9", "attempts", -1)
+        self.assertEqual(client.hset.call_args.kwargs["mapping"]["status"], "queued")
+
+
+class ReclaimTest(unittest.TestCase):
+    def test_reclaim_reads_entries_from_redis7_and_redis62_replies(self):
+        entry = ("7-0", {"job_id": "j"})
+        for reply in (["0-0", [entry], []], ["0-0", [entry]]):
+            client = mock.Mock()
+            client.xautoclaim.return_value = reply
+            self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), [entry])
+
+    def test_reclaim_failure_is_not_fatal(self):
+        client = mock.Mock()
+        client.xautoclaim.side_effect = RuntimeError("NOGROUP")
+        self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), [])

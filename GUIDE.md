@@ -77,7 +77,7 @@ make worker            # after make worker-install
 | `make test-live` | the 9 ignored live tests, single-threaded | `db-up` |
 | `make test-performance`, `make test-performance-release` | 4 p95 latency benchmarks | `db-up`, idle machine |
 | `make test-load-stress` | 200 concurrent tasks and rate-limit saturation | `db-up` |
-| `make worker-test`, `make worker-test-live` | 16 worker unit tests; DLQ end-to-end | nothing; `db-up` |
+| `make worker-test`, `make worker-test-live` | 27 worker unit tests; dead letters, claim refresh, and SIGTERM release on probe streams | nothing; `db-up` |
 | `make test-web` | `cargo test -p web --lib` plus Playwright e2e, component, integration | `db-up`, API on :8080, web on :3000, Mailpit |
 | `make test-web-full` | adds visual goldens, axe a11y, Firefox smoke, and the inline-script check on `crates/web/dist` | same |
 | `make test-all` | `cargo test --workspace` (includes performance and load) | `db-up` |

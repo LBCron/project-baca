@@ -28,20 +28,40 @@ fn job_key(job_id: &str) -> String {
     format!("{JOB_KEY_PREFIX}{job_id}")
 }
 
+/// Field layout of one ingestion stream entry (see the module docs).
+fn entry_fields<'a>(
+    book_id: &'a str,
+    storage_path: &'a str,
+    job_id: &'a str,
+    timestamp: &'a str,
+) -> [(&'static str, &'a str); 4] {
+    [
+        ("book_id", book_id),
+        ("storage_path", storage_path),
+        ("job_id", job_id),
+        ("timestamp", timestamp),
+    ]
+}
+
 /// `XADD` of one job onto the capped ingestion stream.
 fn ingestion_entry(book_id: &str, storage_path: &str, job_id: &str, timestamp: &str) -> redis::Cmd {
     let mut cmd = redis::cmd("XADD");
     cmd.arg(INGESTION_STREAM)
         .arg(StreamMaxlen::Approx(STREAM_MAXLEN))
         .arg("*")
-        .arg(&[
-            ("book_id", book_id),
-            ("storage_path", storage_path),
-            ("job_id", job_id),
-            ("timestamp", timestamp),
-        ]);
+        .arg(&entry_fields(book_id, storage_path, job_id, timestamp));
     cmd
 }
+
+/// KEYS: dead-letter stream, ingestion stream. ARGV: entry id, MAXLEN, then
+/// field/value pairs. Returns the new entry id, or nil when the entry was
+/// already gone.
+const MOVE_DEAD_LETTER: &str = r#"
+if redis.call('XDEL', KEYS[1], ARGV[1]) == 0 then
+  return false
+end
+return redis.call('XADD', KEYS[2], 'MAXLEN', '~', ARGV[2], '*', unpack(ARGV, 3))
+"#;
 
 /// Publishes an EPUB ingestion job: appends to the stream and initializes the
 /// job-status hash. Returns the new `job_id`.
@@ -189,11 +209,22 @@ pub async fn replay_dlq_entry(
     };
 
     let now = chrono::Utc::now().to_rfc3339();
-    let _: String = ingestion_entry(book_id, storage_path, &job_id, &now)
-        .query_async(conn)
+    // Removal and re-queue are one Lua step: of two concurrent replays only
+    // the one whose XDEL removed the entry re-queues it, and no failure can
+    // fall between the two commands and lose the dead letter.
+    let requeued: Option<String> = redis::Script::new(MOVE_DEAD_LETTER)
+        .key(INGESTION_DLQ_STREAM)
+        .key(INGESTION_STREAM)
+        .arg(entry_id)
+        .arg(STREAM_MAXLEN)
+        .arg(&entry_fields(book_id, storage_path, &job_id, &now))
+        .invoke_async(conn)
         .await
-        .map_err(|e| AppError::Internal(format!("Stream publish failed: {e}")))?;
-    let _: () = conn
+        .map_err(|e| AppError::Internal(format!("DLQ replay failed: {e}")))?;
+    if requeued.is_none() {
+        return Ok(None);
+    }
+    let _: () = redis::pipe()
         .hset_multiple(
             job_key(&job_id),
             &[
@@ -204,16 +235,12 @@ pub async fn replay_dlq_entry(
                 ("updated_at", now.as_str()),
             ],
         )
+        .ignore()
+        .expire(job_key(&job_id), JOB_TTL_SECS as i64)
+        .ignore()
+        .query_async(conn)
         .await
         .map_err(|e| AppError::Internal(format!("Job hash reset failed: {e}")))?;
-    let _: () = conn
-        .expire(job_key(&job_id), JOB_TTL_SECS as i64)
-        .await
-        .map_err(|e| AppError::Internal(format!("Job TTL set failed: {e}")))?;
-    let _: () = conn
-        .xdel(INGESTION_DLQ_STREAM, &[entry_id])
-        .await
-        .map_err(|e| AppError::Internal(format!("DLQ acknowledge failed: {e}")))?;
     Ok(Some(job_id))
 }
 
