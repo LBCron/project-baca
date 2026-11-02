@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod config;
+pub mod counter;
 pub mod email;
 pub mod entities;
 pub mod pool;
@@ -15,6 +16,7 @@ pub use config::{
     AiConfig, AppConfig, AuthConfig, DatabaseConfig, EmailConfig, RedisConfig, ServerConfig,
     SmtpSecurity, StorageConfig,
 };
+pub use counter::hit_window;
 pub use email::send_otp_email;
 pub use pool::{
     init_db_pool, init_redis_client, init_redis_conn, RedisConn, REDIS_RETRY_AFTER_SECS,

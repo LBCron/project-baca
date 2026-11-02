@@ -10,8 +10,10 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use infra::{verify_access_token, ServerConfig};
-use redis::AsyncCommands;
+use infra::{
+    hit_window, is_token_blacklisted, is_user_token_revoked, verify_access_token, Claims,
+    ServerConfig,
+};
 use shared::{ApiResponse, AppError};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -22,7 +24,7 @@ use std::sync::Arc;
 pub struct RateLimitPolicy {
     pub key_prefix: &'static str,
     pub max_requests: i64,
-    pub window_seconds: i64,
+    pub window_seconds: u64,
     pub error_code: &'static str,
     pub subject_label: &'static str,
 }
@@ -118,18 +120,13 @@ async fn enforce(
             return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
         }
     };
-    let count: i64 = match redis_conn.incr(&redis_key, 1).await {
-        Ok(c) => c,
+    let (count, ttl) = match hit_window(&mut redis_conn, &redis_key, policy.window_seconds).await {
+        Ok(hit) => hit,
         Err(_) => {
             return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
         }
     };
-
-    let mut ttl: i64 = redis_conn.ttl(&redis_key).await.unwrap_or(-1);
-    if ttl <= 0 {
-        let _: Result<(), _> = redis_conn.expire(&redis_key, policy.window_seconds).await;
-        ttl = policy.window_seconds;
-    }
+    let ttl = ttl.max(1);
     let remaining = (policy.max_requests - count).max(0);
 
     if count > policy.max_requests {
@@ -167,25 +164,43 @@ pub async fn rate_limit_middleware(
     enforce(&state, AUTH_POLICY, &ip, req, next).await
 }
 
-/// Caps embedding-backed search: signed-in users by id, guests by IP. The
-/// token is only read for bucketing, so revocation is left to the handler.
+/// Caps embedding-backed search: signed-in users by id, guests by IP. A
+/// revoked token buys no per-user bucket; it counts as a guest.
 pub async fn ai_rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let user_id = req
+    let claims = req
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(|token| verify_access_token(token, state.config.jwt_secret()).ok())
-        .map(|claims| claims.sub.to_string());
+        .and_then(|token| verify_access_token(token, state.config.jwt_secret()).ok());
+    let user_id = match claims {
+        Some(claims) if token_still_live(&state, &claims).await => Some(claims.sub),
+        _ => None,
+    };
     let subject = match user_id {
         Some(id) => format!("user:{id}"),
         None => format!("guest:{}", extract_client_ip(&req, &state.config.server)),
     };
     enforce(&state, AI_POLICY, &subject, req, next).await
+}
+
+/// False when the token was blacklisted or its user revoked after issue.
+/// A Redis error also answers false; `enforce` then fails closed on its own.
+async fn token_still_live(state: &AppState, claims: &Claims) -> bool {
+    let Ok(mut redis) = state.get_redis_conn().await else {
+        return false;
+    };
+    matches!(
+        is_token_blacklisted(&mut redis, claims.jti).await,
+        Ok(false)
+    ) && matches!(
+        is_user_token_revoked(&mut redis, claims.sub, claims.iat).await,
+        Ok(false)
+    )
 }
 
 /// Caps unauthenticated catalog and insight reads per IP. Mounted only when

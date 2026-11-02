@@ -41,7 +41,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `CORS_ALLOWED_ORIGINS` | localhost:3000 origins | comma-separated allowlist |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-IP cap on unauthenticated reads; production compose sets 600 |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-IP cap on unauthenticated reads; production compose sets 600, and production refuses a cap without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
 | `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |

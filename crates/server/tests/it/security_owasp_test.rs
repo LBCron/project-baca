@@ -755,3 +755,86 @@ async fn test_public_rate_limit_caps_catalog_reads_when_configured() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     harness.cleanup().await;
 }
+
+/// Counter keys always carry a TTL after a request, including one that a
+/// failed `EXPIRE` once left without any.
+#[tokio::test]
+async fn test_counter_keys_always_expire() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_test_ip();
+    let email = format!("ttl_{}@example.com", uuid::Uuid::new_v4());
+    let limiter_key = format!("rate_limit:auth:{ip}");
+    let _: () = redis.set(&limiter_key, 3).await.unwrap();
+
+    let login = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "email": email, "password": "WrongGuess123!" }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        harness.send_request(login).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    for key in [
+        limiter_key,
+        format!("auth:login:fail:{email}:{ip}"),
+        format!("auth:login:fail:{email}"),
+    ] {
+        let ttl: i64 = redis.ttl(&key).await.unwrap();
+        assert!(ttl > 0, "{key} has ttl {ttl}");
+    }
+    harness.cleanup().await;
+}
+
+/// A revoked token earns no per-user AI bucket: the hit lands in the guest
+/// bucket of the caller's address.
+#[tokio::test]
+async fn test_revoked_token_counts_in_the_guest_ai_bucket() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = unique_test_ip();
+    let (access, refresh) =
+        common::provision_verified_user(&harness, &mut redis, "aibucket", &ip).await;
+    let claims = infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
+    let logout = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/logout")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "refresh_token": refresh }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(harness.send_request(logout).await.status(), StatusCode::OK);
+
+    let user_key = format!("rate_limit:ai:user:{}", claims.sub);
+    let guest_key = format!("rate_limit:ai:guest:{ip}");
+    let _: () = redis.del(&[&user_key, &guest_key]).await.unwrap();
+    let search = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/books/{}/quotes/search",
+            uuid::Uuid::new_v4()
+        ))
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "query": "laut" }).to_string(),
+        ))
+        .unwrap();
+    harness.send_request(search).await;
+
+    let user_hits: Option<i64> = redis.get(&user_key).await.unwrap();
+    let guest_hits: Option<i64> = redis.get(&guest_key).await.unwrap();
+    assert_eq!(user_hits, None);
+    assert_eq!(guest_hits, Some(1));
+    harness.cleanup().await;
+}

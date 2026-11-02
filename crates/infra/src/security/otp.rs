@@ -91,25 +91,11 @@ pub async fn verify_and_consume_otp(
         return Ok(false);
     };
 
-    let (attempt,): (i64,) = redis::pipe()
-        .atomic()
-        .cmd("SET")
-        .arg(attempts_key(email))
-        .arg(0)
-        .arg("NX")
-        .arg("EX")
-        .arg(OTP_TTL_SECONDS)
-        .ignore()
-        .incr(attempts_key(email), 1)
-        .query_async(redis)
+    let (attempt, ttl) = crate::hit_window(redis, &attempts_key(email), OTP_TTL_SECONDS)
         .await
         .map_err(|e| redis_error("Redis attempt count failed for OTP", e))?;
 
     if attempt > MAX_OTP_ATTEMPTS {
-        let ttl: i64 = redis
-            .ttl(attempts_key(email))
-            .await
-            .unwrap_or(OTP_LOCK_SECONDS);
         return Err(AppError::RateLimited {
             retry_after: ttl.max(1) as u64,
         });

@@ -16,8 +16,8 @@ use chrono::Utc;
 use infra::{
     activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
     entities::users, find_user_by_email, find_user_by_id, generate_and_store_otp,
-    generate_refresh_token, hash_password_async, issue_access_token, list_sessions, otp_key,
-    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
+    generate_refresh_token, hash_password_async, hit_window, issue_access_token, list_sessions,
+    otp_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
     revoke_refresh_token, revoke_session, send_otp_email, store_refresh_token, touch_session,
     update_inactive_credentials, update_user_password, update_user_profile,
     validate_and_rotate_refresh_token, verify_access_token, verify_and_consume_otp,
@@ -107,18 +107,14 @@ async fn issue_token_pair(
 /// at 20 failures per 15 minutes.
 async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
     let pair_fail_key = format!("auth:login:fail:{email}:{ip}");
-    let pair_count: Result<i64, _> = redis.incr(&pair_fail_key, 1).await;
-    if let Ok(c) = pair_count {
-        let _: Result<(), _> = redis.expire(&pair_fail_key, 900).await;
+    if let Ok((c, _)) = hit_window(redis, &pair_fail_key, 900).await {
         if c >= 5 {
             let pair_lock_key = format!("auth:login:lockout:{email}:{ip}");
             let _: Result<(), _> = redis.set_ex(&pair_lock_key, "1", 900).await;
         }
     }
     let email_fail_key = format!("auth:login:fail:{email}");
-    let email_count: Result<i64, _> = redis.incr(&email_fail_key, 1).await;
-    if let Ok(c) = email_count {
-        let _: Result<(), _> = redis.expire(&email_fail_key, 900).await;
+    if let Ok((c, _)) = hit_window(redis, &email_fail_key, 900).await {
         if c >= 20 {
             let email_lock_key = format!("auth:login:lockout:{email}");
             let _: Result<(), _> = redis.set_ex(&email_lock_key, "1", 900).await;
@@ -191,12 +187,13 @@ pub async fn signup(
     // client cannot burn SMTP quota or sender reputation at will.
     let client_ip = client_ip_from_headers(&headers, &state.config.server);
     let ip_key = format!("otp:signup:ip:{client_ip}");
-    let ip_count: Result<i64, _> = redis_conn.incr(&ip_key, 1).await;
-    if let Ok(c) = ip_count {
-        let _: Result<(), _> = redis_conn.expire(&ip_key, 3600).await;
-        if c > 10 {
-            return Err(HttpError(AppError::RateLimited { retry_after: 3600 }));
-        }
+    let (ip_count, ip_ttl) = hit_window(&mut redis_conn, &ip_key, 3600)
+        .await
+        .map_err(redis_unavailable)?;
+    if ip_count > 10 {
+        return Err(HttpError(AppError::RateLimited {
+            retry_after: ip_ttl.max(1) as u64,
+        }));
     }
 
     let existing_user = find_user_by_email(&state.db, &req.email)
@@ -645,9 +642,7 @@ pub async fn change_password(
 
     if !is_valid {
         let fail_key = format!("auth:pwd_change:fail:{}", auth.id);
-        let count: Result<i64, _> = redis_conn.incr(&fail_key, 1).await;
-        if let Ok(c) = count {
-            let _: Result<(), _> = redis_conn.expire(&fail_key, 900).await;
+        if let Ok((c, _)) = hit_window(&mut redis_conn, &fail_key, 900).await {
             if c >= 5 {
                 let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
             }

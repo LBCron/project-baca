@@ -291,18 +291,6 @@ impl AppConfig {
         let redis = RedisConfig { url: redis_url };
 
         let jwt_secret = env::var("JWT_SECRET").unwrap_or(default_auth.jwt_secret.clone());
-        // Fail closed: a default or short secret would let anyone forge tokens,
-        // including admin ones. Trusting proxy headers marks a deployment that
-        // sits behind an edge, so it is held to the production rule too.
-        let internet_facing =
-            server.env.eq_ignore_ascii_case("production") || server.trust_proxy_headers;
-        if internet_facing
-            && (jwt_secret == AuthConfig::default().jwt_secret || jwt_secret.len() < 32)
-        {
-            panic!(
-                "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true"
-            );
-        }
         let access_expiry = env::var("JWT_ACCESS_EXPIRY_MINUTES")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -391,7 +379,7 @@ impl AppConfig {
             dimension: ai_dimension,
         };
 
-        Ok(Self {
+        let config = Self {
             server,
             database,
             redis,
@@ -399,7 +387,33 @@ impl AppConfig {
             storage,
             email,
             ai,
-        })
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Rules a deployment must meet before it may serve. Trusting proxy
+    /// headers marks a process that sits behind an edge, so it is held to
+    /// the production secret rule too.
+    pub fn validate(&self) -> Result<(), AppError> {
+        let internet_facing = self.is_production() || self.server.trust_proxy_headers;
+        let weak_secret = self.auth.jwt_secret == AuthConfig::default().jwt_secret
+            || self.auth.jwt_secret.len() < 32;
+        if internet_facing && weak_secret {
+            // A default or short secret lets anyone forge tokens, admin ones included.
+            return Err(AppError::ValidationError(
+                "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true".to_string(),
+            ));
+        }
+        if self.is_production()
+            && self.server.public_rate_limit_per_minute > 0
+            && !self.server.trust_proxy_headers
+        {
+            return Err(AppError::ValidationError(
+                "PUBLIC_RATE_LIMIT_PER_MINUTE needs TRUST_PROXY_HEADERS=true in production: without the edge address every reader shares one bucket".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Accessor for server port
@@ -475,6 +489,48 @@ mod tests {
         );
         assert_eq!("none".parse::<SmtpSecurity>().unwrap(), SmtpSecurity::None);
         assert!("ssl".parse::<SmtpSecurity>().is_err());
+    }
+
+    fn production() -> AppConfig {
+        let mut config = AppConfig::default();
+        config.server.env = "production".to_string();
+        config.server.trust_proxy_headers = true;
+        config.server.public_rate_limit_per_minute = 600;
+        config.auth.jwt_secret = "a".repeat(48);
+        config
+    }
+
+    #[test]
+    fn production_shape_passes_validation() {
+        assert!(production().validate().is_ok());
+        assert!(
+            AppConfig::default().validate().is_ok(),
+            "development defaults"
+        );
+    }
+
+    #[test]
+    fn weak_secret_is_refused_where_internet_facing() {
+        let mut config = production();
+        config.auth.jwt_secret = AuthConfig::default().jwt_secret;
+        assert!(config.validate().is_err());
+        config.auth.jwt_secret = "short".to_string();
+        assert!(config.validate().is_err());
+
+        let mut behind_edge = AppConfig::default();
+        behind_edge.server.trust_proxy_headers = true;
+        assert!(behind_edge.validate().is_err());
+    }
+
+    #[test]
+    fn public_limit_without_proxy_trust_is_refused_in_production() {
+        let mut config = production();
+        config.server.trust_proxy_headers = false;
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("TRUST_PROXY_HEADERS=true"), "{err}");
+
+        config.server.public_rate_limit_per_minute = 0;
+        assert!(config.validate().is_ok(), "no public cap, nothing to share");
     }
 
     #[test]
