@@ -5,6 +5,7 @@ Trunk on :3000 (`make dev-web`).
 """
 import json
 import re
+import subprocess
 import time
 import urllib.request
 
@@ -102,6 +103,18 @@ def mailpit_otp(email: str, timeout_s: int = 15) -> str:
                     if found:
                         return found.group(1)
     raise AssertionError("OTP email never arrived in Mailpit")
+
+
+@pytest.fixture()
+def reset_signup_cap():
+    """Signup allows ten per hour per address, and every browser test signs
+    up from 127.0.0.1; a full run plus a rerun would trip it. The dev Redis
+    runs in the compose container, as `make seed-dev` assumes for Postgres."""
+    subprocess.run(
+        ["docker", "exec", "project_baca_redis", "redis-cli", "DEL", "otp:signup:ip:127.0.0.1"],
+        capture_output=True,
+        check=False,
+    )
 
 
 def register_reader(tag: str) -> dict:

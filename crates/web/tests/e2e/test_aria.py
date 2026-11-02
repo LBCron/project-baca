@@ -25,7 +25,7 @@ def test_aria_home_structure(clean_page: Page):
         - group "Language":
           - button "ID"
           - button "EN"
-        - button "Switch theme"
+        - button "Switch to the Paper theme"
         - button "Sign In"
     """)
     assert_no_page_errors(page)

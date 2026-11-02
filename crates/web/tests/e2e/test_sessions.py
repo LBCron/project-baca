@@ -3,6 +3,7 @@ import json
 import time
 import urllib.request
 
+import pytest
 from playwright.sync_api import Browser, Page, expect
 
 from conftest import (
@@ -16,6 +17,9 @@ from conftest import (
     mailpit_otp as _mailpit_otp,
     register_reader,
 )
+
+pytestmark = pytest.mark.usefixtures("reset_signup_cap")
+
 
 
 def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str):
