@@ -1399,7 +1399,8 @@ img {
     color: var(--text-faint);
 }
 
-.chapter-row a {
+.chapter-row a,
+.chapter-row button {
     display: flex;
     align-items: center;
     gap: var(--space-3);
@@ -1408,8 +1409,29 @@ img {
     transition: color var(--dur-fast);
 }
 
-.chapter-row a:hover {
+.chapter-row a:hover,
+.chapter-row button:hover {
     color: var(--text);
+}
+
+.chapter-row button {
+    width: 100%;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* Reader drawer: where the reader stands in the book. */
+.chapter-drawer .chapter-row.here {
+    color: var(--text);
+}
+
+.chapter-drawer .chapter-row.here .numeral,
+.chapter-drawer .chapter-row.here .meta {
+    color: var(--accent);
 }
 
 .chapter-row .numeral {
@@ -1791,6 +1813,13 @@ img {
     border-radius: var(--radius-pill);
     text-align: center;
     color: inherit;
+}
+
+button.reader-title {
+    border: 0;
+    background: none;
+    font: inherit;
+    cursor: pointer;
 }
 
 .reader-title .kicker {
@@ -2257,6 +2286,93 @@ img {
 .finale .btn-ghost:hover:not(:disabled) {
     color: var(--r-accent-text);
     border-color: var(--r-accent);
+}
+
+/* Closing card of a chapter: sits on the page like the finale, smaller. */
+.finale.chapter-end h2 {
+    font-size: clamp(1.25rem, 2.6vw, 1.7rem);
+}
+
+.chapter-end .btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* In-book search results. */
+.search-hits {
+    list-style: none;
+    margin: var(--space-3) 0 0;
+    padding: 0;
+    border-top: 1px solid var(--border);
+}
+
+.search-hit {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    min-height: 52px;
+    padding: var(--space-3) 0;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: none;
+    font: inherit;
+    text-align: left;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.search-hit:hover {
+    color: var(--text);
+}
+
+.search-hit .hit-where {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-soft);
+}
+
+.search-hit .hit-text {
+    font-family: var(--font-reading);
+    line-height: 1.5;
+}
+
+.search-hit mark {
+    background: rgba(206, 115, 78, 0.22);
+    color: inherit;
+    border-radius: 3px;
+}
+
+/* A paragraph opened from search glows once. */
+.chapter-body p.search-flash {
+    animation: search-flash 2.4s var(--ease-out);
+}
+
+/* Without motion the glow holds still until the reader script removes it. */
+@media (prefers-reduced-motion: reduce) {
+    .chapter-body p.search-flash {
+        background: rgba(206, 115, 78, 0.22);
+    }
+}
+
+@keyframes search-flash {
+    0%, 35% {
+        background: rgba(206, 115, 78, 0.22);
+    }
+    100% {
+        background: transparent;
+    }
+}
+
+/* Save-quote chip for selected text, above the footer and clear of the
+   native selection handles. */
+.quote-chip {
+    position: fixed;
+    left: 50%;
+    bottom: calc(76px + var(--safe-bottom));
+    z-index: 30;
+    transform: translateX(-50%);
+    box-shadow: var(--shadow-float);
 }
 
 .reader-footer {

@@ -3,6 +3,7 @@ and the integrity of the saved reading position."""
 import json
 import urllib.request
 
+import pytest
 from playwright.sync_api import Browser, Page, expect
 
 from conftest import (
@@ -15,6 +16,9 @@ from conftest import (
     install_fetch_shim,
     register_reader,
 )
+
+pytestmark = pytest.mark.usefixtures("reset_signup_cap")
+
 
 
 def _chapter_no(book_id: str, index: int = 0) -> tuple[int, int]:
@@ -225,3 +229,176 @@ def test_chapter_title_link_scrolls_to_the_list(clean_page: Page, book_with_chap
     # Under the header, or as far as a short page can scroll with it in view.
     assert 0 <= geometry["top"] < 240 or (geometry["y"] >= geometry["end"] - 1 and geometry["top"] < geometry["height"]), geometry
     assert_no_page_errors(page)
+
+
+# Reader tools: chapter drawer, chapter-end card, quotes from a selection,
+# and search inside the book.
+
+PHONE = {"width": 390, "height": 844}
+FLASHED_ON_SHOWN_PAGE = """() => {
+  const v = document.querySelector('.reader-viewport');
+  const hit = document.querySelector('.chapter-body p.search-flash');
+  if (!hit) return null;
+  return Math.floor(hit.offsetLeft / v.clientWidth) === Math.round(v.scrollLeft / v.clientWidth);
+}"""
+SELECT_PARAGRAPH = """n => {
+  const p = document.querySelectorAll('.chapter-body p')[n];
+  const range = document.createRange();
+  range.selectNodeContents(p);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return p.textContent.trim().replace(/\\s+/g, ' ');
+}"""
+LOCAL_QUOTES = """() => new Promise(resolve => {
+  const open = indexedDB.open('project_baca_db');
+  open.onsuccess = () => {
+    const all = open.result.transaction('local_quotes', 'readonly').objectStore('local_quotes').getAll();
+    all.onsuccess = () => resolve(all.result.map(q => q.quote_text));
+  };
+})"""
+
+
+def _context(browser: Browser, viewport=PHONE, tokens: dict | None = None):
+    context = browser.new_context(viewport=viewport, reduced_motion="reduce", color_scheme="dark")
+    if tokens:
+        context.add_init_script(
+            f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
+            f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
+        )
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    return context, page, errors
+
+
+def test_chapter_drawer_jumps_and_saves_the_position(browser: Browser, book_with_chapters: str):
+    book_id = book_with_chapters
+    chapters = api_get(f"/books/{book_id}")["chapters"]
+    context, page, errors = _context(browser)
+    try:
+        _open(page, book_id, settle_ms=1500)
+        page.click(".reader-title")
+        drawer = page.locator(".chapter-drawer")
+        expect(drawer.locator(".chapter-row.here")).to_have_count(1)
+        drawer.locator(".chapter-row button").nth(2).click()
+        page.wait_for_timeout(1500)
+        assert page.query_selector(".chapter-drawer") is None, "the drawer closes"
+        assert "chapter=3" in page.url
+        expect(page.locator(".reader-title .label")).to_contain_text(chapters[2]["title"])
+        page.wait_for_timeout(1500)
+        record = _guest_record(page, book_id)
+        assert record and record["last_chapter_id"] == chapters[2]["id"]
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_chapter_end_card_shows_once_per_chapter(browser: Browser, book_with_chapters: str):
+    context, page, errors = _context(browser)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        page.keyboard.press("End")
+        _turn(page, "ArrowRight")
+        card = page.locator(".chapter-end")
+        expect(card).to_be_visible()
+        assert "chapter=1" in page.url, "the card comes before the next chapter"
+        card.locator("button.btn-ghost").click()
+        expect(page.locator(".sheet[role='dialog']")).to_be_visible()
+        page.keyboard.press("Escape")
+        _turn(page, "ArrowRight")
+        page.wait_for_timeout(1200)
+        assert "chapter=2" in page.url and page.query_selector(".chapter-end") is None
+        _turn(page, "ArrowLeft")
+        page.wait_for_timeout(1200)
+        assert "chapter=1" in page.url
+        _turn(page, "ArrowRight")
+        page.wait_for_timeout(1200)
+        assert "chapter=2" in page.url and page.query_selector(".chapter-end") is None, "once per chapter"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def _save_selection(page: Page, index: int = 1) -> str:
+    text = page.evaluate(SELECT_PARAGRAPH, index)
+    chip = page.locator(".quote-chip")
+    expect(chip).to_be_visible()
+    chip.click()
+    page.wait_for_timeout(1200)
+    expect(page.locator(".quote-chip")).to_have_count(0)
+    return text
+
+
+def test_selected_text_becomes_a_guest_quote(browser: Browser, book_with_chapters: str):
+    context, page, errors = _context(browser)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        text = _save_selection(page)
+        assert text in page.evaluate(LOCAL_QUOTES)
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_selected_text_becomes_an_account_quote(browser: Browser, book_with_chapters: str):
+    tokens = register_reader("quote")
+    context, page, errors = _context(browser, tokens=tokens)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        text = _save_selection(page)
+        req = urllib.request.Request(f"{API}/quotes", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+        with urllib.request.urlopen(req) as r:
+            saved = [q["quote_text"] for q in json.load(r)["data"]]
+        assert text in saved
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def _search(page: Page, query: str):
+    page.click(".btn-search")
+    page.fill("#book-search", query)
+    page.keyboard.press("Enter")
+    hits = page.locator(".search-hit")
+    expect(hits.first).to_be_visible()
+    return hits
+
+
+def test_book_search_opens_the_page_that_holds_the_hit(browser: Browser, book_with_chapters: str):
+    context, page, errors = _context(browser)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        hits = _search(page, "surat")
+        assert hits.count() >= 3
+        expect(hits.first.locator("mark")).to_have_text("surat")
+        hits.nth(hits.count() - 1).click()
+        page.wait_for_timeout(1600)
+        assert page.query_selector(".sheet[role='dialog']") is None
+        assert "chapter=1" not in page.url, "the last hit is in a later chapter"
+        assert page.evaluate(FLASHED_ON_SHOWN_PAGE) is True, "the hit's paragraph is on the page shown"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_book_search_works_offline_from_the_saved_copy(browser: Browser, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _context(browser)
+    try:
+        page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
+        save = '[aria-label="Save for offline reading"]'
+        if page.query_selector(save):
+            page.click(save)
+            page.wait_for_selector('[aria-label="Saved on this device"]', timeout=10000)
+        _open(page, book_id, settle_ms=1500)
+        context.set_offline(True)
+        hits = _search(page, "surat")
+        expect(page.locator(".sheet .form-hint")).to_have_text("Searched in the copy on your device.")
+        hits.nth(1).click()
+        page.wait_for_timeout(1600)
+        assert page.evaluate(FLASHED_ON_SHOWN_PAGE) is True
+        assert errors == [], errors[:3]
+    finally:
+        context.set_offline(False)
+        context.close()

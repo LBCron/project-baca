@@ -33,6 +33,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - WebAssembly bundle down from 2.83 MB to 1.47 MB raw (909 KB to 573 KB gzip): a `wasm-release` Cargo profile and `wasm-opt -Oz` in `make build-web`, which the edge image also runs; the build fails above 1.8 MB raw or 700 KB gzip. Unused `web-sys` features dropped.
 
 ### Added
+- Reader tools that never leave the book: a chapter drawer from the bar (where you stand, jump without reload), a closing card the first time each chapter ends (insight cards or the next chapter), "Save quote" for selected text (account or device), and search inside the book that opens the page holding the hit, online through `GET /books/{id}/search` and offline from the saved copy. The last page of a chapter says so instead of "~0 minutes left".
 - Reader as an open book: paper frame with running heads and folios; pages turn as spine-hinged strips driven by a damped spring from a drag, tap, or key; one-column clones keep a turn cheap; the last page resists and a finale card closes the book; center tap dims the bars; haptic on landing; reduced motion keeps a crossfade; the chapter title links to the chapter list.
 - Home catalog preview: two rows (2x2 to 2x5 by width) and a "see the whole catalog" button; search and filters show everything with paging.
 - Idle illustrations placed: clothesline (empty curator lists), pigeonholes (empty signed-in shelf), rocket (404 and empty search), owl (finale).

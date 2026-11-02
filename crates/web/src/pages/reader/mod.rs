@@ -5,11 +5,13 @@
 
 mod flip;
 mod layout;
+mod tools;
 
 use crate::api;
 use crate::components::anchor::prefers_reduced_motion;
+use crate::components::focus::close_after_event;
 use crate::components::icons;
-use crate::components::insights::CatchupRecap;
+use crate::components::insights::{keep_quote, AtomicCards, CatchupRecap};
 use crate::components::progress::ProgressBar;
 use crate::components::session::use_session;
 use crate::components::toast::{use_toasts, ToastStack};
@@ -27,6 +29,7 @@ use shared::{
     ReadingProgressUpdateDto,
 };
 use std::time::Duration;
+use tools::{clear_selection, selected_chapter_text, watch_selection, BookSearch, ChapterDrawer};
 use wasm_bindgen::JsCast;
 
 const HEARTBEAT_INTERVAL_SECS: u64 = 60;
@@ -241,6 +244,15 @@ pub fn ReaderPage() -> impl IntoView {
     let (position_known, set_position_known) = signal(false);
     let save_pending = StoredValue::new(false);
     let load_generation = StoredValue::new(0u32);
+    let drawer_open = RwSignal::new(false);
+    let search_open = RwSignal::new(false);
+    let cards_open = RwSignal::new(false);
+    let (chapter_end, set_chapter_end) = signal(false);
+    // Chapters whose closing card was shown on this visit: once each.
+    let ends_shown = StoredValue::new(std::collections::HashSet::<i32>::new());
+    let (selection, set_selection) = signal(None::<String>);
+    // (chapter, paragraph) a search hit opened, highlighted once it lands.
+    let (flash, set_flash) = signal(None::<(i32, usize)>);
     let wants_recap = use_query_map().get_untracked().get("recap").is_some();
     let recap_open = RwSignal::new(wants_recap && start_chapter > 1);
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
@@ -544,6 +556,7 @@ pub fn ReaderPage() -> impl IntoView {
     let go_chapter = move |number: i32, anchor_hint: Option<String>| {
         set_chapter_no.set(number);
         set_menu_open.set(false);
+        set_chapter_end.set(false);
         load_chapter(number, anchor_hint);
         if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
             let url = format!("/read/{}?chapter={number}", book_id.get_value());
@@ -551,17 +564,33 @@ pub fn ReaderPage() -> impl IntoView {
         }
     };
 
+    // Leaving a chapter forward shows its closing card the first time; the
+    // next step forward, or the card's own button, moves on.
+    let advance = move |number: i32| {
+        let current = chapter_no.get_untracked();
+        let first_time = ends_shown.with_value(|shown| !shown.contains(&current));
+        if !chapter_end.get_untracked() && first_time {
+            ends_shown.update_value(|shown| {
+                shown.insert(current);
+            });
+            cancel_flip();
+            set_chapter_end.set(true);
+            return;
+        }
+        go_chapter(number, None);
+    };
+
     let next = move || {
         if flip_active() || finished.get_untracked() {
             return;
         }
         let current = page.get_untracked();
-        if current + 1 < pages.get_untracked() {
+        if current + 1 < pages.get_untracked() && !chapter_end.get_untracked() {
             turn_page(Dir::Forward, current, current + 1);
             return;
         }
         match following_chapter() {
-            Some(n) => go_chapter(n, None),
+            Some(n) => advance(n),
             None => {
                 set_finished.set(true);
                 toasts.info(lang.get_untracked().text("book_end"));
@@ -575,6 +604,10 @@ pub fn ReaderPage() -> impl IntoView {
         }
         if finished.get_untracked() {
             set_finished.set(false);
+            return;
+        }
+        if chapter_end.get_untracked() {
+            set_chapter_end.set(false);
             return;
         }
         let current = page.get_untracked();
@@ -602,7 +635,11 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let on_pointer_down = move |ev: web_sys::PointerEvent| {
-        if flip_active() || finished.get_untracked() || menu_open.get_untracked() {
+        if flip_active()
+            || finished.get_untracked()
+            || chapter_end.get_untracked()
+            || menu_open.get_untracked()
+        {
             return;
         }
         if starts_on_control(&ev) {
@@ -703,8 +740,11 @@ pub fn ReaderPage() -> impl IntoView {
             let travel = (x - g.x0).abs();
             if let Some(number) = g.crossing.filter(|_| travel >= CHAPTER_SWIPE_PX) {
                 cancel_flip();
-                let hint = (number < chapter_no.get_untracked()).then(|| ANCHOR_END.to_string());
-                go_chapter(number, hint);
+                if number > chapter_no.get_untracked() {
+                    advance(number);
+                } else {
+                    go_chapter(number, Some(ANCHOR_END.to_string()));
+                }
                 return;
             }
             if flip_active() {
@@ -748,7 +788,11 @@ pub fn ReaderPage() -> impl IntoView {
             set_menu_open.set(false);
             return;
         }
-        if menu_open.get_untracked() || recap_open.get_untracked() || key_belongs_to_target(&ev) {
+        let sheet_open = drawer_open.get_untracked()
+            || search_open.get_untracked()
+            || cards_open.get_untracked()
+            || recap_open.get_untracked();
+        if menu_open.get_untracked() || sheet_open || key_belongs_to_target(&ev) {
             return;
         }
         match ev.key().as_str() {
@@ -804,6 +848,73 @@ pub fn ReaderPage() -> impl IntoView {
         }
     });
     on_cleanup(move || pagehide.remove());
+
+    watch_selection(move || {
+        set_selection.try_set(selected_chapter_text());
+    });
+    let save_selection = move |_| {
+        let (Some(text), Some(ch), Ok(book_uuid)) = (
+            selection.get_untracked(),
+            chapter.get_untracked(),
+            book_id.get_value().parse::<uuid::Uuid>(),
+        ) else {
+            return;
+        };
+        // The selectionchange that follows hides the chip after this click.
+        clear_selection();
+        spawn_local(async move {
+            match keep_quote(book_uuid, ch.id, text).await {
+                Ok(message) => toasts.info(lang.get_untracked().text(message)),
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+            }
+        });
+    };
+
+    let pick_chapter = Callback::new(move |number: i32| {
+        close_after_event(drawer_open);
+        if number != chapter_no.get_untracked() {
+            go_chapter(number, None);
+        }
+    });
+    let pick_hit = Callback::new(move |(number, paragraph): (i32, i32)| {
+        close_after_event(search_open);
+        let anchor = format!("p-{paragraph}");
+        set_flash.set(Some((number, paragraph.max(1) as usize - 1)));
+        if number == chapter_no.get_untracked() && chapter.get_untracked().is_some() {
+            set_chapter_end.set(false);
+            set_finished.set(false);
+            set_pending_anchor.set(Some(anchor));
+        } else {
+            go_chapter(number, Some(anchor));
+        }
+    });
+    // The paragraph a search hit opened glows briefly once its page is laid out.
+    Effect::new(move || {
+        let Some((number, index)) = flash.get() else {
+            return;
+        };
+        let landed = chapter.get().is_some_and(|c| c.chapter_number == number)
+            && pending_anchor.get().is_none()
+            && pages.get() > 0;
+        if !landed {
+            return;
+        }
+        set_flash.set(None);
+        request_animation_frame(move || {
+            let Some(el) = viewport_ref.try_get_untracked().flatten() else {
+                return;
+            };
+            if let Some(p) = paragraphs(&el).into_iter().nth(index) {
+                let _ = p.class_list().add_1("search-flash");
+                set_timeout(
+                    move || {
+                        let _ = p.class_list().remove_1("search-flash");
+                    },
+                    Duration::from_millis(2400),
+                );
+            }
+        });
+    });
 
     let resize = window_event_listener(leptos::ev::resize, move |_| {
         cancel_flip();
@@ -876,6 +987,10 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let toggle_menu = move |_| set_menu_open.update(|m| *m = !*m);
+    let chapter_end_title = move || {
+        lang.get()
+            .text_with("chapter_end_title", "n", &roman(chapter_no.get()))
+    };
     let book_title = move || book.get().map(|b| b.title).unwrap_or_default();
     let chapter_head = move || {
         format!(
@@ -907,7 +1022,6 @@ pub fn ReaderPage() -> impl IntoView {
                 .replace("{b}", &pages.get().to_string())
         }
     };
-    let chapters_href = move || format!("/book/{}#daftar-bab", book_id.get_value());
     let restart = move |_| {
         set_finished.set(false);
         if let Some(first) = chapter_numbers().first().copied() {
@@ -919,10 +1033,10 @@ pub fn ReaderPage() -> impl IntoView {
         <div class="reader" data-reading=move || prefs.get().theme.attr() class:spread=move || spread.get() class:dim=move || dim.get()>
             <header class="reader-bar">
                 <a href=format!("/book/{}", book_id.get_value()) class="btn-icon" aria-label=move || lang.get().text("reader_back")>{icons::back()}</a>
-                <a href=chapters_href class="reader-title" title=move || lang.get().text("chapters")>
+                <button class="reader-title" aria-label=move || lang.get().text("open_chapters") aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
                     <span class="kicker">{move || format!("{} {}", lang.get().text("chapter"), roman(chapter_no.get()))}</span>
                     <span class="label">{move || chapter.get().map(|c| c.title).unwrap_or_default()}{icons::arrow_down()}</span>
-                </a>
+                </button>
                 <div class="reader-tools">
                     {move || (chapter_no.get() > 1).then(|| {
                         let last = chapter_no.get() - 1;
@@ -935,6 +1049,7 @@ pub fn ReaderPage() -> impl IntoView {
                             </button>
                         }
                     })}
+                    <button class="btn-icon btn-search" aria-label=move || lang.get().text("book_search") on:click=move |_| search_open.set(true)>{icons::search()}</button>
                     <button class="btn-icon btn-type" aria-label=move || lang.get().text("reader_settings") aria-expanded=move || menu_open.get() on:click=toggle_menu>"Aa"</button>
                 </div>
             </header>
@@ -994,6 +1109,20 @@ pub fn ReaderPage() -> impl IntoView {
                     <span class="folio folio-right" aria-hidden="true">{folio_right}</span>
                     <span class="corner" aria-hidden="true"></span>
                     <div node_ref=flip_ref class="flip-layer" aria-hidden="true"></div>
+                    {move || chapter_end.get().then(|| view! {
+                        <section class="finale chapter-end" aria-label=chapter_end_title>
+                            <h2 class="display">{chapter_end_title}</h2>
+                            <p>{move || lang.get().text("chapter_end_body")}</p>
+                            <div class="sheet-actions centered">
+                                <button class="btn btn-primary" on:click=move |_| {
+                                    if let Some(n) = following_chapter() {
+                                        advance(n);
+                                    }
+                                }>{move || lang.get().text("next_chapter")}</button>
+                                <button class="btn btn-ghost" on:click=move |_| cards_open.set(true)>{icons::cards()}{move || lang.get().text("atomic_cards")}</button>
+                            </div>
+                        </section>
+                    })}
                     {move || finished.get().then(|| view! {
                         <section class="finale" aria-label=move || lang.get().text("book_finished_title")>
                             <img src="/assets/cozy-reader-armchair-owl.webp" alt="" width="640" height="640"/>
@@ -1016,7 +1145,11 @@ pub fn ReaderPage() -> impl IntoView {
                 <div class="reader-status">
                     <span>{page_status}</span>
                     <span>
-                        {move || lang.get().text_n("minutes_left", i64::from(minutes_left()))}
+                        {move || if page.get() + 1 >= pages.get() {
+                            lang.get().text("chapter_last_page")
+                        } else {
+                            lang.get().text_n("minutes_left", i64::from(minutes_left().max(1)))
+                        }}
                         {move || offline.get().then(|| view! { <span class="badge">{format!(" \u{00B7} {}", lang.get().text("offline_copy"))}</span> })}
                         {move || (queued.get() > 0).then(|| view! { <span class="badge">{format!(" \u{00B7} {}", lang.get().text_with("queued", "n", &queued.get().to_string()))}</span> })}
                     </span>
@@ -1024,6 +1157,14 @@ pub fn ReaderPage() -> impl IntoView {
             </footer>
 
             {move || view! { <CatchupRecap book_id=book_id.get_value() chapter=chapter_no.get() show=recap_open/> }}
+            {move || view! { <AtomicCards book_id=book_id.get_value() chapter=chapter_no.get() show=cards_open/> }}
+            <ChapterDrawer book=book current=chapter_no show=drawer_open on_pick=pick_chapter/>
+            <BookSearch book_id=book_id.get_value() show=search_open on_pick=pick_hit/>
+            {move || selection.get().is_some().then(|| view! {
+                <button class="btn btn-primary quote-chip" on:mousedown=|ev| ev.prevent_default() on:click=save_selection>
+                    {move || lang.get().text("save_selection")}
+                </button>
+            })}
             {move || streak.get().map(|days| view! {
                 <div class="streak-toast" role="status">{format!("\u{2756} {}", lang.get().text_n("streak_days", i64::from(days)))}</div>
             })}

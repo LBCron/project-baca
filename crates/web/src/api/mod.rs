@@ -299,6 +299,18 @@ pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, St
         .ok_or_else(|| "empty catalog response".to_string())
 }
 
+/// Paragraphs of one book that contain `query`, in reading order.
+pub async fn search_book_text(
+    book_id: &str,
+    query: &str,
+) -> Result<Vec<shared::BookTextHitDto>, String> {
+    get(&format!(
+        "/books/{book_id}/search?q={}",
+        encode_param(query)
+    ))
+    .await
+}
+
 pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>, String> {
     let url = format!(
         "{}/books/search?q={}&limit={}",

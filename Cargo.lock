@@ -5469,6 +5469,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "rexie",
+ "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

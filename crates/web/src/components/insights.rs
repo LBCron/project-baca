@@ -10,8 +10,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{QuoteSearchRequest, QuoteSearchResultDto};
 
+/// Modal sheet with a title and a close button; focus stays inside it.
 #[component]
-fn Sheet(
+pub fn Sheet(
     show: RwSignal<bool>,
     #[prop(into)] title: Signal<String>,
     #[prop(optional)] wide: bool,
@@ -40,6 +41,34 @@ fn Sheet(
             })
         }}
     }
+}
+
+/// Keeps a quote: an account saves it on the server, a guest on this device
+/// until sign-in merges it (see `AuthSheet`). Returns the toast to show.
+pub async fn keep_quote(
+    book_id: uuid::Uuid,
+    chapter_id: uuid::Uuid,
+    text: String,
+) -> Result<&'static str, String> {
+    if api::is_authed() {
+        return api::save_quote(&shared::SaveQuoteRequest {
+            book_id,
+            chapter_id,
+            quote_text: text,
+        })
+        .await
+        .map(|_| "quote_saved");
+    }
+    let record = storage::LocalQuoteRecord {
+        key: storage::local_quote_key(book_id, chapter_id, &text),
+        book_id,
+        chapter_id,
+        quote_text: text,
+        saved_at: chrono::Utc::now(),
+    };
+    storage::put(storage::STORE_LOCAL_QUOTES, &record)
+        .await
+        .map(|_| "quote_saved_device")
 }
 
 fn share_quote(toasts: crate::components::toast::Toasts, text: String, source: String, lang: Lang) {
@@ -98,8 +127,6 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
         });
     };
 
-    // Members save to the account; guests keep the quote on this device until
-    // sign-in merges it (see `AuthSheet`).
     let save = move |row: QuoteSearchResultDto| {
         let id = book.get_value();
         spawn_local(async move {
@@ -113,27 +140,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     return;
                 }
             };
-            let stored = if api::is_authed() {
-                api::save_quote(&shared::SaveQuoteRequest {
-                    book_id: target.0,
-                    chapter_id: target.1,
-                    quote_text: row.content.clone(),
-                })
-                .await
-                .map(|_| "quote_saved")
-            } else {
-                let record = storage::LocalQuoteRecord {
-                    key: storage::local_quote_key(target.0, target.1, &row.content),
-                    book_id: target.0,
-                    chapter_id: target.1,
-                    quote_text: row.content.clone(),
-                    saved_at: chrono::Utc::now(),
-                };
-                storage::put(storage::STORE_LOCAL_QUOTES, &record)
-                    .await
-                    .map(|_| "quote_saved_device")
-            };
-            match stored {
+            match keep_quote(target.0, target.1, row.content.clone()).await {
                 Ok(message) => {
                     set_saved.update(|s| s.push(row.chunk_id));
                     toasts.info(lang.get_untracked().text(message));
