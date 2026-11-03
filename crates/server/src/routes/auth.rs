@@ -327,9 +327,11 @@ pub async fn verify_otp(
             .await
             .map_err(HttpError::from)?
             .ok_or_else(|| {
-                HttpError(AppError::ValidationError(
-                    "Invalid or expired OTP".to_string(),
-                ))
+                let message = "Invalid or expired OTP".to_string();
+                HttpError(AppError::ValidationDetailed {
+                    details: serde_json::json!({ "otp": [message.clone()] }),
+                    message,
+                })
             })?;
 
     let user = activate_registration(
@@ -519,6 +521,8 @@ pub async fn refresh(
     responses(
         (status = 200, description = "Successfully logged out", body = ApiResponse<serde_json::Value>)
     ),
+    // The access token is optional: when sent, it is revoked with the session.
+    security((), ("BearerAuth" = [])),
     tag = "Authentication"
 )]
 pub async fn logout(
@@ -834,7 +838,7 @@ pub struct RevokeAllQuery {
     get,
     path = "/api/v1/me/sessions",
     responses(
-        (status = 200, description = "Live sessions, the current one flagged", body = Vec<SessionDto>),
+        (status = 200, description = "Live sessions, the current one flagged", body = ApiResponse<Vec<SessionDto>>),
         (status = 401, description = "Authentication required")
     ),
     security(("BearerAuth" = [])),

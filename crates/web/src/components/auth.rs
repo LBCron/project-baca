@@ -107,6 +107,9 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                 Err(e) => {
                     let message = if m == Mode::Login && e.contains("UNAUTHORIZED") {
                         lang.get_untracked().text("auth_login_failed")
+                    } else if e.starts_with(shared::error_code::CONFLICT) {
+                        // Only an existing account conflicts during signup.
+                        lang.get_untracked().text("auth_account_exists")
                     } else {
                         friendly_error(&e, lang.get_untracked())
                     };
@@ -225,27 +228,105 @@ async fn merge_local_quotes() {
     }
 }
 
-/// Turns the API layer's "CODE: message" strings into reader-facing copy.
+/// Turns the API layer's "CODE: message" or "CODE[field]: message" strings
+/// into copy in the reader's language. The server's English message never
+/// reaches the screen; only a wait is read from it.
 pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
-    if raw.contains("QUOTA_EXCEEDED") {
-        return lang.text("quotes_full");
-    }
-    if raw.contains("RATE_LIMITED") {
-        let seconds = raw
+    use shared::error_code as code;
+    let (head, message) = raw.split_once(": ").unwrap_or((raw, ""));
+    let (error, field) = head
+        .split_once('[')
+        .map_or((head, ""), |(c, f)| (c, f.trim_end_matches(']')));
+    let wait = || {
+        let seconds = message
             .split(|c: char| !c.is_ascii_digit())
             .filter_map(|s| s.parse::<u64>().ok())
             .next_back()
             .unwrap_or(60);
-        return lang.text_with("rate_limited", "t", &lang.wait_text(seconds));
+        lang.wait_text(seconds)
+    };
+    match error {
+        code::QUOTA_EXCEEDED => lang.text("quotes_full"),
+        code::RATE_LIMITED => lang.text_with("rate_limited", "t", &wait()),
+        code::AI_RATE_LIMITED => lang.text_with("err_ai_rate_limited", "t", &wait()),
+        code::SERVICE_UNAVAILABLE => lang.text_with("err_service_unavailable", "t", &wait()),
+        code::VALIDATION_FAILED => {
+            let key = format!("err_field_{field}");
+            if lang.has(&key) {
+                lang.text(&key)
+            } else {
+                lang.text("err_validation_failed")
+            }
+        }
+        known if code::ALL.contains(&known) => lang.text(&error_key(known)),
+        _ => lang.text("error_generic"),
     }
-    if raw.contains("SERVICE_UNAVAILABLE")
-        || raw.contains("VALIDATION_FAILED")
-        || raw.contains("CONFLICT")
-    {
-        return raw
-            .split_once(": ")
-            .map(|(_, m)| m.to_string())
-            .unwrap_or_else(|| raw.to_string());
+}
+
+/// The dictionary key holding the copy for an API error code.
+pub(crate) fn error_key(code: &str) -> String {
+    format!("err_{}", code.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friendly_error;
+    use crate::i18n::Lang;
+
+    const SERVER_ENGLISH: &str = "Uploaded file is not a ZIP-based EPUB (missing PK signature)";
+
+    #[test]
+    fn every_api_error_code_has_copy_in_both_languages() {
+        for code in shared::error_code::ALL {
+            for lang in [Lang::Id, Lang::En] {
+                let text = friendly_error(&format!("{code}: {SERVER_ENGLISH}"), lang);
+                assert!(
+                    !text.starts_with("err_"),
+                    "{code} lacks a {lang:?} entry: {text}"
+                );
+                assert!(
+                    !text.contains(SERVER_ENGLISH),
+                    "{code} shows the server's text"
+                );
+            }
+        }
     }
-    lang.text("error_generic")
+
+    #[test]
+    fn a_refused_field_names_what_to_fix() {
+        let raw = "VALIDATION_FAILED[new_password]: New password must be at least 8 characters";
+        assert_eq!(
+            friendly_error(raw, Lang::Id),
+            Lang::Id.text("err_field_new_password")
+        );
+        let unknown = "VALIDATION_FAILED[records]: too many";
+        assert_eq!(
+            friendly_error(unknown, Lang::En),
+            Lang::En.text("err_validation_failed")
+        );
+    }
+
+    #[test]
+    fn a_wait_reads_as_a_duration() {
+        let raw = "RATE_LIMITED: Rate limit exceeded: at most 5 attempts per 15 minutes. Try again in 857 seconds";
+        assert_eq!(
+            friendly_error(raw, Lang::Id),
+            "Terlalu banyak permintaan dalam waktu singkat. Coba lagi dalam 15 menit."
+        );
+        // A daily budget waits hours, not 1440 minutes.
+        let budget = "AI_RATE_LIMITED: daily budget spent. Try again in 86400 seconds";
+        assert!(friendly_error(budget, Lang::Id).ends_with("dalam 24 jam."));
+        assert_eq!(
+            friendly_error("SOMETHING_NEW: x", Lang::En),
+            Lang::En.text("error_generic")
+        );
+    }
+
+    #[test]
+    fn the_indonesian_copy_says_kamu() {
+        for code in shared::error_code::ALL {
+            let text = friendly_error(&format!("{code}: x"), Lang::Id).to_lowercase();
+            assert!(!text.contains("anda"), "{code}: {text}");
+        }
+    }
 }

@@ -81,8 +81,13 @@ async fn test_auth_full_lifecycle() {
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&wrong_otp_req).unwrap()))
         .unwrap();
-    let (resp, _) = harness.send_json_request(req).await;
+    let (resp, wrong_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // Named as the otp field, so the client says the code is wrong.
+    assert!(
+        wrong_body["error"]["details"]["otp"].is_array(),
+        "{wrong_body}"
+    );
 
     let known_otp = "889911";
     common::plant_known_otp(&mut redis_conn, &test_email, registration_id, known_otp).await;

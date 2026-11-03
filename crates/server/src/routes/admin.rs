@@ -393,12 +393,17 @@ pub async fn upload_book(
         ))
     })?;
 
-    // Reject overlong metadata before the database does (VARCHAR limits).
+    // Reject overlong metadata before the database does. VARCHAR(n) counts
+    // characters, as the form's maxlength roughly does, so bytes would refuse
+    // an accented title the form let through. Named per field, so the curator
+    // is told which one to shorten.
     let check_len = |name: &str, value: &str, max: usize| {
-        if value.len() > max {
-            return Err(HttpError(AppError::BadRequest(format!(
-                "Field '{name}' exceeds {max} characters"
-            ))));
+        if value.chars().count() > max {
+            let message = format!("Field '{name}' exceeds {max} characters");
+            return Err(HttpError(AppError::ValidationDetailed {
+                details: serde_json::json!({ name: [message.clone()] }),
+                message,
+            }));
         }
         Ok(())
     };

@@ -86,7 +86,8 @@ pub async fn update_progress(
     responses(
         (status = 200, description = "Guest progress reconciled successfully", body = ApiResponse<serde_json::Value>),
         (status = 400, description = "Invalid payload", body = ApiResponse<ErrorPayload>),
-        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
+        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>),
+        (status = 404, description = "A record names a book that is not published", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
     tag = "Reading Progress"

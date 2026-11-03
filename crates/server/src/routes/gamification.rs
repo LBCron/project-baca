@@ -27,7 +27,8 @@ pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
     responses(
         (status = 200, description = "Heartbeat recorded and streak evaluated", body = ApiResponse<ReadingHeartbeatResponse>),
         (status = 400, description = "Invalid payload", body = ApiResponse<ErrorPayload>),
-        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
+        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>),
+        (status = 404, description = "The book is not published", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
     tag = "Gamification"
