@@ -266,3 +266,30 @@ def test_curator_upload_survives_an_expired_session_and_refuses_oversize(clean_p
     expect(page.locator("body")).to_contain_text("over 50 MB")
     assert len(uploads) == 2, "an oversize file is refused before it is sent"
     assert_no_page_errors(page)
+
+
+def test_curator_errors_read_in_the_readers_language(clean_page: Page, tmp_path):
+    """In Indonesian the server's English never reaches the screen: a refused
+    file says why in "kamu" copy, a rate limit says how long to wait."""
+    page = clean_page
+    page.add_init_script("localStorage.setItem('rotaria_lang', 'ID')")
+    answers = [
+        (400, {"code": "VALIDATION_FAILED", "message": "Uploaded file is not a ZIP-based EPUB (missing PK signature)"}),
+        (429, {"code": "RATE_LIMITED", "message": "Rate limit exceeded: at most 5 uploads per 15 minutes. Try again in 857 seconds"}),
+    ]
+    page.route("**/api/**/admin/books**", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS})))
+    page.route("**/api/**/admin/books/upload", lambda r: r.fulfill(
+        status=answers[0][0], content_type="application/json",
+        body=json.dumps({"success": False, "error": answers.pop(0)[1]})))
+    _story(page, "curator-desk")
+    epub = tmp_path / "notes.epub"
+    epub.write_bytes(b"not a zip at all")
+    toasts = page.locator(".toast")
+    for expected in ["Berkas itu bukan EPUB yang bisa kami baca", "Coba lagi dalam 15 menit"]:
+        page.set_input_files(".upload-card input[type=file]", str(epub))
+        page.click(".upload-card button[type=submit]")
+        expect(toasts.filter(has_text=expected)).to_be_visible()
+    body = page.inner_text("body")
+    assert "ZIP-based" not in body and "Rate limit" not in body, body[-400:]
+    assert_no_page_errors(page)

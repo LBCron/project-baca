@@ -6,10 +6,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use shared::{
     ActiveProgressDto, ApiResponse, BookCatalogQuery, BookDetailDto, BookSearchQuery,
-    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, GuestMergeRequest, LoginRequest,
-    OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto, ReadingHeartbeatRequest,
-    ReadingHeartbeatResponse, ReadingProgressUpdateDto, RefreshTokenRequest, SignupRequest,
-    TokenResponse, UserProfileDto, VerifyOtpRequest,
+    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, ErrorPayload, GuestMergeRequest,
+    LoginRequest, OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto,
+    ReadingHeartbeatRequest, ReadingHeartbeatResponse, ReadingProgressUpdateDto,
+    RefreshTokenRequest, SignupRequest, TokenResponse, UserProfileDto, VerifyOtpRequest,
 };
 use wasm_bindgen::JsCast;
 use web_sys::window;
@@ -168,6 +168,21 @@ async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Re
     make().await
 }
 
+/// "CODE: message", or "CODE[field]: message" naming the first field a
+/// validation refused: the reader's copy is chosen by code and field, never
+/// by the server's English message.
+fn error_string(error: ErrorPayload) -> String {
+    let field = error
+        .details
+        .as_ref()
+        .and_then(|d| d.as_object())
+        .and_then(|fields| fields.keys().next().cloned());
+    match field {
+        Some(field) => format!("{}[{field}]: {}", error.code, error.message),
+        None => format!("{}: {}", error.code, error.message),
+    }
+}
+
 async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> Result<T, String> {
     let envelope = resp
         .json::<ApiResponse<T>>()
@@ -176,7 +191,7 @@ async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> 
     envelope.data.ok_or_else(|| {
         envelope
             .error
-            .map(|e| format!("{}: {}", e.code, e.message))
+            .map(error_string)
             .unwrap_or_else(|| "empty response".to_string())
     })
 }
@@ -260,7 +275,7 @@ async fn post_once<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> R
     envelope.data.ok_or_else(|| {
         envelope
             .error
-            .map(|e| format!("{}: {}", e.code, e.message))
+            .map(error_string)
             .unwrap_or_else(|| "empty response".to_string())
     })
 }

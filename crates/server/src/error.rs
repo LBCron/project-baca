@@ -67,7 +67,7 @@ impl IntoResponse for HttpError {
             AppError::ValidationDetailed { message, details } => (
                 StatusCode::BAD_REQUEST,
                 Json(ApiResponse::<()>::error(
-                    "VALIDATION_FAILED",
+                    shared::error_code::VALIDATION_FAILED,
                     message,
                     Some(details.clone()),
                 )),
@@ -75,49 +75,81 @@ impl IntoResponse for HttpError {
                 .into_response(),
             AppError::ValidationError(msg) => (
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::<()>::error("VALIDATION_FAILED", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::VALIDATION_FAILED,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
-                Json(ApiResponse::<()>::error("BAD_REQUEST", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::BAD_REQUEST,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::Unauthorized(msg) => (
                 StatusCode::UNAUTHORIZED,
-                Json(ApiResponse::<()>::error("UNAUTHORIZED", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::UNAUTHORIZED,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::Forbidden(msg) => (
                 StatusCode::FORBIDDEN,
-                Json(ApiResponse::<()>::error("FORBIDDEN", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::FORBIDDEN,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::NotFound(msg) => (
                 StatusCode::NOT_FOUND,
-                Json(ApiResponse::<()>::error("NOT_FOUND", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::NOT_FOUND,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::Conflict(msg) => (
                 StatusCode::CONFLICT,
-                Json(ApiResponse::<()>::error("CONFLICT", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::CONFLICT,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::PayloadTooLarge(msg) => (
                 StatusCode::PAYLOAD_TOO_LARGE,
-                Json(ApiResponse::<()>::error("PAYLOAD_TOO_LARGE", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::PAYLOAD_TOO_LARGE,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::QuotaExceeded(msg) => (
                 StatusCode::CONFLICT,
-                Json(ApiResponse::<()>::error("QUOTA_EXCEEDED", msg, None)),
+                Json(ApiResponse::<()>::error(
+                    shared::error_code::QUOTA_EXCEEDED,
+                    msg,
+                    None,
+                )),
             )
                 .into_response(),
             AppError::RateLimited { retry_after } => {
                 let mut resp = (
                     StatusCode::TOO_MANY_REQUESTS,
                     Json(ApiResponse::<()>::error(
-                        "RATE_LIMITED",
+                        shared::error_code::RATE_LIMITED,
                         &format!("Rate limit exceeded. Try again in {retry_after} seconds"),
                         None,
                     )),
@@ -132,7 +164,7 @@ impl IntoResponse for HttpError {
             AppError::Database(msg) if msg.contains(NUL_IN_TEXT) => (
                 StatusCode::BAD_REQUEST,
                 Json(ApiResponse::<()>::error(
-                    "BAD_REQUEST",
+                    shared::error_code::BAD_REQUEST,
                     "Text must not contain a NUL character",
                     None,
                 )),
@@ -143,7 +175,7 @@ impl IntoResponse for HttpError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ApiResponse::<()>::error(
-                        "DATABASE_ERROR",
+                        shared::error_code::DATABASE_ERROR,
                         "A database error occurred. Please try again later.",
                         None,
                     )),
@@ -155,7 +187,7 @@ impl IntoResponse for HttpError {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ApiResponse::<()>::error(
-                        "INTERNAL_ERROR",
+                        shared::error_code::INTERNAL_ERROR,
                         "An internal server error occurred. Please try again later.",
                         None,
                     )),
@@ -167,7 +199,7 @@ impl IntoResponse for HttpError {
                 (
                     StatusCode::BAD_GATEWAY,
                     Json(ApiResponse::<()>::error(
-                        "EXTERNAL_SERVICE_ERROR",
+                        shared::error_code::EXTERNAL_SERVICE_ERROR,
                         "External service temporarily unavailable. Please try again later.",
                         None,
                     )),
@@ -178,7 +210,7 @@ impl IntoResponse for HttpError {
                 let mut resp = (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(ApiResponse::<()>::error(
-                        "SERVICE_UNAVAILABLE",
+                        shared::error_code::SERVICE_UNAVAILABLE,
                         &format!(
                             "Service temporarily unavailable. Try again in {retry_after} seconds"
                         ),
@@ -228,10 +260,10 @@ pub async fn envelope_rejections(req: Request, next: Next) -> Response {
         text
     };
     let code = match parts.status {
-        StatusCode::METHOD_NOT_ALLOWED => "METHOD_NOT_ALLOWED",
-        StatusCode::PAYLOAD_TOO_LARGE => "PAYLOAD_TOO_LARGE",
-        StatusCode::UNPROCESSABLE_ENTITY => "VALIDATION_FAILED",
-        _ => "BAD_REQUEST",
+        StatusCode::METHOD_NOT_ALLOWED => shared::error_code::METHOD_NOT_ALLOWED,
+        StatusCode::PAYLOAD_TOO_LARGE => shared::error_code::PAYLOAD_TOO_LARGE,
+        StatusCode::UNPROCESSABLE_ENTITY => shared::error_code::VALIDATION_FAILED,
+        _ => shared::error_code::BAD_REQUEST,
     };
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::CONTENT_TYPE);

@@ -17,7 +17,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("nav_tabs", "Navigasi bawah", "Primary"),
     ("reading_theme", "Tema baca", "Reading theme"),
     ("streak_label", "Runtunan membaca", "Reading streak"),
-    ("upload_rejected", "Unggahan ditolak.", "Upload rejected."),
+    (
+        "upload_rejected",
+        "Berkas itu bukan EPUB yang bisa kami baca. Periksa berkasnya lalu unggah lagi.",
+        "That file is not an EPUB we can read. Check it and upload again.",
+    ),
     ("retry", "Coba lagi", "Try again"),
     ("load_failed", "Katalog tidak dapat dimuat.", "The catalog could not be loaded."),
     ("book_load_failed", "Buku tidak dapat dimuat.", "The book could not be loaded."),
@@ -418,6 +422,136 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Rak kutipanmu sudah penuh. Kutipan ini belum bisa disimpan.",
         "Your quote shelf is full. This one could not be kept.",
     ),
+    (
+        "err_bad_request",
+        "Permintaan itu tidak bisa diproses. Periksa isianmu lalu coba lagi.",
+        "That request could not be processed. Check what you entered and try again.",
+    ),
+    (
+        "err_validation_failed",
+        "Ada isian yang belum sesuai. Periksa lagi, ya.",
+        "Something you entered does not fit. Check it again.",
+    ),
+    (
+        "err_unauthorized",
+        "Sesimu sudah berakhir. Masuk lagi untuk melanjutkan.",
+        "Your session has ended. Sign in again to continue.",
+    ),
+    (
+        "err_forbidden",
+        "Kamu tidak punya akses ke bagian ini.",
+        "You do not have access to this.",
+    ),
+    (
+        "err_not_found",
+        "Yang kamu cari tidak ditemukan.",
+        "What you are looking for was not found.",
+    ),
+    (
+        "err_method_not_allowed",
+        "Permintaan itu tidak didukung.",
+        "That request is not supported.",
+    ),
+    (
+        "err_conflict",
+        "Ada perubahan yang mendahuluimu. Muat ulang lalu coba lagi.",
+        "Something changed before you did. Reload and try again.",
+    ),
+    (
+        "err_quota_exceeded",
+        "Batas simpananmu sudah penuh.",
+        "You have reached your storage limit.",
+    ),
+    (
+        "err_payload_too_large",
+        "Berkas itu terlalu besar.",
+        "That file is too large.",
+    ),
+    (
+        "err_rate_limited",
+        "Terlalu banyak percobaan. Coba lagi sebentar lagi.",
+        "Too many attempts. Try again shortly.",
+    ),
+    (
+        "err_ai_rate_limited",
+        "Pencarian kutipan sedang ramai. Coba lagi dalam {t}.",
+        "Quote search is busy. Try again in {t}.",
+    ),
+    (
+        "err_service_unavailable",
+        "Layanan sedang sibuk. Coba lagi dalam {t}.",
+        "The service is busy. Try again in {t}.",
+    ),
+    (
+        "err_external_service_error",
+        "Layanan pendukung sedang tidak terjangkau. Coba lagi sebentar lagi.",
+        "A service we rely on is unreachable. Try again shortly.",
+    ),
+    (
+        "err_database_error",
+        "Ada yang tidak beres di pihak kami. Coba lagi sebentar lagi.",
+        "Something went wrong on our side. Try again shortly.",
+    ),
+    (
+        "err_internal_error",
+        "Ada yang tidak beres di pihak kami. Coba lagi sebentar lagi.",
+        "Something went wrong on our side. Try again shortly.",
+    ),
+    (
+        "err_field_display_name",
+        "Nama tampilanmu perlu 2 sampai 100 karakter.",
+        "Your display name needs 2 to 100 characters.",
+    ),
+    (
+        "err_field_email",
+        "Alamat email itu belum benar. Periksa lagi, ya.",
+        "That email address does not look right. Check it again.",
+    ),
+    (
+        "err_field_password",
+        "Kata sandimu perlu 8 sampai 128 karakter.",
+        "Your password needs 8 to 128 characters.",
+    ),
+    (
+        "err_field_new_password",
+        "Kata sandi barumu perlu 8 sampai 128 karakter.",
+        "Your new password needs 8 to 128 characters.",
+    ),
+    (
+        "err_field_current_password",
+        "Isi kata sandimu yang sekarang.",
+        "Enter your current password.",
+    ),
+    (
+        "err_field_otp",
+        "Kode verifikasi terdiri dari 6 angka.",
+        "The verification code has 6 digits.",
+    ),
+    (
+        "err_field_quote_text",
+        "Kutipan perlu 1 sampai 2.000 karakter.",
+        "A quote needs 1 to 2,000 characters.",
+    ),
+    (
+        "err_field_query",
+        "Tulis 3 sampai 500 karakter untuk mencari kutipan.",
+        "Write 3 to 500 characters to search for a quote.",
+    ),
+    (
+        "err_field_q",
+        "Tulis 2 sampai 200 karakter untuk mencari.",
+        "Write 2 to 200 characters to search.",
+    ),
+    (
+        "err_field_avatar_url",
+        "Tautan foto profil itu tidak bisa dipakai.",
+        "That profile picture link cannot be used.",
+    ),
+    (
+        "auth_account_exists",
+        "Alamat ini sudah punya akun. Masuk saja dengan kata sandimu.",
+        "This address already has an account. Sign in with your password.",
+    ),
     ("unit_minutes", "menit", "minutes"),
     ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
@@ -475,6 +609,11 @@ impl Lang {
     }
 
     /// Looks a key up; unknown keys echo themselves so a typo is visible.
+    /// True when the dictionary holds `key` (a miss would show the key).
+    pub fn has(self, key: &str) -> bool {
+        ENTRIES.iter().any(|(k, _, _)| *k == key)
+    }
+
     pub fn text(self, key: &str) -> String {
         ENTRIES
             .iter()

@@ -49,6 +49,44 @@ pub struct ErrorPayload {
     pub details: Option<serde_json::Value>,
 }
 
+/// The `error.code` values the API answers with. The server sends only
+/// these, and the web client keeps one dictionary entry for each.
+pub mod error_code {
+    pub const BAD_REQUEST: &str = "BAD_REQUEST";
+    pub const VALIDATION_FAILED: &str = "VALIDATION_FAILED";
+    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    pub const NOT_FOUND: &str = "NOT_FOUND";
+    pub const METHOD_NOT_ALLOWED: &str = "METHOD_NOT_ALLOWED";
+    pub const CONFLICT: &str = "CONFLICT";
+    pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
+    pub const PAYLOAD_TOO_LARGE: &str = "PAYLOAD_TOO_LARGE";
+    pub const RATE_LIMITED: &str = "RATE_LIMITED";
+    pub const AI_RATE_LIMITED: &str = "AI_RATE_LIMITED";
+    pub const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
+    pub const EXTERNAL_SERVICE_ERROR: &str = "EXTERNAL_SERVICE_ERROR";
+    pub const DATABASE_ERROR: &str = "DATABASE_ERROR";
+    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+
+    pub const ALL: &[&str] = &[
+        BAD_REQUEST,
+        VALIDATION_FAILED,
+        UNAUTHORIZED,
+        FORBIDDEN,
+        NOT_FOUND,
+        METHOD_NOT_ALLOWED,
+        CONFLICT,
+        QUOTA_EXCEEDED,
+        PAYLOAD_TOO_LARGE,
+        RATE_LIMITED,
+        AI_RATE_LIMITED,
+        SERVICE_UNAVAILABLE,
+        EXTERNAL_SERVICE_ERROR,
+        DATABASE_ERROR,
+        INTERNAL_ERROR,
+    ];
+}
+
 /// Common application errors
 #[derive(Debug, thiserror::Error, Serialize, Deserialize, Clone)]
 pub enum AppError {

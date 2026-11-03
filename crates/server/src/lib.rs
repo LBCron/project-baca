@@ -416,7 +416,7 @@ pub async fn not_found_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
         Json(ApiResponse::<()>::error(
-            "NOT_FOUND",
+            shared::error_code::NOT_FOUND,
             "The requested resource was not found",
             None,
         )),

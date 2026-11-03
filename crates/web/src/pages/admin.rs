@@ -48,10 +48,14 @@ fn status_key(status: &str) -> &'static str {
 /// API errors arrive as "CODE: message"; the curator reads the message,
 /// or the size limit in their own language.
 fn upload_error(error: &str, lang: &crate::i18n::Lang) -> String {
-    match error.split_once(": ") {
-        Some(("PAYLOAD_TOO_LARGE", _)) => lang.text("admin_too_large"),
-        Some((_, message)) if !message.is_empty() => message.to_string(),
-        _ => lang.text("upload_rejected"),
+    if error.starts_with(shared::error_code::PAYLOAD_TOO_LARGE) {
+        lang.text("admin_too_large")
+    } else if error.starts_with(shared::error_code::BAD_REQUEST)
+        || error.starts_with(shared::error_code::VALIDATION_FAILED)
+    {
+        lang.text("upload_rejected")
+    } else {
+        crate::components::auth::friendly_error(error, *lang)
     }
 }
 
