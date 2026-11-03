@@ -115,10 +115,7 @@ async fn test_perf_auth_login_latency() {
 
     // Setup active test user
     let hash = infra::hash_password_async(password.clone()).await.unwrap();
-    let _ = infra::create_inactive_user(&harness.state.db, &test_email, "PerfUser", &hash)
-        .await
-        .unwrap();
-    let _ = infra::activate_user_by_email(&harness.state.db, &test_email)
+    let _ = infra::activate_registration(&harness.state.db, &test_email, "PerfUser", &hash)
         .await
         .unwrap();
 
@@ -179,11 +176,12 @@ async fn test_perf_auth_otp_verify_latency() {
     // measured iterations reflect steady state, not cold-start noise.
     {
         let warm_email = format!("perf_otp_warmup_{}@example.com", uuid::Uuid::new_v4());
-        let _ =
-            infra::create_inactive_user(&harness.state.db, &warm_email, "PerfUser", "hash").await;
-        if let Ok(warm_otp) = infra::generate_and_store_otp(&mut redis_conn, &warm_email).await {
+        if let Ok((registration_id, warm_otp)) =
+            infra::start_registration(&mut redis_conn, &warm_email, "PerfUser", "hash").await
+        {
             let warm_req = shared::VerifyOtpRequest {
                 email: warm_email,
+                registration_id,
                 otp: warm_otp,
             };
             let req = Request::builder()
@@ -202,15 +200,14 @@ async fn test_perf_auth_otp_verify_latency() {
 
     for i in 0..iterations {
         let test_email = format!("perf_otp_{}_{}@example.com", i, uuid::Uuid::new_v4());
-        let _ = infra::create_inactive_user(&harness.state.db, &test_email, "PerfUser", "hash")
-            .await
-            .unwrap();
-        let otp = infra::generate_and_store_otp(&mut redis_conn, &test_email)
-            .await
-            .unwrap();
+        let (registration_id, otp) =
+            infra::start_registration(&mut redis_conn, &test_email, "PerfUser", "hash")
+                .await
+                .unwrap();
 
         let verify_req = shared::VerifyOtpRequest {
             email: test_email,
+            registration_id,
             otp,
         };
 

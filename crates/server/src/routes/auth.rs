@@ -14,21 +14,22 @@ use axum::{
 };
 use chrono::Utc;
 use infra::{
-    activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
-    entities::users, find_user_by_email, find_user_by_id, generate_and_store_otp,
-    generate_refresh_token, hash_password_async, hit_window, issue_access_token, list_sessions,
-    otp_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
-    revoke_refresh_token, revoke_session, send_otp_email, store_refresh_token, touch_session,
-    update_inactive_credentials, update_user_password, update_user_profile,
-    validate_and_rotate_refresh_token, verify_access_token, verify_and_consume_otp,
-    verify_password_async, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
+    activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
+    ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
+    generate_refresh_token, hash_password_async, hit_window, is_session_revoked,
+    issue_access_token, list_sessions, revoke_all_user_sessions, revoke_family_on_reuse,
+    revoke_other_sessions_keeping, revoke_refresh_token, revoke_session, revoke_session_tokens,
+    send_account_exists_email, send_otp_email, start_registration, store_refresh_token,
+    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
+    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
+    DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
 use shared::{
     ApiResponse, AppError, ChangePasswordRequest, ErrorPayload, LoginRequest, PasswordChangedDto,
-    RefreshTokenRequest, SessionDto, SignupRequest, TokenResponse, UpdateProfileRequest,
-    UserProfileDto, VerifyOtpRequest,
+    RefreshTokenRequest, RegistrationStartedDto, SessionDto, SignupRequest, TokenResponse,
+    UpdateProfileRequest, UserProfileDto, VerifyOtpRequest,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -51,7 +52,7 @@ fn now_secs() -> usize {
 /// Device facts recorded with a new session so the reader can recognise it
 /// on the shelf: browser and platform from the User-Agent, a coarse network
 /// prefix from the client address.
-fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta {
+fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid, sid: Uuid) -> SessionMeta {
     let user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -61,6 +62,7 @@ fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta
         device: domain::device_label(user_agent),
         ip_prefix: domain::ip_prefix(&ip),
         jti,
+        sid,
     }
 }
 
@@ -71,6 +73,7 @@ async fn issue_token_pair(
     issued_at: usize,
     headers: &HeaderMap,
 ) -> Result<TokenResponse, HttpError> {
+    let sid = Uuid::new_v4();
     let (access_token, jti) = issue_access_token(
         user.id,
         &user.email,
@@ -78,6 +81,7 @@ async fn issue_token_pair(
         state.config.jwt_secret(),
         state.config.auth.access_expiry_minutes,
         issued_at,
+        sid,
     )
     .map_err(HttpError::from)?;
 
@@ -87,7 +91,7 @@ async fn issue_token_pair(
         &refresh_token,
         user.id,
         state.config.auth.refresh_expiry_days,
-        session_meta(state, headers, jti),
+        session_meta(state, headers, jti, sid),
     )
     .await
     .map_err(HttpError::from)?;
@@ -101,44 +105,49 @@ async fn issue_token_pair(
     })
 }
 
-/// Two-layer login brute-force accounting. The (email, IP) pair locks after
-/// 5 failures so hammering a victim's address cannot lock the victim out
-/// from their own network; the per-email aggregate caps distributed guessing
-/// at 20 failures per 15 minutes.
-async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
-    let pair_fail_key = format!("auth:login:fail:{email}:{ip}");
-    if let Ok((c, _)) = hit_window(redis, &pair_fail_key, 900).await {
-        if c >= 5 {
-            let pair_lock_key = format!("auth:login:lockout:{email}:{ip}");
-            let _: Result<(), _> = redis.set_ex(&pair_lock_key, "1", 900).await;
-        }
-    }
-    let email_fail_key = format!("auth:login:fail:{email}");
-    if let Ok((c, _)) = hit_window(redis, &email_fail_key, 900).await {
-        if c >= 20 {
-            let email_lock_key = format!("auth:login:lockout:{email}");
-            let _: Result<(), _> = redis.set_ex(&email_lock_key, "1", 900).await;
-        }
-    }
+/// Two-layer login brute-force accounting, counted before the password is
+/// checked so parallel guesses each take their own slot. The (email, IP)
+/// pair allows 5 attempts so hammering a victim's address cannot lock the
+/// victim out from their own network; the per-email aggregate caps
+/// distributed guessing at 20 per 15 minutes.
+const LOGIN_WINDOW_SECS: u64 = 900;
+const PAIR_ATTEMPTS: i64 = 5;
+const EMAIL_ATTEMPTS: i64 = 20;
+
+fn login_attempt_keys(email: &str, ip: &str) -> [(String, i64); 2] {
+    [
+        (format!("auth:login:fail:{email}:{ip}"), PAIR_ATTEMPTS),
+        (format!("auth:login:fail:{email}"), EMAIL_ATTEMPTS),
+    ]
 }
 
-/// Returns the lockout retry delay when the pair or aggregate lock is set.
-async fn login_lockout_retry_after(
+/// Counts this attempt and refuses it once either budget is spent.
+async fn claim_login_attempt(
     redis: &mut infra::RedisConn,
     email: &str,
     ip: &str,
-) -> Option<u64> {
-    for key in [
-        format!("auth:login:lockout:{email}:{ip}"),
-        format!("auth:login:lockout:{email}"),
-    ] {
-        let locked: bool = redis.exists(&key).await.unwrap_or(false);
-        if locked {
-            let ttl: i64 = redis.ttl(&key).await.unwrap_or(900);
-            return Some(if ttl > 0 { ttl as u64 } else { 900 });
+) -> Result<(), HttpError> {
+    for (key, limit) in login_attempt_keys(email, ip) {
+        let (attempts, ttl) = hit_window(redis, &key, LOGIN_WINDOW_SECS)
+            .await
+            .map_err(redis_unavailable)?;
+        if attempts > limit {
+            return Err(HttpError(AppError::RateLimited {
+                retry_after: ttl.max(1) as u64,
+            }));
         }
     }
-    None
+    Ok(())
+}
+
+/// A failed attempt that spent a budget locks it for a full window from now.
+async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
+    for (key, limit) in login_attempt_keys(email, ip) {
+        let attempts: i64 = redis.get(&key).await.unwrap_or(0);
+        if attempts >= limit {
+            let _: Result<(), _> = redis.expire(&key, LOGIN_WINDOW_SECS as i64).await;
+        }
+    }
 }
 
 /// Converts a database user model to a public UserProfileDto
@@ -160,8 +169,8 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     path = "/api/v1/auth/signup",
     request_body = SignupRequest,
     responses(
-        (status = 201, description = "Verification OTP sent to email", body = ApiResponse<serde_json::Value>),
-        (status = 409, description = "Email already registered", body = ApiResponse<ErrorPayload>)
+        (status = 201, description = "Verification OTP sent to email; an address that already has an account answers the same and its owner is told instead", body = ApiResponse<RegistrationStartedDto>),
+        (status = 429, description = "Signup cap for this network, codes for this address, or guesses for it spent; Retry-After says when", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
 )]
@@ -173,15 +182,6 @@ pub async fn signup(
     req.validate().map_err(HttpError::from)?;
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
-
-    // Anti-Email-Bombing: 60-second cooldown per target email
-    let cooldown_key = format!("otp:cooldown:{}", req.email);
-    let in_cooldown: bool = redis_conn.exists(&cooldown_key).await.unwrap_or(false);
-    if in_cooldown {
-        let ttl: i64 = redis_conn.ttl(&cooldown_key).await.unwrap_or(60);
-        let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
-        return Err(HttpError(AppError::RateLimited { retry_after }));
-    }
 
     // Per-IP signup cap: rotating the local part cannot bypass this, so one
     // client cannot burn SMTP quota or sender reputation at will.
@@ -196,76 +196,54 @@ pub async fn signup(
         }));
     }
 
-    let existing_user = find_user_by_email(&state.db, &req.email)
+    let registered = find_user_by_email(&state.db, &req.email)
+        .await
+        .map_err(HttpError::from)?
+        .is_some_and(|user| user.is_active);
+
+    // Registrations for one address live side by side, so nobody can hold
+    // the address of someone else; what stays bounded is the mail sent to
+    // it and the guesses spent on it.
+    ensure_guesses_left(&mut redis_conn, &req.email)
+        .await
+        .map_err(HttpError::from)?;
+    claim_code_quota(&mut redis_conn, &req.email)
         .await
         .map_err(HttpError::from)?;
 
-    match existing_user {
-        Some(user) if user.is_active => {
-            return Err(HttpError(AppError::Conflict(
-                "An account with this email is already registered".to_string(),
-            )));
-        }
-        Some(user) => {
-            // While a code is pending, only whoever chose the password may ask
-            // for a fresh one; anyone else would plant their own password and
-            // wait for the owner to type the code that arrives.
-            let pending_secs: i64 = redis_conn
-                .ttl(otp_key(&req.email))
-                .await
-                .map_err(redis_unavailable)?;
-            if pending_secs > 0 {
-                let same_registrant = match &user.password_hash {
-                    Some(hash) => verify_password_async(req.password.clone(), hash.clone())
-                        .await
-                        .map_err(HttpError::from)?,
-                    None => false,
-                };
-                if !same_registrant {
-                    return Err(HttpError(AppError::RateLimited {
-                        retry_after: pending_secs as u64,
-                    }));
-                }
-            } else {
-                let password_hash = hash_password_async(req.password.clone())
-                    .await
-                    .map_err(HttpError::from)?;
-                update_inactive_credentials(&state.db, user, &req.display_name, &password_hash)
-                    .await
-                    .map_err(HttpError::from)?;
-            }
-        }
-        None => {
-            let password_hash = hash_password_async(req.password.clone())
-                .await
-                .map_err(HttpError::from)?;
-            create_inactive_user(&state.db, &req.email, &req.display_name, &password_hash)
-                .await
-                .map_err(HttpError::from)?;
-        }
-    }
-
-    let otp = generate_and_store_otp(&mut redis_conn, &req.email)
+    let password_hash = hash_password_async(req.password.clone())
         .await
         .map_err(HttpError::from)?;
+    let (registration_id, otp) = start_registration(
+        &mut redis_conn,
+        &req.email,
+        &req.display_name,
+        &password_hash,
+    )
+    .await
+    .map_err(HttpError::from)?;
 
-    // Set 60-second cooldown for subsequent OTP requests for this email
-    let _: Result<(), _> = redis_conn.set_ex(&cooldown_key, "1", 60).await;
-
-    // Fail closed: a 201 without a deliverable code strands the user at the
-    // OTP step, and the cooldown must not block an immediate retry.
-    if let Err(e) = send_otp_email(&state.config.email, &req.email, &otp).await {
-        let _: Result<(), _> = redis_conn.del(&cooldown_key).await;
+    // An address that already has an account answers like a new one, so
+    // signup does not tell who is registered; its owner gets a note instead
+    // of a code. Fail closed: a 201 without a delivered message strands the
+    // user at the OTP step.
+    let delivered = if registered {
+        send_account_exists_email(&state.config.email, &req.email).await
+    } else {
+        send_otp_email(&state.config.email, &req.email, &otp).await
+    };
+    if let Err(e) = delivered {
         tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
         return Err(HttpError(e));
     }
 
     Ok((
         StatusCode::CREATED,
-        Json(ApiResponse::success(serde_json::json!({
-            "message": "Verification OTP sent to email",
-            "email": req.email
-        }))),
+        Json(ApiResponse::success(RegistrationStartedDto {
+            message: "Verification OTP sent to email".to_string(),
+            email: req.email,
+            registration_id,
+        })),
     )
         .into_response())
 }
@@ -278,7 +256,8 @@ pub async fn signup(
     responses(
         (status = 200, description = "Verification successful, JWT tokens issued", body = ApiResponse<TokenResponse>),
         (status = 400, description = "Invalid or expired OTP", body = ApiResponse<ErrorPayload>),
-        (status = 429, description = "Code locked after three misses; Retry-After says when to try again", body = ApiResponse<ErrorPayload>)
+        (status = 409, description = "The address was verified by another registration first", body = ApiResponse<ErrorPayload>),
+        (status = 429, description = "Code locked after three misses, or the address spent its daily guesses; Retry-After says when to try again", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
 )]
@@ -291,22 +270,26 @@ pub async fn verify_otp(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let is_valid = verify_and_consume_otp(&mut redis_conn, &req.email, &req.otp)
-        .await
-        .map_err(HttpError::from)?;
+    let registration =
+        verify_registration(&mut redis_conn, &req.email, req.registration_id, &req.otp)
+            .await
+            .map_err(HttpError::from)?
+            .ok_or_else(|| {
+                HttpError(AppError::ValidationError(
+                    "Invalid or expired OTP".to_string(),
+                ))
+            })?;
 
-    if !is_valid {
-        return Err(HttpError(AppError::ValidationError(
-            "Invalid or expired OTP".to_string(),
-        )));
-    }
+    let user = activate_registration(
+        &state.db,
+        &req.email,
+        &registration.display_name,
+        &registration.password_hash,
+    )
+    .await
+    .map_err(HttpError::from)?;
 
-    let updated_user = activate_user_by_email(&state.db, &req.email)
-        .await
-        .map_err(HttpError::from)?;
-
-    let response =
-        issue_token_pair(&state, &mut redis_conn, &updated_user, now_secs(), &headers).await?;
+    let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -331,26 +314,27 @@ pub async fn login(
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
     let client_ip = client_ip_from_headers(&headers, &state.config.server);
-
-    // Lockout check: pair (email, IP) lock after 5 failures, aggregate email
-    // lock after 20 — 15 minutes each.
-    if let Some(retry_after) =
-        login_lockout_retry_after(&mut redis_conn, &req.email, &client_ip).await
-    {
-        return Err(HttpError(AppError::RateLimited { retry_after }));
-    }
+    claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await?;
 
     let user = find_user_by_email(&state.db, &req.email)
         .await
         .map_err(HttpError::from)?;
 
+    // Argon2 runs on every path, against a dummy hash when there is no
+    // usable one, before anything branches on the account: unknown, pending
+    // and wrong-password answers take the same time and say the same thing.
+    let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
+    let matches = verify_password_async(
+        req.password.clone(),
+        stored_hash
+            .clone()
+            .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
+    )
+    .await
+    .map_err(HttpError::from)?;
     let user = match user {
-        Some(u) => u,
-        None => {
-            // Dummy verification defeats timing-based user enumeration.
-            let _ =
-                verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
-
+        Some(user) if matches && stored_hash.is_some() && user.is_active => user,
+        _ => {
             note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
             return Err(HttpError(AppError::Unauthorized(
                 INVALID_CREDENTIALS.to_string(),
@@ -358,42 +342,11 @@ pub async fn login(
         }
     };
 
-    // An unverified account answers exactly like a wrong password, so the
-    // activation state of an address cannot be probed.
-    if !user.is_active {
-        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
-        return Err(HttpError(AppError::Unauthorized(
-            INVALID_CREDENTIALS.to_string(),
-        )));
-    }
-
-    let is_valid = match &user.password_hash {
-        Some(hash) => verify_password_async(req.password.clone(), hash.clone())
-            .await
-            .map_err(HttpError::from)?,
-        None => false,
-    };
-
-    if !is_valid {
-        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
-        return Err(HttpError(AppError::Unauthorized(
-            INVALID_CREDENTIALS.to_string(),
-        )));
-    }
-
-    // Reset login failure counters on successful authentication
-    let pair_fail_key = format!("auth:login:fail:{}:{}", req.email, client_ip);
-    let pair_lock_key = format!("auth:login:lockout:{}:{}", req.email, client_ip);
-    let email_fail_key = format!("auth:login:fail:{}", req.email);
-    let email_lock_key = format!("auth:login:lockout:{}", req.email);
-    let _: Result<(), _> = redis_conn
-        .del(&[
-            &pair_fail_key,
-            &pair_lock_key,
-            &email_fail_key,
-            &email_lock_key,
-        ])
-        .await;
+    let keys: Vec<String> = login_attempt_keys(&req.email, &client_ip)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let _: Result<(), _> = redis_conn.del(&keys).await;
 
     let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
@@ -426,11 +379,12 @@ pub async fn refresh(
     .await
     .map_err(HttpError::from)?;
 
-    let (user_id, new_refresh_token) = match outcome {
+    let (user_id, new_refresh_token, sid) = match outcome {
         RefreshOutcome::Rotated {
             user_id,
             refresh_token,
-        } => (user_id, refresh_token),
+            sid,
+        } => (user_id, refresh_token, sid),
         // A token rotated out before the grace window signals theft: the
         // whole family dies so the attacker's copy goes with the victim's.
         RefreshOutcome::Replayed { user_id } => {
@@ -441,6 +395,19 @@ pub async fn refresh(
             )));
         }
     };
+
+    // A device signed out while its refresh raced the sign-out may still hold
+    // a live successor; the session revocation outlives it and refuses it.
+    if is_session_revoked(&mut redis_conn, sid)
+        .await
+        .map_err(HttpError::from)?
+    {
+        let access_ttl = state.config.auth.access_expiry_minutes * 60;
+        let _ = revoke_refresh_token(&mut redis_conn, &new_refresh_token, access_ttl).await;
+        return Err(HttpError(AppError::Unauthorized(
+            "Invalid or expired refresh token".to_string(),
+        )));
+    }
 
     let user = find_user_by_id(&state.db, user_id)
         .await
@@ -460,6 +427,7 @@ pub async fn refresh(
         state.config.jwt_secret(),
         state.config.auth.access_expiry_minutes,
         now_secs(),
+        sid,
     )
     .map_err(HttpError::from)?;
     touch_session(
@@ -521,6 +489,10 @@ pub async fn logout(
                     0
                 };
                 let _ = blacklist_access_token(&mut redis_conn, claims.jti, remaining).await;
+                if let Some(sid) = claims.sid {
+                    let lifetime = state.config.auth.refresh_expiry_days * 86400;
+                    let _ = revoke_session_tokens(&mut redis_conn, sid, lifetime).await;
+                }
             }
         }
     }
@@ -619,13 +591,17 @@ pub async fn change_password(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    // Throttling: Lockout after 5 failed password change attempts
-    let lockout_key = format!("auth:pwd_change:lockout:{}", auth.id);
-    let is_locked: bool = redis_conn.exists(&lockout_key).await.unwrap_or(false);
-    if is_locked {
-        let ttl: i64 = redis_conn.ttl(&lockout_key).await.unwrap_or(900);
-        let retry_after = if ttl > 0 { ttl as u64 } else { 900 };
-        return Err(HttpError(AppError::RateLimited { retry_after }));
+    // Five attempts per 15 minutes, counted before Argon2 so parallel tries
+    // each take their own slot; a failure that spends them locks the change
+    // for 15 minutes from then.
+    let attempts_key = format!("auth:pwd_change:fail:{}", auth.id);
+    let (attempts, ttl) = hit_window(&mut redis_conn, &attempts_key, 900)
+        .await
+        .map_err(redis_unavailable)?;
+    if attempts > 5 {
+        return Err(HttpError(AppError::RateLimited {
+            retry_after: ttl.max(1) as u64,
+        }));
     }
 
     let user = find_user_by_id(&state.db, auth.id)
@@ -641,20 +617,16 @@ pub async fn change_password(
     };
 
     if !is_valid {
-        let fail_key = format!("auth:pwd_change:fail:{}", auth.id);
-        if let Ok((c, _)) = hit_window(&mut redis_conn, &fail_key, 900).await {
-            if c >= 5 {
-                let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
-            }
+        if attempts >= 5 {
+            let _: Result<(), _> = redis_conn.expire(&attempts_key, 900).await;
         }
-        return Err(HttpError(AppError::Unauthorized(
+        // 403, not 401: the session is fine, the answer was wrong. A 401
+        // would send the client through a refresh and a second attempt.
+        return Err(HttpError(AppError::Forbidden(
             "Current password is incorrect".to_string(),
         )));
     }
-
-    // Reset password change failure counter on success
-    let fail_key = format!("auth:pwd_change:fail:{}", auth.id);
-    let _: Result<(), _> = redis_conn.del(&[&fail_key, &lockout_key]).await;
+    let _: Result<(), _> = redis_conn.del(&attempts_key).await;
 
     let new_hash = hash_password_async(req.new_password.clone())
         .await
@@ -758,9 +730,10 @@ pub async fn revoke_all(
     let access_ttl = state.config.auth.access_expiry_minutes * 60;
 
     if query.keep_current.unwrap_or(false) {
-        let revoked = revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, access_ttl)
-            .await
-            .map_err(HttpError::from)?;
+        let revoked =
+            revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, auth.sid, access_ttl)
+                .await
+                .map_err(HttpError::from)?;
         return Ok((
             StatusCode::OK,
             Json(ApiResponse::success(serde_json::json!({
@@ -817,7 +790,7 @@ pub async fn list_my_sessions(
                 created_at: chrono::DateTime::from_timestamp(r.created_at, 0).unwrap_or_default(),
                 last_seen_at: chrono::DateTime::from_timestamp(r.last_seen_at, 0)
                     .unwrap_or_default(),
-                current: r.jti == auth.jti,
+                current: r.jti == auth.jti || Some(r.sid) == auth.sid,
             },
             None => SessionDto {
                 id,

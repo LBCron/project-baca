@@ -854,3 +854,38 @@ fn urlencode(text: &str) -> String {
         })
         .collect()
 }
+
+/// A draft, an archived book, and an id that never existed answer with one
+/// identical 404, so the catalog is no oracle for unpublished manuscripts.
+#[tokio::test]
+async fn test_unpublished_and_missing_books_answer_the_same_404() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up)");
+    let mut archived: books::ActiveModel = books::Entity::find_by_id(seeded.book3_id)
+        .one(&harness.state.db)
+        .await
+        .unwrap()
+        .expect("seeded book")
+        .into();
+    archived.status = Set("archived".to_string());
+    archived.update(&harness.state.db).await.unwrap();
+
+    let mut answers = Vec::new();
+    for id in [seeded.draft_id, seeded.book3_id, Uuid::new_v4()] {
+        let req = Request::builder()
+            .uri(format!("/api/v1/books/{id}"))
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{json}");
+        answers.push(json["error"].clone());
+    }
+    assert!(
+        answers.iter().all(|a| *a == answers[0]),
+        "bodies differ: {answers:?}"
+    );
+    harness.cleanup().await;
+}

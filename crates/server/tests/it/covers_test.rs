@@ -26,7 +26,7 @@ async fn test_cover_roundtrip_through_storage() {
         .storage
         .clone()
         .expect("live MinIO required (db-up)");
-    let book_id = Uuid::new_v4();
+    let book_id = common::seed_book(&harness, "published").await;
     let key = format!("covers/{book_id}.webp");
     let bytes = b"RIFF\x1a\x00\x00\x00WEBPVP8 ".to_vec();
     storage
@@ -87,6 +87,32 @@ async fn test_cover_missing_and_invalid_names_are_404() {
         let (resp, body) = harness.send_json_request(get_cover(name)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}: {body}");
         assert_eq!(body["error"]["code"], "NOT_FOUND", "{name}");
+    }
+    harness.cleanup().await;
+}
+
+/// A takedown takes the cover with it: the stored cover of a draft or an
+/// archived book answers 404 like a missing one.
+#[tokio::test]
+async fn test_cover_of_an_unpublished_book_is_404() {
+    let harness = TestHarness::new().await;
+    let storage = harness
+        .state
+        .storage
+        .clone()
+        .expect("live MinIO required (db-up)");
+    for status in ["archived", "draft"] {
+        let book_id = common::seed_book(&harness, status).await;
+        let key = format!("covers/{book_id}.webp");
+        storage
+            .put_cover(&key, b"RIFF\x1a\x00\x00\x00WEBPVP8 ".to_vec(), "image/webp")
+            .await
+            .expect("cover upload must succeed");
+        let resp = harness
+            .send_request(get_cover(&format!("{book_id}.webp")))
+            .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{status}");
+        storage.delete_cover(&key).await.expect("cover cleanup");
     }
     harness.cleanup().await;
 }

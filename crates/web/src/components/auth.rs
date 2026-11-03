@@ -26,6 +26,7 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
     let (password, set_password) = signal(String::new());
     let (name, set_name) = signal(String::new());
     let (otp, set_otp) = signal(String::new());
+    let (registration, set_registration) = signal(None::<uuid::Uuid>);
     let (error, set_error) = signal(None::<String>);
     let (busy, set_busy) = signal(false);
 
@@ -60,12 +61,13 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
         ev.prevent_default();
         set_busy.set(true);
         set_error.set(None);
-        let (m, e, p, n, o) = (
+        let (m, e, p, n, o, r) = (
             mode.get_untracked(),
             email.get_untracked().trim().to_string(),
             password.get_untracked(),
             name.get_untracked().trim().to_string(),
             otp.get_untracked().trim().to_string(),
+            registration.get_untracked().unwrap_or_default(),
         );
         spawn_local(async move {
             let result = match m {
@@ -75,10 +77,17 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                     password: p,
                 })
                 .await
-                .map(|_| None),
-                Mode::Otp => api::verify_otp(&VerifyOtpRequest { email: e, otp: o })
-                    .await
-                    .map(|t| Some((t.access_token, t.refresh_token))),
+                .map(|id| {
+                    set_registration.set(Some(id));
+                    None
+                }),
+                Mode::Otp => api::verify_otp(&VerifyOtpRequest {
+                    email: e,
+                    registration_id: r,
+                    otp: o,
+                })
+                .await
+                .map(|t| Some((t.access_token, t.refresh_token))),
                 Mode::Login => api::login(&LoginRequest {
                     email: e,
                     password: p,
@@ -217,7 +226,7 @@ async fn merge_local_quotes() {
 }
 
 /// Turns the API layer's "CODE: message" strings into reader-facing copy.
-fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
+pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
     if raw.contains("RATE_LIMITED") {
         let seconds = raw
             .split(|c: char| !c.is_ascii_digit())

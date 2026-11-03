@@ -4,7 +4,16 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Changed
+- `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
+
+### Security
+- Signup cannot hold or hijack someone else's address: registrations for one address live side by side, each holding its own password, and a code only activates the registration it was mailed for. Codes mailed to one address are capped at 3 per hour and 10 per day (the 60-second cooldown is gone), and guesses are capped at 10 per address per day across every code, so asking for a new code never buys more attempts.
+- Login answers unknown, unverified and wrong-password attempts in the same time (Argon2 always runs), and counts attempts atomically before Argon2, so twenty parallel guesses evaluate five. Signing a device out, or logging out, revokes every access token that device was given, not only the newest: access tokens carry a session id kept across refreshes. Refresh rotation and family revocation are single Redis scripts.
+- Public routes no longer tell an unpublished book from a missing one: a draft, an archived book and a random id answer the same 404, and the cover of a draft or archived book is 404 too. Signup for an address that already has an account answers 201 like any other and mails the owner a note instead of a code, so signup no longer reveals who is registered.
+
 ### Fixed
+- Changing the password with a wrong current password says so in the form (403 `FORBIDDEN`) and leaves the device signed in; it used to answer 401, so the client refreshed, sent the change twice, and signed the reader out. The client ends a session only when the refresh itself is refused, and requests waiting on that refresh are dropped instead of resent.
 - Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
 - Queued progress belongs to the account that wrote it: signing out (or a refused session) drops that account's unsent writes, and a drain sends only the signed-in account's writes, so a shared device never moves one reader's position into another's shelf.
 - Reader: resizing the window or rotating the phone keeps the paragraph being read on screen; the position is held as a paragraph and the share of it already read, applied once the new column width is laid out, instead of drifting back about a page per change.

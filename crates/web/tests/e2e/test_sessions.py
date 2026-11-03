@@ -2,6 +2,7 @@
 import base64
 import json
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -36,9 +37,9 @@ def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str
     page.keyboard.press("Escape")
 
     email = f"e2e-{int(time.time())}@example.com"
-    _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    started = _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
     otp = _mailpit_otp(email)
-    tokens = _post("/auth/verify-otp", {"email": email, "otp": otp})
+    tokens = _post("/auth/verify-otp", {"email": email, "registration_id": started["registration_id"], "otp": otp})
     assert tokens.get("access_token"), "OTP verify must issue tokens"
 
     page.evaluate(
@@ -181,10 +182,11 @@ def _sign_in_storage(tokens: dict) -> str:
     )
 
 
-def test_signup_inside_the_cooldown_stays_on_the_form(clean_page: Page):
+def test_signup_past_the_mail_cap_stays_on_the_form(clean_page: Page):
     page = clean_page
     email = f"e2e-cooldown-{int(time.time() * 1000)}@example.com"
-    _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    for _ in range(3):
+        _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
     goto(page, "/me")
     page.click(".guest-shelf .btn-primary")
     page.click(".sheet [role='tab']:has-text('Register')")
@@ -332,3 +334,61 @@ def test_queued_progress_never_reaches_the_next_account(browser: Browser, book_w
         assert errors == [], errors[:3]
     finally:
         context.close()
+
+
+def test_wrong_current_password_stays_in_the_form(browser: Browser):
+    tokens = register_reader("pwd-wrong")
+    context = browser.new_context(color_scheme="dark", reduced_motion="reduce")
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    puts: list[str] = []
+    page.on("request", lambda r: puts.append(r.url) if r.method == "PUT" and r.url.endswith("/me/password") else None)
+    try:
+        goto(page, "/")
+        page.evaluate(_sign_in_storage(tokens))
+        goto(page, "/me")
+        page.fill("input[autocomplete='current-password']", "NotMyPassword123!")
+        page.fill("input[autocomplete='new-password']", "BrandNewPass123!")
+        page.click("#akun form button[type='submit']")
+        expect(page.locator("#akun form .form-error")).to_contain_text("does not match")
+        assert len(puts) == 1, puts
+        assert page.evaluate("() => localStorage.getItem('baca_access_token')") == tokens["access_token"]
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_refused_refresh_sends_no_more_bearer_requests(clean_page: Page):
+    page = clean_page
+    events: list[tuple[str, bool]] = []
+    page.on("request", lambda r: events.append((r.url, "authorization" in r.headers)))
+    page.on("response", lambda r: events.append(("refresh-answered", False)) if r.url.endswith("/auth/refresh") else None)
+    goto(page, "/")
+    page.evaluate(_sign_in_storage({"access_token": "garbage.access.token", "refresh_token": "rt_garbage"}))
+    goto(page, "/me")
+    page.wait_for_timeout(1500)
+    answered = [i for i, (url, _) in enumerate(events) if url == "refresh-answered"]
+    assert answered, "the refresh was tried"
+    late = [url for url, bearer in events[answered[0] + 1:] if bearer]
+    assert late == [], late
+    assert_no_page_errors(page)
+
+
+def test_fourth_code_in_an_hour_is_refused_and_not_mailed():
+    email = f"e2e-cap-{int(time.time() * 1000)}@example.com"
+    body = {"display_name": "E2E", "email": email, "password": "E2EPassword123!"}
+    for _ in range(3):
+        _post("/auth/signup", body)
+
+    def mailed() -> int:
+        with urllib.request.urlopen(f"http://localhost:8025/api/v1/search?query=to:{email}") as r:
+            return json.load(r)["messages_count"]
+
+    before = mailed()
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        _post("/auth/signup", body)
+    assert refused.value.code == 429
+    assert refused.value.headers.get("Retry-After")
+    time.sleep(1)
+    assert mailed() == before == 3

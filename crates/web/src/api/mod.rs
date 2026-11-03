@@ -146,8 +146,9 @@ use std::pin::Pin;
 type SendFuture = Pin<Box<dyn Future<Output = Result<gloo_net::http::Response, String>>>>;
 
 /// Sends a request, transparently refreshing an expired access token once.
-/// A second 401 clears the stored tokens so the next navigation lands on the
-/// guest view instead of failing silently.
+/// Only a refused refresh ends the session (`refresh` clears the tokens);
+/// once it has, requests that were waiting on that refresh give up instead
+/// of being sent again.
 async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Response, String> {
     let first = make().await?;
     if first.status() != 401 {
@@ -161,11 +162,10 @@ async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Re
     // connection, and a few of them exhaust the browser's pool for the host.
     let _ = first.binary().await;
     refresh_once().await?;
-    let second = make().await?;
-    if second.status() == 401 {
-        clear_token();
+    if token().is_none() {
+        return Err("UNAUTHORIZED: session ended".to_string());
     }
-    Ok(second)
+    make().await
 }
 
 async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> Result<T, String> {
@@ -441,11 +441,12 @@ pub async fn chapter_recap(
     get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
 }
 
-/// Registers and sends the code; a cooldown (429), relay outage (502), or
-/// Redis outage (503) comes back as an error so the sheet stays on the form.
-pub async fn signup(req: &SignupRequest) -> Result<(), String> {
-    let _: serde_json::Value = post_once("/auth/signup", req).await?;
-    Ok(())
+/// Registers and sends the code, returning the registration the code must
+/// come back with; a spent cap (429), relay outage (502), or Redis outage
+/// (503) comes back as an error so the sheet stays on the form.
+pub async fn signup(req: &SignupRequest) -> Result<uuid::Uuid, String> {
+    let started: shared::RegistrationStartedDto = post_once("/auth/signup", req).await?;
+    Ok(started.registration_id)
 }
 
 pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String> {

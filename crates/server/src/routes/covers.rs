@@ -48,8 +48,8 @@ fn cover_content_type(file: &str, stored: Option<String>) -> String {
         })
 }
 
-/// Cover image bytes for a book. Public, cached immutably, 404 for anything
-/// that is not a stored cover.
+/// Cover image bytes for a published book. Public, cached immutably, 404 for
+/// anything that is not the stored cover of a published book.
 #[utoipa::path(
     get,
     path = "/api/v1/covers/{file}",
@@ -59,7 +59,7 @@ fn cover_content_type(file: &str, stored: Option<String>) -> String {
     ),
     responses(
         (status = 200, description = "Cover image", content_type = "image/webp"),
-        (status = 404, description = "No such cover")
+        (status = 404, description = "No such cover, or its book is not published")
     )
 )]
 pub async fn get_cover(
@@ -67,9 +67,21 @@ pub async fn get_cover(
     Path(file): Path<String>,
 ) -> Result<Response, HttpError> {
     let not_found = || HttpError(AppError::NotFound("Cover not found".to_string()));
-    if !is_cover_file_name(&file) {
+    let Some(book_id) = is_cover_file_name(&file)
+        .then(|| file.rsplit_once('.'))
+        .flatten()
+        .and_then(|(stem, _)| stem.parse::<uuid::Uuid>().ok())
+    else {
         return Err(not_found());
-    }
+    };
+    // A draft or archived book's cover is as invisible as the book: a
+    // takedown takes the cover down with it.
+    infra::ensure_book_published(&state.db, book_id)
+        .await
+        .map_err(|e| match e {
+            AppError::NotFound(_) => not_found(),
+            other => HttpError(other),
+        })?;
     let storage = state.storage.as_ref().ok_or_else(|| {
         HttpError(AppError::Internal(
             "Object storage unavailable; covers cannot be served".to_string(),

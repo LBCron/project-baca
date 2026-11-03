@@ -317,6 +317,12 @@ pub async fn search_books(
     Ok(dtos)
 }
 
+/// The one answer for a book that is missing, a draft, or archived, so a
+/// public caller cannot tell an unpublished manuscript from a random id.
+fn book_not_found() -> AppError {
+    AppError::NotFound("Book not found".to_string())
+}
+
 /// Retrieves complete book details with tags and chapter summary list.
 pub async fn get_book_by_id(
     db: &DatabaseConnection,
@@ -326,11 +332,8 @@ pub async fn get_book_by_id(
         .one(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to retrieve book: {e}")))?
-        .ok_or_else(|| AppError::NotFound(format!("Book not found: {book_id}")))?;
-
-    if book.status != "published" {
-        return Err(AppError::NotFound("Book is not published".to_string()));
-    }
+        .filter(|book| book.status == "published")
+        .ok_or_else(book_not_found)?;
 
     let tags = get_tags_for_book(db, book.id).await?;
 
@@ -408,7 +411,7 @@ pub async fn get_chapter_number(
 /// stay invisible even to a caller holding their UUID.
 pub async fn ensure_book_published(db: &DatabaseConnection, book_id: Uuid) -> Result<(), AppError> {
     if get_book_status(db, book_id).await? != "published" {
-        return Err(AppError::NotFound("Book is not published".to_string()));
+        return Err(book_not_found());
     }
     Ok(())
 }
@@ -645,7 +648,7 @@ pub async fn get_book_status(db: &DatabaseConnection, book_id: Uuid) -> Result<S
         .await
         .map_err(|e| AppError::Database(format!("Failed to load book status: {e}")))?
         .map(|b| b.status)
-        .ok_or_else(|| AppError::NotFound("Book not found".to_string()))
+        .ok_or_else(book_not_found)
 }
 
 /// Writes a status the caller has already validated against the lifecycle.

@@ -132,8 +132,21 @@ pub struct VerifyOtpRequest {
     #[validate(email(message = "Invalid email format"))]
     pub email: String,
 
+    /// The registration the code was mailed for, from the signup answer.
+    pub registration_id: Uuid,
+
     #[validate(length(equal = 6, message = "OTP must be exactly 6 digits"))]
     pub otp: String,
+}
+
+/// Answer to a signup: the code is on its way and must come back with this
+/// registration's id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RegistrationStartedDto {
+    pub message: String,
+    pub email: String,
+    pub registration_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]

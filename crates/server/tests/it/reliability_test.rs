@@ -272,14 +272,32 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
 /// cover request within the operation timeout instead of holding it open.
 #[tokio::test]
 async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
+    // The cover route asks the database whether the book is published before
+    // it reads the bucket, so this one needs the live database.
+    let harness = common::TestHarness::new().await;
+    let book_id = common::seed_book(&harness, "published").await;
     let (port, _listener) = common::silent_listener().await;
     let mut config = AppConfig::default();
     config.storage.endpoint = format!("http://127.0.0.1:{port}");
     let storage = StorageService::connect(&config.storage);
-    let app = offline_app(config, Some(storage));
+    let embedding = build_embedding_provider(&AiConfig {
+        provider: "fastembed".to_string(),
+        api_key: String::new(),
+        model_name: "text-embedding-004".to_string(),
+        dimension: 768,
+    })
+    .expect("fastembed stub must always succeed");
+    let app = create_app(Arc::new(AppState {
+        db: harness.state.db.clone(),
+        redis: redis::Client::open("redis://127.0.0.1:6380").unwrap(),
+        redis_conn: None,
+        config: Arc::new(config),
+        embedding,
+        storage: Some(Arc::new(storage)),
+    }));
 
     let started = Instant::now();
-    let uri = format!("/api/v1/covers/{}.webp", Uuid::new_v4());
+    let uri = format!("/api/v1/covers/{book_id}.webp");
     let resp = tokio::time::timeout(
         S3_OPERATION_TIMEOUT + Duration::from_secs(5),
         app.oneshot(get(&uri)),
@@ -293,4 +311,5 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         "took {:?}",
         started.elapsed()
     );
+    harness.cleanup().await;
 }
