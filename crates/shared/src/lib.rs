@@ -81,6 +81,10 @@ pub enum AppError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
+    /// The body is larger than the route accepts (413).
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Rate limit exceeded. Try again in {retry_after} seconds")]
     RateLimited { retry_after: u64 },
 
@@ -707,6 +711,10 @@ pub struct JobStatusDto {
     #[serde(default)]
     pub attempts: i32,
 }
+
+/// Largest EPUB a curator may upload; the server enforces it while
+/// streaming and the web checks it before sending.
+pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 
 /// Accepted EPUB upload response (HTTP 202).
 #[derive(Debug, Clone, Serialize, Deserialize)]

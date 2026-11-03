@@ -470,6 +470,53 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
         )
 
 
+class MetadataBackfillTest(unittest.TestCase):
+    def backfill(self, row: tuple, epub: bytes) -> dict:
+        """Runs the pipeline to its first commit on a book row ``row`` and
+        returns the columns the backfill UPDATE wrote."""
+
+        class Recording(FakeCursor):
+            def __init__(self):
+                super().__init__("draft")
+                self.calls = []
+
+            def execute(self, sql, params=()):
+                super().execute(sql, params)
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return row
+
+        cursor = Recording()
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        conn.commit.side_effect = RuntimeError("stop after the first commit")
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(epub)
+        minio.get_object.return_value.release_conn = lambda: None
+        with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn):
+            with self.assertRaisesRegex(RuntimeError, "first commit"):
+                worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        sql, params = next(c for c in cursor.calls if c[0].startswith("UPDATE books SET title"))
+        columns = [part.split(" = ")[0].strip() for part in sql.split("SET", 1)[1].split(", updated_at")[0].split(",")]
+        return dict(zip(columns, params))
+
+    def test_a_blank_upload_takes_title_and_language_from_the_epub(self):
+        written = self.backfill(("", "Unknown", "", "draft"), make_epub([("One", "Text")], title="Kisah Lama", language="id"))
+        self.assertEqual((written["title"], written["language"]), ("Kisah Lama", "id"))
+
+    def test_an_epub_without_a_title_gets_a_placeholder(self):
+        written = self.backfill(("", "Unknown", "", "draft"), make_epub([("One", "Text")], title=""))
+        self.assertEqual(written["title"], worker.UNTITLED)
+
+    def test_curator_fields_are_kept(self):
+        cursor_row = ("Judul Kurator", "Penulis", "en", "draft")
+        with self.assertRaises(StopIteration):
+            self.backfill(cursor_row, make_epub([("One", "Text")], title="Other", language="id"))
+
+
 class ArchiveLimitsTest(unittest.TestCase):
     def test_rejects_oversized_archives(self):
         from types import SimpleNamespace

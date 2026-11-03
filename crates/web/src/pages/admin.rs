@@ -45,39 +45,22 @@ fn status_key(status: &str) -> &'static str {
         .unwrap_or("status_draft")
 }
 
-async fn upload_epub(file: web_sys::File, title: String, author: String) -> Result<String, String> {
-    let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
-    form.append_with_blob_and_filename("file", &file, &file.name())
-        .map_err(|e| format!("{e:?}"))?;
-    form.append_with_str("title", &title)
-        .map_err(|e| format!("{e:?}"))?;
-    form.append_with_str("author", &author)
-        .map_err(|e| format!("{e:?}"))?;
-    let resp = gloo_net::http::Request::post(&format!("{}/admin/books/upload", api::api_base()))
-        .header(
-            "Authorization",
-            &format!("Bearer {}", api::token().unwrap_or_default()),
-        )
-        .body(wasm_bindgen::JsValue::from(form))
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let envelope = resp
-        .json::<shared::ApiResponse<shared::UploadBookResponseDto>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    envelope
-        .data
-        .map(|d| d.job_id)
-        .ok_or_else(|| envelope.error.map(|e| e.message).unwrap_or_default())
+/// API errors arrive as "CODE: message"; the curator reads the message,
+/// or the size limit in their own language.
+fn upload_error(error: &str, lang: &crate::i18n::Lang) -> String {
+    match error.split_once(": ") {
+        Some(("PAYLOAD_TOO_LARGE", _)) => lang.text("admin_too_large"),
+        Some((_, message)) if !message.is_empty() => message.to_string(),
+        _ => lang.text("upload_rejected"),
+    }
 }
 
-fn upload_error(message: &str, lang: &crate::i18n::Lang) -> String {
-    if message.is_empty() {
-        lang.text("upload_rejected")
+/// A manuscript waiting for its title from the EPUB has none yet.
+fn shown_title(title: &str, lang: &crate::i18n::Lang) -> String {
+    if title.trim().is_empty() {
+        lang.text("untitled_pending")
     } else {
-        message.to_string()
+        title.to_string()
     }
 }
 
@@ -173,11 +156,16 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>, on_queued: Callback<()>) -> i
             toasts.error(lang.get_untracked().text("admin_choose_first"));
             return;
         };
+        if file.size() > shared::MAX_EPUB_BYTES as f64 {
+            toasts.error(lang.get_untracked().text("admin_too_large"));
+            return;
+        }
         set_busy.set(true);
         let (t, a) = (title.get_untracked(), author.get_untracked());
         spawn_local(async move {
-            match upload_epub(file, t, a).await {
-                Ok(job_id) => {
+            match api::admin_upload(&file, &t, &a).await {
+                Ok(queued) => {
+                    let job_id = queued.job_id;
                     // A cleared form cannot queue the same file twice.
                     set_title.set(String::new());
                     set_author.set(String::new());
@@ -235,6 +223,11 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
     let restorable = !archivable;
     let published = status == "published";
     let (chapters, chunks) = (row.chapter_count, row.chunk_count);
+    let byline = if row.language.is_empty() {
+        row.author.clone()
+    } else {
+        format!("{} \u{00B7} {}", row.author, row.language.to_uppercase())
+    };
     let archive = move |_| {
         if !armed.get_untracked() {
             set_armed.set(true);
@@ -275,9 +268,10 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
                 {if published {
                     view! { <a href=format!("/book/{id}") class="manuscript-title">{row.title.clone()}</a> }.into_any()
                 } else {
-                    view! { <span class="manuscript-title">{row.title.clone()}</span> }.into_any()
+                    let title = row.title.clone();
+                    view! { <span class="manuscript-title">{move || shown_title(&title, &lang.get())}</span> }.into_any()
                 }}
-                <span class="manuscript-meta">{format!("{} \u{00B7} {}", row.author, row.language.to_uppercase())}</span>
+                <span class="manuscript-meta">{byline}</span>
                 <span class="manuscript-meta">
                     {move || format!(
                         "{} \u{00B7} {}",
@@ -452,7 +446,7 @@ fn QueuePanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
                     view! {
                         <li class="dlq-row">
                             <div>
-                                <span class="manuscript-title">{move || title.clone().unwrap_or_else(|| lang.get().text("dlq_book_gone"))}</span>
+                                <span class="manuscript-title">{move || title.as_deref().map(|t| shown_title(t, &lang.get())).unwrap_or_else(|| lang.get().text("dlq_book_gone"))}</span>
                                 <span class="kicker">{move || format!("{} {short_id}", lang.get().text("admin_job"))}</span>
                                 <p class="dlq-error">{entry.error.clone()}</p>
                                 <small class="manuscript-meta">{move || lang.get().date_short(entry.failed_at)}</small>

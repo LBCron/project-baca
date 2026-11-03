@@ -712,6 +712,7 @@ def convert_cover_to_webp(cover_bytes: bytes) -> bytes:
 
 
 ARCHIVED_ERROR = "Book is archived; it was not republished"
+UNTITLED = "Untitled"
 MISSING_OBJECT_CODES = {"NoSuchKey", "NoSuchBucket"}
 
 
@@ -780,8 +781,10 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             (book_id,),
         )
         updates: dict[str, str] = {}
-        if (not row[0] or row[0] == "Unknown") and parsed.title:
-            updates["title"] = parsed.title
+        # A curator who left the title blank gets the EPUB's, or a
+        # placeholder rather than an empty title in the catalog.
+        if not row[0] or row[0] == "Unknown":
+            updates["title"] = parsed.title or UNTITLED
         if (not row[1] or row[1] == "Unknown") and parsed.author:
             updates["author"] = parsed.author
         if not row[2] and parsed.language:

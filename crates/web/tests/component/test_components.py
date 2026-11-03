@@ -212,3 +212,52 @@ def test_curator_desk_shows_why_a_job_failed(clean_page: Page, tmp_path):
     assert len(listings) >= 2, "the manuscript list reloads after a queued upload"
     assert_no_page_errors(page)
 
+
+def test_curator_upload_survives_an_expired_session_and_refuses_oversize(clean_page: Page, tmp_path):
+    """An upload sent with an expired access token refreshes once and goes
+    out again with the file; a file over 50 MB never leaves the browser."""
+    page = clean_page
+    job_id = "55555555-5555-4555-8555-555555555555"
+    uploads = []
+
+    def upload(route):
+        uploads.append((route.request.headers.get("authorization"), len(route.request.post_data_buffer or b"")))
+        if len(uploads) == 1:
+            route.fulfill(status=401, content_type="application/json", body=json.dumps(
+                {"success": False, "error": {"code": "UNAUTHORIZED", "message": "Invalid or expired access token"}}))
+            return
+        route.fulfill(status=202, content_type="application/json", body=json.dumps({"success": True, "data": {
+            "job_id": job_id, "book_id": CURATOR_BOOKS[1]["id"], "status": "queued"}}))
+
+    page.route("**/api/**/admin/books**", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS})))
+    page.route("**/api/**/admin/books/upload", upload)
+    page.route("**/api/**/auth/refresh", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": {
+            "access_token": "fresh-access", "refresh_token": "fresh-refresh", "token_type": "Bearer", "expires_in": 900}})))
+    page.route(f"**/api/**/admin/jobs/{job_id}", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": {
+            "job_id": job_id, "book_id": CURATOR_BOOKS[1]["id"], "status": "queued", "progress": 0}})))
+    _story(page, "curator-desk")
+    page.evaluate("""() => {
+        localStorage.setItem('baca_access_token', 'stale-access');
+        localStorage.setItem('baca_refresh_token', 'live-refresh');
+    }""")
+
+    epub = tmp_path / "small.epub"
+    epub.write_bytes(b"PK\x03\x04 small but fine")
+    page.set_input_files(".upload-card input[type=file]", str(epub))
+    page.click(".upload-card button[type=submit]")
+    expect(page.locator(".job-card")).to_be_visible()
+    assert [auth for auth, _ in uploads] == ["Bearer stale-access", "Bearer fresh-access"], uploads
+    assert uploads[1][1] > 0, "the retried upload carries the file again"
+    assert "expired" not in page.inner_text("body"), "no raw token error reaches the curator"
+
+    big = tmp_path / "huge.epub"
+    with open(big, "wb") as f:
+        f.truncate(50 * 1024 * 1024 + 1)
+    page.set_input_files(".upload-card input[type=file]", str(big))
+    page.click(".upload-card button[type=submit]")
+    expect(page.locator("body")).to_contain_text("over 50 MB")
+    assert len(uploads) == 2, "an oversize file is refused before it is sent"
+    assert_no_page_errors(page)

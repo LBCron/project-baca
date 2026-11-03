@@ -23,14 +23,23 @@ use sea_orm::Set;
 use serde::Deserialize;
 use shared::{
     AdminBookPatchRequest, AdminBookRowDto, ApiResponse, AppError, DlqPageDto,
-    DlqReplayResponseDto, DropOffPointDto, JobStatusDto, UploadBookResponseDto,
+    DlqReplayResponseDto, DropOffPointDto, JobStatusDto, UploadBookResponseDto, MAX_EPUB_BYTES,
 };
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
 
-pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
+const TOO_LARGE: &str = "EPUB exceeds the 50 MB upload limit";
+
+/// A multipart read error, as 413 when the body limit cut it short (axum
+/// would otherwise report it as a malformed form).
+fn multipart_error(context: &str, e: axum::extract::multipart::MultipartError) -> HttpError {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return HttpError(AppError::PayloadTooLarge(TOO_LARGE.to_string()));
+    }
+    HttpError(AppError::BadRequest(format!("{context}: {e}")))
+}
 
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -284,7 +293,8 @@ pub async fn replay_dlq(
     request_body(content_type = "multipart/form-data"),
     responses(
         (status = 202, description = "EPUB accepted; ingestion queued", body = UploadBookResponseDto),
-        (status = 400, description = "Invalid file type, empty file, or over 50 MB"),
+        (status = 400, description = "Invalid file type or empty file"),
+        (status = 413, description = "Over 50 MB"),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Admin role required"),
         (status = 500, description = "Storage, database, or queue error")
@@ -308,16 +318,17 @@ pub async fn upload_book(
         ))
     })?;
 
-    let mut file_bytes: Option<(String, Vec<u8>)> = None;
+    let mut file_bytes: Option<Vec<u8>> = None;
     let mut title: Option<String> = None;
     let mut author: Option<String> = None;
-    let mut language = String::from("en");
+    // Left blank, title and language are read from the EPUB by the worker.
+    let mut language = String::new();
     let mut theme = String::from("Uncategorized");
 
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| HttpError(AppError::BadRequest(format!("Multipart read failed: {e}"))))?
+        .map_err(|e| multipart_error("Multipart read failed", e))?
     {
         let name = field.name().unwrap_or_default().to_string();
         if name == "file" {
@@ -335,12 +346,10 @@ pub async fn upload_book(
             while let Some(chunk) = field_stream
                 .chunk()
                 .await
-                .map_err(|e| HttpError(AppError::BadRequest(format!("Upload read failed: {e}"))))?
+                .map_err(|e| multipart_error("Upload read failed", e))?
             {
                 if buf.len() + chunk.len() > MAX_EPUB_BYTES {
-                    return Err(HttpError(AppError::BadRequest(
-                        "EPUB exceeds the 50 MB upload limit".to_string(),
-                    )));
+                    return Err(HttpError(AppError::PayloadTooLarge(TOO_LARGE.to_string())));
                 }
                 buf.extend_from_slice(&chunk);
             }
@@ -354,7 +363,7 @@ pub async fn upload_book(
                     "Uploaded file is not a ZIP-based EPUB (missing PK signature)".to_string(),
                 )));
             }
-            file_bytes = Some((filename, buf));
+            file_bytes = Some(buf);
         } else {
             // Text fields arrive buffered by axum; cap them before the DB does
             // so one giant field cannot exhaust server memory.
@@ -362,7 +371,7 @@ pub async fn upload_book(
             let text = field
                 .text()
                 .await
-                .map_err(|e| HttpError(AppError::BadRequest(format!("Field read failed: {e}"))))?;
+                .map_err(|e| multipart_error("Field read failed", e))?;
             if text.len() > MAX_TEXT_FIELD_BYTES {
                 return Err(HttpError(AppError::BadRequest(format!(
                     "Field '{name}' exceeds 8 KiB"
@@ -378,7 +387,7 @@ pub async fn upload_book(
         }
     }
 
-    let (filename, bytes) = file_bytes.ok_or_else(|| {
+    let bytes = file_bytes.ok_or_else(|| {
         HttpError(AppError::BadRequest(
             "Missing multipart 'file' field with the EPUB payload".to_string(),
         ))
@@ -410,9 +419,7 @@ pub async fn upload_book(
         .map_err(HttpError)?;
 
     let now = chrono::Utc::now();
-    let book_title = title
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| filename.trim_end_matches(".epub").replace(['_', '-'], " "));
+    let book_title = title.map(|t| t.trim().to_string()).unwrap_or_default();
     let book = books::ActiveModel {
         id: Set(book_id),
         title: Set(book_title),

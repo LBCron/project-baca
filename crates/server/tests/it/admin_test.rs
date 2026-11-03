@@ -268,13 +268,39 @@ async fn test_upload_rejects_oversize_payload() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;
 
-    // 51 MB exceeds the 50 MB cap and must fail closed.
+    // 51 MB exceeds the 50 MB cap and must fail closed, as 413 in the envelope.
     let big = vec![0u8; 51 * 1024 * 1024];
     let (ctype, body) = multipart_body("huge.epub", "application/epub+zip", &big, &[]);
-    let resp = harness
-        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{json}");
+    assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
+    assert!(json["error"]["message"].as_str().unwrap().contains("50 MB"));
+    harness.cleanup().await;
+}
+
+/// A body cut off by the route's limit outside the file part is a 413 too,
+/// not the "Error parsing multipart/form-data request" axum reports.
+#[tokio::test]
+async fn test_body_past_the_route_limit_is_413_not_a_parse_error() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    let mut file = vec![0u8; shared::MAX_EPUB_BYTES - 1024];
+    file[..2].copy_from_slice(b"PK");
+    let (ctype, mut body) = multipart_body("edge.epub", "application/epub+zip", &file, &[]);
+    let tail = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"author\"\r\n\r\n{}\r\n--{BOUNDARY}--\r\n",
+        "a".repeat(200 * 1024)
+    );
+    body.truncate(body.len() - format!("--{BOUNDARY}--\r\n").len());
+    body.extend_from_slice(tail.as_bytes());
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{json}");
+    assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
     harness.cleanup().await;
 }
 
@@ -295,12 +321,20 @@ async fn test_upload_accepts_epub_filename_with_generic_mime() {
         .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    harness.track_book(
+    let book_id = harness.track_book(
         json["data"]["book_id"]
             .as_str()
             .and_then(|s| Uuid::parse_str(s).ok())
             .expect("book_id uuid"),
     );
+    // Blank fields stay blank for the worker to fill from the EPUB, instead
+    // of a title made from the file name and a guessed language.
+    let stored = books::Entity::find_by_id(book_id)
+        .one(&harness.state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((stored.title.as_str(), stored.language.as_str()), ("", ""));
     harness.cleanup().await;
 }
 

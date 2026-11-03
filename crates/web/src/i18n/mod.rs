@@ -319,9 +319,15 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("admin_upload", "Unggah EPUB domain publik", "Upload a public domain EPUB"),
     ("admin_drop", "Pilih berkas .epub (maks 50 MB)", "Choose an .epub file (max 50 MB)"),
     (
+        "admin_too_large",
+        "Berkas ini lebih dari 50 MB, batas satu unggahan.",
+        "This file is over 50 MB, the limit for one upload.",
+    ),
+    ("untitled_pending", "Judul menyusul dari EPUB", "Title to come from the EPUB"),
+    (
         "admin_title_field",
-        "Judul (opsional, dibaca dari EPUB)",
-        "Title (optional, read from the EPUB)",
+        "Judul (kosongkan untuk memakai judul EPUB)",
+        "Title (leave blank to use the EPUB's)",
     ),
     ("admin_author_field", "Penulis (opsional)", "Author (optional)"),
     ("admin_queue", "Antrekan pemrosesan", "Queue for processing"),

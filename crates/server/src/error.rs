@@ -98,6 +98,11 @@ impl IntoResponse for HttpError {
                 Json(ApiResponse::<()>::error("CONFLICT", msg, None)),
             )
                 .into_response(),
+            AppError::PayloadTooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(ApiResponse::<()>::error("PAYLOAD_TOO_LARGE", msg, None)),
+            )
+                .into_response(),
             AppError::QuotaExceeded(msg) => (
                 StatusCode::CONFLICT,
                 Json(ApiResponse::<()>::error("QUOTA_EXCEEDED", msg, None)),
