@@ -66,6 +66,14 @@ struct SeededReader {
     pub token: String,
 }
 
+/// Chapter one of the seeded book. Besides the passage the vector tests
+/// find, it holds every phrase the quote tests save there.
+const CHAPTER_ONE_HTML: &str = "<p>The oldest and strongest emotion of mankind is fear.</p>\
+<p>The oldest and strongest emotion of mankind is fear, and the oldest and strongest kind of fear is fear of the unknown.</p>\
+<p>Ownership split probe quote. Idempotent quote. A batch past the cap.</p>\
+<p>Racing quote 0. Racing quote 1. Racing quote 2. Racing quote 3. Racing quote 4.</p>\
+<p>Batch quote 0. Batch quote 1. Batch quote 2. Planted quote 7.</p>";
+
 async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, String> {
     let now = Utc::now();
 
@@ -134,9 +142,9 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_number: Set(1),
         title: Set("Chapter I: The Old Curiosity".to_string()),
         word_count: Set(4200),
-        html_content: Set(
-            "<p>The oldest and strongest emotion of mankind is fear.</p>".to_string(),
-        ),
+        // Saved quotes must be in their chapter, so the phrases the quote
+        // tests save are part of it.
+        html_content: Set(CHAPTER_ONE_HTML.to_string()),
         created_at: Set(now.into()),
     };
 
@@ -1278,7 +1286,7 @@ async fn test_single_quote_save_is_idempotent() {
     let seeded = seed_test_context(&harness)
         .await
         .expect("Seeding must succeed");
-    let text = format!("Idempotent quote {}", Uuid::new_v4());
+    let text = "Idempotent quote.".to_string();
     let save = || {
         Request::builder()
             .method("POST")
@@ -1600,5 +1608,57 @@ async fn test_account_writes_past_the_minute_limit_are_429() {
         .send_request(bearer("GET", "/api/v1/quotes", &seeded.token, None))
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
+}
+
+/// A quote must be words of its chapter: an invented line is refused with
+/// VALIDATION_FAILED, alone or in a batch, while a real one, selected
+/// across a paragraph break, is kept.
+#[tokio::test]
+async fn test_a_quote_not_in_its_chapter_is_refused() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let save = |text: &str| {
+        bearer(
+            "POST",
+            "/api/v1/quotes/save",
+            &seeded.token,
+            Some(serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": text
+            })),
+        )
+    };
+    let (resp, body) = harness
+        .send_json_request(save("Fear is the mind-killer."))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+
+    let (resp, body) = harness
+        .send_json_request(save("is fear.\n\nThe oldest and   strongest"))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED, "{body}");
+
+    let batch = bearer(
+        "POST",
+        "/api/v1/quotes/save-batch",
+        &seeded.token,
+        Some(serde_json::json!({ "items": [
+            { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": "Batch quote 1." },
+            { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": "A line no one wrote." },
+        ]})),
+    );
+    let (resp, body) = harness.send_json_request(batch).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["saved"], 1);
+    assert_eq!(body["data"]["rejected"], 1);
+    assert_eq!(
+        body["data"]["outcomes"][1]["error"],
+        "The quote is not in this chapter"
+    );
     harness.cleanup().await;
 }

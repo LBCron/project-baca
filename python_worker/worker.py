@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import socket
 import sys
@@ -117,12 +118,25 @@ VOID_TAGS = {
 }
 
 
+# Allowed elements that hold running text themselves; text outside all of
+# them is wrapped in a <p> so it gets a p-N anchor and is searchable.
+TEXT_CONTAINERS = {"p", "li", "h1", "h2", "h3"}
+# Allowed elements that end a run of loose text.
+BLOCK_TAGS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+# Dropped elements that still separate paragraphs in the source layout.
+LAYOUT_BLOCKS = {
+    "div", "section", "article", "header", "footer", "main", "aside", "nav", "body",
+    "figure", "figcaption", "table", "tr", "td", "th", "pre", "dl", "dt", "dd", "center",
+}
+
+
 class _Sanitizer(HTMLParser):
     """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs.
 
     Open elements are tracked as a stack so a skipped element that is never
     closed (common for ``iframe`` and ``object`` in real XHTML) ends with its
-    parent instead of swallowing the rest of the chapter."""
+    parent instead of swallowing the rest of the chapter. Text that sits in
+    no paragraph (a dropped ``div``'s content) is wrapped in one."""
 
     SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object"}
     # Chapters are XHTML: ``<iframe src="x"/>`` is a complete element there,
@@ -138,6 +152,18 @@ class _Sanitizer(HTMLParser):
         # scan of the stack made ten thousand of them quadratic.
         self.open_counts: Counter[str] = Counter()
         self.skip_from: int | None = None
+        self.containers = 0
+        self.loose_p = False
+
+    def _end_loose(self) -> None:
+        if self.loose_p:
+            self.parts.append("</p>")
+            self.loose_p = False
+
+    def _start_loose(self) -> None:
+        if not self.containers and not self.loose_p:
+            self.parts.append("<p>")
+            self.loose_p = True
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
@@ -148,8 +174,14 @@ class _Sanitizer(HTMLParser):
             self.open_counts[tag] += 1
         if self.skip_from is not None:
             return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
+        elif tag in ALLOWED_TAGS and tag != "br":
+            self._start_loose()
         if tag in ALLOWED_TAGS:
             self.parts.append(f"<{tag}>" if tag != "br" else "<br/>")
+            if tag in TEXT_CONTAINERS:
+                self.containers += 1
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -163,13 +195,19 @@ class _Sanitizer(HTMLParser):
             if len(self.open_tags) <= self.skip_from:
                 self.skip_from = None
             return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
         if tag in ALLOWED_TAGS and tag not in {"br", "hr"}:
             self.parts.append(f"</{tag}>")
+            if tag in TEXT_CONTAINERS and self.containers:
+                self.containers -= 1
 
     def handle_data(self, data: str) -> None:
         # convert_charrefs decoded entities into text, so an encoded
         # ``&lt;img onerror=...&gt;`` would otherwise be re-emitted as live markup.
         if self.skip_from is None:
+            if data.strip():
+                self._start_loose()
             self.parts.append(html.escape(data, quote=False))
 
 
@@ -177,6 +215,8 @@ def sanitize_html(html: str) -> str:
     """Returns cleaned HTML containing only allowlisted semantic tags."""
     parser = _Sanitizer()
     parser.feed(html)
+    parser.close()
+    parser._end_loose()
     return "".join(parser.parts)
 
 
@@ -403,6 +443,15 @@ def _opf_path(epub: zipfile.ZipFile) -> str:
     return node.get("full-path", "")
 
 
+# Project Gutenberg wraps every book in a header and a license, both inside
+# the spine. The book's own text lies between these two marker lines.
+GUTENBERG_START = re.compile(r"\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+GUTENBERG_END = re.compile(r"\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+# Tags a cut leaves dangling: closers after the start, openers before the end.
+LEADING_CLOSERS = re.compile(r"^(?:\s*</[a-z0-9]+>)+")
+TRAILING_OPENERS = re.compile(r"(?:<[a-z0-9]+>\s*)+$")
+
+
 def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     """Parses EPUB bytes into metadata, optional cover, and spine-ordered
     chapters, refusing anything past ``limits`` with :class:`RejectedEpub`."""
@@ -463,7 +512,10 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     read: set[str] = set()
     text_bytes = 0
     chunk_count = 0
+    gutenberg_ended = False
     for itemref in spine.findall("opf:itemref", ns):
+        if gutenberg_ended:
+            break
         ref = itemref.get("idref", "")
         if ref not in manifest:
             continue
@@ -482,6 +534,16 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
         except KeyError:
             continue
         cleaned = sanitize_html(raw)
+        start = GUTENBERG_START.search(cleaned)
+        if start:
+            # Everything before the marker was the header: spend nothing on it.
+            chapters.clear()
+            text_bytes = chunk_count = 0
+            cleaned = LEADING_CLOSERS.sub("", cleaned[start.end() :])
+        end = GUTENBERG_END.search(cleaned)
+        if end:
+            gutenberg_ended = True
+            cleaned = TRAILING_OPENERS.sub("", cleaned[: end.start()].rstrip())
         text = extract_text(cleaned)
         if not text:
             continue

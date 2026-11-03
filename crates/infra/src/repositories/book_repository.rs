@@ -349,6 +349,87 @@ pub async fn get_chapter_book_id(
     Ok(chapter.book_id)
 }
 
+/// True when `quote` occurs in the chapter's text. Both sides are folded
+/// and lose every space: a reader's selection runs paragraphs together with
+/// line breaks and inline tags without spaces, while a quote-search passage
+/// puts a space at every tag, and either must match the page it came from.
+pub async fn chapter_holds_quote(
+    db: &DatabaseConnection,
+    chapter_id: Uuid,
+    quote: &str,
+) -> Result<bool, AppError> {
+    let html: Option<String> = chapters::Entity::find_by_id(chapter_id)
+        .select_only()
+        .column(chapters::Column::HtmlContent)
+        .into_tuple()
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?;
+    let html =
+        html.ok_or_else(|| AppError::NotFound(format!("Chapter not found: {chapter_id}")))?;
+    let needle = squeezed(quote);
+    Ok(!needle.is_empty() && squeezed(&decode_entities(&strip_tags(&html))).contains(&needle))
+}
+
+fn strip_tags(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    text
+}
+
+fn squeezed(text: &str) -> String {
+    shared::fold_for_search(text).replace(' ', "")
+}
+
+/// Character references left in stored chapter HTML, decoded as a browser
+/// decodes them.
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let decoded = tail.find(';').filter(|end| *end <= 10).and_then(|end| {
+            let name = &tail[1..end];
+            let ch = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => name
+                    .strip_prefix("#x")
+                    .or_else(|| name.strip_prefix("#X"))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| name.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                    .and_then(char::from_u32),
+            }?;
+            Some((ch, end + 1))
+        });
+        match decoded {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Returns the chapter number for a chapter UUID, if it exists.
 pub async fn get_chapter_number(
     db: &DatabaseConnection,
@@ -683,4 +764,36 @@ pub async fn set_book_status(
         }
     })?;
     txn.commit().await.map_err(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_entities, squeezed, strip_tags};
+
+    #[test]
+    fn character_references_decode_like_a_browser() {
+        assert_eq!(decode_entities("Tom &amp; Jerry"), "Tom & Jerry");
+        assert_eq!(
+            decode_entities("it&#8217;s &#x2014; ok"),
+            "it\u{2019}s \u{2014} ok"
+        );
+        assert_eq!(decode_entities("a&nbsp;b &lt;p&gt;"), "a b <p>");
+        assert_eq!(
+            decode_entities("AT&T and &unknown; stay"),
+            "AT&T and &unknown; stay"
+        );
+    }
+
+    #[test]
+    fn a_quote_matches_however_the_page_was_selected() {
+        let html = "<h2>Bab I</h2><p>Laras menulis <em>surat</em>-nya &amp; menunggu.</p><p>Kapal tiba.</p>";
+        let page = squeezed(&decode_entities(&strip_tags(html)));
+        // A browser selection: inline tag without spaces, a paragraph break.
+        assert!(page.contains(&squeezed("surat-nya & menunggu.\n\nKapal tiba.")));
+        // A quote-search passage: a space at every tag, the heading included.
+        assert!(page.contains(&squeezed(
+            "Bab I Laras menulis surat -nya & menunggu. Kapal tiba."
+        )));
+        assert!(!page.contains(&squeezed("Laras menulis puisi")));
+    }
 }

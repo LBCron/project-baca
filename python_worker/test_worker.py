@@ -105,7 +105,18 @@ class SanitizeTest(unittest.TestCase):
 
     def test_a_void_embed_does_not_hide_what_follows(self):
         self.assertEqual(sanitize_html("<p>a</p><embed src=x><p>b</p>"), "<p>a</p><p>b</p>")
-        self.assertEqual(sanitize_html("<embed src=x>tail text"), "tail text")
+        self.assertEqual(sanitize_html("<embed src=x>tail text"), "<p>tail text</p>")
+
+    def test_loose_text_is_wrapped_in_a_paragraph(self):
+        self.assertEqual(sanitize_html("<div>teks lepas</div>"), "<p>teks lepas</p>")
+        self.assertEqual(sanitize_html("<div>a</div><div>b <em>c</em></div>"), "<p>a</p><p>b <em>c</em></p>")
+        self.assertEqual(
+            sanitize_html("<p>in p</p>loose<br/>line<h2>H</h2>tail"),
+            "<p>in p</p><p>loose<br/>line</p><h2>H</h2><p>tail</p>",
+        )
+        self.assertEqual(sanitize_html("<blockquote>q</blockquote>"), "<blockquote><p>q</p></blockquote>")
+        self.assertEqual(sanitize_html("<ul><li>item</li></ul>\n"), "<ul><li>item</li></ul>\n")
+        self.assertEqual(worker.paragraph_texts(sanitize_html("<div>teks lepas</div>")), ["teks lepas"])
 
     def test_an_unclosed_skipped_element_ends_with_its_parent(self):
         dirty = "<div><p>a</p><iframe src=x><p>inside</p></div><p>b</p><object><p>c</p></object><p>d</p>"
@@ -468,6 +479,36 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
             any("SET status = 'processing'" in sql for sql in cursor.statements),
             "a draft shows as processing once its job starts",
         )
+
+
+GUTENBERG_HEADER = (
+    "The Project Gutenberg eBook of Kisah Lama. This eBook is for the use of anyone anywhere."
+    "<p>*** START OF THE PROJECT GUTENBERG EBOOK KISAH LAMA ***</p>"
+)
+GUTENBERG_LICENSE = (
+    "<p>*** END OF THE PROJECT GUTENBERG EBOOK KISAH LAMA ***</p>"
+    "<p>Updated editions will replace the previous one. Section 1. General Terms of Use.</p>"
+)
+
+
+class GutenbergTest(unittest.TestCase):
+    def test_header_and_license_are_not_part_of_the_book(self):
+        parsed = worker.parse_epub(make_epub([
+            ("Cover", "A Gutenberg cover page with credits."),
+            ("Kisah Lama", GUTENBERG_HEADER + "<p>Pada suatu pagi kabut turun.</p>"),
+            ("Bab Dua", "Laras menulis surat."),
+            ("Akhir", "<p>Kapal tiba.</p>" + GUTENBERG_LICENSE),
+            ("THE FULL PROJECT GUTENBERG LICENSE", "Section 2. Information about the Mission."),
+        ]))
+        texts = [c.text for c in parsed.chapters]
+        self.assertEqual(len(parsed.chapters), 3, texts)
+        self.assertTrue(texts[0].endswith("Pada suatu pagi kabut turun."), texts[0])
+        self.assertTrue(texts[-1].endswith("Kapal tiba."), texts[-1])
+        self.assertFalse(any("Gutenberg" in t or "Section" in t for t in texts), texts)
+
+    def test_a_book_without_markers_is_untouched(self):
+        parsed = worker.parse_epub(make_epub([("One", "Satu."), ("Two", "Dua.")]))
+        self.assertEqual([c.text for c in parsed.chapters], ["One Satu.", "Two Dua."])
 
 
 class ParagraphIndexTest(unittest.TestCase):

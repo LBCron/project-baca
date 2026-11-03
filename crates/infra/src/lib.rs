@@ -28,10 +28,10 @@ pub use queue::{
 pub use repositories::{
     badge_repository::{list_badges, list_user_badges, seed_default_badges_if_empty},
     book_repository::{
-        book_titles, chapter_dropoff, ensure_book_published, get_book_by_id, get_book_for_admin,
-        get_book_status, get_chapter_book_id, get_chapter_by_number, get_chapter_number,
-        get_offline_bundle, is_fully_ingested, list_books, list_books_for_admin, search_book_text,
-        search_books, set_book_status,
+        book_titles, chapter_dropoff, chapter_holds_quote, ensure_book_published, get_book_by_id,
+        get_book_for_admin, get_book_status, get_chapter_book_id, get_chapter_by_number,
+        get_chapter_number, get_offline_bundle, is_fully_ingested, list_books,
+        list_books_for_admin, search_book_text, search_books, set_book_status,
     },
     progress_repository::{get_active_progress, get_streak, record_heartbeat, update_progress},
     quote_repository::{
