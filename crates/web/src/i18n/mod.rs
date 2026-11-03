@@ -41,6 +41,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Pilih satu buku; posisi baca, kutipan, dan unduhanmu akan tersusun di sini.",
         "Pick a book; your reading position, quotes, and downloads will gather here.",
     ),
+    (
+        "shelf_none_reading",
+        "Belum ada buku yang sedang kamu baca.",
+        "No book in progress yet.",
+    ),
     ("browse_catalog", "Jelajahi katalog", "Browse the catalog"),
     ("page_missing", "Halaman ini belum tertulis.", "This page has not been written yet."),
     (
@@ -698,8 +703,7 @@ impl Lang {
         }
     }
 
-    /// "Okt 2026" or "Oct 2026".
-    /// "Okt 2026" on the reader's own calendar.
+    /// "Okt 2026" or "Oct 2026", on the reader's own calendar.
     pub fn month_year(self, date: chrono::DateTime<chrono::Utc>) -> String {
         use chrono::Datelike;
         let local = crate::format::local_time(date, crate::format::utc_offset_minutes_at(date));
