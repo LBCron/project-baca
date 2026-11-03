@@ -118,6 +118,39 @@ class SanitizeTest(unittest.TestCase):
             "<p>g</p>",
         )
 
+    def test_no_markup_outside_the_allowlist_survives_random_html(self):
+        """Whatever nesting, unclosed or stray tags arrive, the output holds
+        only bare allowlisted tags; every other ``<`` and ``>`` is text."""
+        import random
+        import re
+
+        allowed = re.compile(r"</?(p|em|strong|blockquote|h1|h2|h3|ul|ol|li)>|<br/>|<hr>")
+        tags = ["p", "em", "iframe", "object", "embed", "script", "style", "title", "head", "div",
+                "img", "br", "hr", "noscript", "xmp", "textarea", "svg", "math", "a", "plaintext"]
+        texts = ["text", "&lt;b&gt;", "a<b", "x>y", "&amp;", "<", ">", "<!--", "-->", "<![CDATA[", "<?x ?>"]
+        rng = random.Random(11)
+
+        def fragment(depth=0):
+            parts = []
+            for _ in range(rng.randint(1, 6)):
+                roll, tag = rng.random(), rng.choice(tags)
+                if roll < 0.3:
+                    parts.append(f"<{tag} onerror=alert(1) src=x>")
+                elif roll < 0.5:
+                    parts.append(f"</{tag}>")
+                elif roll < 0.6:
+                    parts.append(f"<{tag}/>")
+                elif roll < 0.75 and depth < 3:
+                    parts.append(f"<{tag}>{fragment(depth + 1)}</{tag}>")
+                else:
+                    parts.append(rng.choice(texts))
+            return "".join(parts)
+
+        for _ in range(3_000):
+            dirty = fragment()
+            leftover = allowed.sub("", sanitize_html(dirty))
+            self.assertNotRegex(leftover, r"[<>]", dirty)
+
     def test_extract_text_resolves_entities(self):
         self.assertEqual(
             extract_text("<p>A &amp; B</p><script>hidden</script>"),
