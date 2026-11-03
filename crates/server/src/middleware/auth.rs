@@ -3,8 +3,8 @@
 use crate::{error::HttpError, AppState};
 use axum::{extract::FromRequestParts, http::request::Parts};
 use infra::{
-    is_token_blacklisted, is_user_token_revoked, security::jwt::verify_access_token,
-    REDIS_RETRY_AFTER_SECS,
+    is_session_revoked, is_token_blacklisted, is_user_token_revoked,
+    security::jwt::verify_access_token, REDIS_RETRY_AFTER_SECS,
 };
 use shared::AppError;
 use std::sync::Arc;
@@ -24,6 +24,7 @@ pub struct AuthUser {
     pub email: String,
     pub role: String,
     pub jti: Uuid,
+    pub sid: Option<Uuid>,
     pub exp: usize,
 }
 
@@ -70,6 +71,17 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             )));
         }
 
+        if let Some(sid) = claims.sid {
+            if is_session_revoked(&mut redis_conn, sid)
+                .await
+                .map_err(|e| auth_state_unavailable("Session check failed", e))?
+            {
+                return Err(HttpError(AppError::Unauthorized(
+                    "Access token has been revoked. Please log in again.".to_string(),
+                )));
+            }
+        }
+
         if is_user_token_revoked(&mut redis_conn, claims.sub, claims.iat)
             .await
             .map_err(|e| auth_state_unavailable("Revocation check failed", e))?
@@ -84,6 +96,7 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             email: claims.email,
             role: claims.role,
             jti: claims.jti,
+            sid: claims.sid,
             exp: claims.exp,
         })
     }

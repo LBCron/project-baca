@@ -1900,3 +1900,166 @@ async fn test_concurrent_verifications_never_fail_with_5xx() {
     );
     harness.cleanup().await;
 }
+
+fn me_req(access: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri("/api/v1/me")
+        .header("authorization", format!("Bearer {access}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// Signing one device out kills every access token that device was ever
+/// given, not only the newest: refreshes keep the session id.
+#[tokio::test]
+async fn test_device_sign_out_revokes_every_access_token_of_the_session() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (first_access, refresh) = provision_verified_user(&harness, &mut redis, "sid", &ip).await;
+    let email = infra::verify_access_token(&first_access, harness.state.config.jwt_secret())
+        .unwrap()
+        .email;
+
+    let mut accesses = vec![first_access];
+    let mut refresh = refresh;
+    for _ in 0..2 {
+        let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{body}");
+        accesses.push(body["data"]["access_token"].as_str().unwrap().to_string());
+        refresh = body["data"]["refresh_token"].as_str().unwrap().to_string();
+    }
+    let sids: Vec<_> = accesses
+        .iter()
+        .map(|a| {
+            infra::verify_access_token(a, harness.state.config.jwt_secret())
+                .unwrap()
+                .sid
+        })
+        .collect();
+    assert!(
+        sids[0].is_some() && sids.iter().all(|s| *s == sids[0]),
+        "{sids:?}"
+    );
+
+    let (resp, body) = harness
+        .send_json_request(login_req(&email, common::PROVISIONED_PASSWORD, &ip))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let laptop = body["data"]["access_token"].as_str().unwrap().to_string();
+    let (_, body) = harness
+        .send_json_request(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/me/sessions")
+                .header("authorization", format!("Bearer {laptop}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    let phone = body["data"]
+        .as_array()
+        .and_then(|list| list.iter().find(|s| s["current"] == false))
+        .and_then(|s| s["id"].as_str())
+        .expect("the phone session")
+        .to_string();
+    let resp = harness
+        .send_request(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/me/sessions/{phone}"))
+                .header("authorization", format!("Bearer {laptop}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    for (i, access) in accesses.iter().enumerate() {
+        let resp = harness.send_request(me_req(access)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "access token {i}");
+    }
+    let resp = harness.send_request(me_req(&laptop)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "the other device stays in");
+    harness.cleanup().await;
+}
+
+/// Twenty wrong passwords for one address from one network at once: the
+/// attempt is counted before Argon2, so exactly five are evaluated.
+#[tokio::test]
+async fn test_parallel_login_guesses_evaluate_only_five() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "burst", &ip).await;
+    let email = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .email;
+    let guesser = common::unique_ip("198.19");
+    let statuses: Vec<StatusCode> = futures::future::join_all(
+        (0..20).map(|_| harness.send_request(login_req(&email, "WrongGuess123!", &guesser))),
+    )
+    .await
+    .iter()
+    .map(|r| r.status())
+    .collect();
+    let evaluated = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::UNAUTHORIZED)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!((evaluated, refused), (5, 15), "{statuses:?}");
+    harness.cleanup().await;
+}
+
+/// A pending (never verified) account and an unknown address answer a
+/// login in the same time: both run Argon2 before anything branches.
+#[tokio::test]
+async fn test_login_time_does_not_tell_pending_from_unknown() {
+    let harness = TestHarness::new().await;
+    harness.live_only().await.expect("live Redis required");
+    let pending = harness.track_email_owned(format!("pendtime_{}@example.com", Uuid::new_v4()));
+    let hash = infra::hash_password_async("PendingTime123!".to_string())
+        .await
+        .unwrap();
+    infra::create_inactive_user(&harness.state.db, &pending, "Pending", &hash)
+        .await
+        .unwrap();
+    let unknown = format!("nobody_{}@example.com", Uuid::new_v4());
+
+    // Interleaved, after a warm-up, so both series see the same load.
+    let shared = &harness;
+    let timed = |email: String| async move {
+        let harness = shared;
+        let started = std::time::Instant::now();
+        let resp = harness
+            .send_request(login_req(
+                &email,
+                "PendingTime123!",
+                &common::unique_ip("198.19"),
+            ))
+            .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        started.elapsed().as_secs_f64() * 1000.0
+    };
+    timed(unknown.clone()).await;
+    let (mut pending_times, mut unknown_times) = (Vec::new(), Vec::new());
+    for _ in 0..15 {
+        pending_times.push(timed(pending.clone()).await);
+        unknown_times.push(timed(unknown.clone()).await);
+    }
+    let median = |mut times: Vec<f64>| {
+        times.sort_by(f64::total_cmp);
+        times[times.len() / 2]
+    };
+    let (pending_ms, unknown_ms) = (median(pending_times), median(unknown_times));
+    assert!(
+        (pending_ms - unknown_ms).abs() < 10.0,
+        "pending {pending_ms:.1} ms, unknown {unknown_ms:.1} ms"
+    );
+    harness.cleanup().await;
+}

@@ -51,7 +51,7 @@ fn now_secs() -> usize {
 /// Device facts recorded with a new session so the reader can recognise it
 /// on the shelf: browser and platform from the User-Agent, a coarse network
 /// prefix from the client address.
-fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta {
+fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid, sid: Uuid) -> SessionMeta {
     let user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
@@ -61,6 +61,7 @@ fn session_meta(state: &AppState, headers: &HeaderMap, jti: Uuid) -> SessionMeta
         device: domain::device_label(user_agent),
         ip_prefix: domain::ip_prefix(&ip),
         jti,
+        sid,
     }
 }
 
@@ -71,6 +72,7 @@ async fn issue_token_pair(
     issued_at: usize,
     headers: &HeaderMap,
 ) -> Result<TokenResponse, HttpError> {
+    let sid = Uuid::new_v4();
     let (access_token, jti) = issue_access_token(
         user.id,
         &user.email,
@@ -78,6 +80,7 @@ async fn issue_token_pair(
         state.config.jwt_secret(),
         state.config.auth.access_expiry_minutes,
         issued_at,
+        sid,
     )
     .map_err(HttpError::from)?;
 
@@ -87,7 +90,7 @@ async fn issue_token_pair(
         &refresh_token,
         user.id,
         state.config.auth.refresh_expiry_days,
-        session_meta(state, headers, jti),
+        session_meta(state, headers, jti, sid),
     )
     .await
     .map_err(HttpError::from)?;
@@ -101,44 +104,49 @@ async fn issue_token_pair(
     })
 }
 
-/// Two-layer login brute-force accounting. The (email, IP) pair locks after
-/// 5 failures so hammering a victim's address cannot lock the victim out
-/// from their own network; the per-email aggregate caps distributed guessing
-/// at 20 failures per 15 minutes.
-async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
-    let pair_fail_key = format!("auth:login:fail:{email}:{ip}");
-    if let Ok((c, _)) = hit_window(redis, &pair_fail_key, 900).await {
-        if c >= 5 {
-            let pair_lock_key = format!("auth:login:lockout:{email}:{ip}");
-            let _: Result<(), _> = redis.set_ex(&pair_lock_key, "1", 900).await;
-        }
-    }
-    let email_fail_key = format!("auth:login:fail:{email}");
-    if let Ok((c, _)) = hit_window(redis, &email_fail_key, 900).await {
-        if c >= 20 {
-            let email_lock_key = format!("auth:login:lockout:{email}");
-            let _: Result<(), _> = redis.set_ex(&email_lock_key, "1", 900).await;
-        }
-    }
+/// Two-layer login brute-force accounting, counted before the password is
+/// checked so parallel guesses each take their own slot. The (email, IP)
+/// pair allows 5 attempts so hammering a victim's address cannot lock the
+/// victim out from their own network; the per-email aggregate caps
+/// distributed guessing at 20 per 15 minutes.
+const LOGIN_WINDOW_SECS: u64 = 900;
+const PAIR_ATTEMPTS: i64 = 5;
+const EMAIL_ATTEMPTS: i64 = 20;
+
+fn login_attempt_keys(email: &str, ip: &str) -> [(String, i64); 2] {
+    [
+        (format!("auth:login:fail:{email}:{ip}"), PAIR_ATTEMPTS),
+        (format!("auth:login:fail:{email}"), EMAIL_ATTEMPTS),
+    ]
 }
 
-/// Returns the lockout retry delay when the pair or aggregate lock is set.
-async fn login_lockout_retry_after(
+/// Counts this attempt and refuses it once either budget is spent.
+async fn claim_login_attempt(
     redis: &mut infra::RedisConn,
     email: &str,
     ip: &str,
-) -> Option<u64> {
-    for key in [
-        format!("auth:login:lockout:{email}:{ip}"),
-        format!("auth:login:lockout:{email}"),
-    ] {
-        let locked: bool = redis.exists(&key).await.unwrap_or(false);
-        if locked {
-            let ttl: i64 = redis.ttl(&key).await.unwrap_or(900);
-            return Some(if ttl > 0 { ttl as u64 } else { 900 });
+) -> Result<(), HttpError> {
+    for (key, limit) in login_attempt_keys(email, ip) {
+        let (attempts, ttl) = hit_window(redis, &key, LOGIN_WINDOW_SECS)
+            .await
+            .map_err(redis_unavailable)?;
+        if attempts > limit {
+            return Err(HttpError(AppError::RateLimited {
+                retry_after: ttl.max(1) as u64,
+            }));
         }
     }
-    None
+    Ok(())
+}
+
+/// A failed attempt that spent a budget locks it for a full window from now.
+async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
+    for (key, limit) in login_attempt_keys(email, ip) {
+        let attempts: i64 = redis.get(&key).await.unwrap_or(0);
+        if attempts >= limit {
+            let _: Result<(), _> = redis.expire(&key, LOGIN_WINDOW_SECS as i64).await;
+        }
+    }
 }
 
 /// Converts a database user model to a public UserProfileDto
@@ -303,26 +311,27 @@ pub async fn login(
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
     let client_ip = client_ip_from_headers(&headers, &state.config.server);
-
-    // Lockout check: pair (email, IP) lock after 5 failures, aggregate email
-    // lock after 20 — 15 minutes each.
-    if let Some(retry_after) =
-        login_lockout_retry_after(&mut redis_conn, &req.email, &client_ip).await
-    {
-        return Err(HttpError(AppError::RateLimited { retry_after }));
-    }
+    claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await?;
 
     let user = find_user_by_email(&state.db, &req.email)
         .await
         .map_err(HttpError::from)?;
 
+    // Argon2 runs on every path, against a dummy hash when there is no
+    // usable one, before anything branches on the account: unknown, pending
+    // and wrong-password answers take the same time and say the same thing.
+    let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
+    let matches = verify_password_async(
+        req.password.clone(),
+        stored_hash
+            .clone()
+            .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
+    )
+    .await
+    .map_err(HttpError::from)?;
     let user = match user {
-        Some(u) => u,
-        None => {
-            // Dummy verification defeats timing-based user enumeration.
-            let _ =
-                verify_password_async(req.password.clone(), DUMMY_ARGON2_HASH.to_string()).await;
-
+        Some(user) if matches && stored_hash.is_some() && user.is_active => user,
+        _ => {
             note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
             return Err(HttpError(AppError::Unauthorized(
                 INVALID_CREDENTIALS.to_string(),
@@ -330,42 +339,11 @@ pub async fn login(
         }
     };
 
-    // An unverified account answers exactly like a wrong password, so the
-    // activation state of an address cannot be probed.
-    if !user.is_active {
-        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
-        return Err(HttpError(AppError::Unauthorized(
-            INVALID_CREDENTIALS.to_string(),
-        )));
-    }
-
-    let is_valid = match &user.password_hash {
-        Some(hash) => verify_password_async(req.password.clone(), hash.clone())
-            .await
-            .map_err(HttpError::from)?,
-        None => false,
-    };
-
-    if !is_valid {
-        note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
-        return Err(HttpError(AppError::Unauthorized(
-            INVALID_CREDENTIALS.to_string(),
-        )));
-    }
-
-    // Reset login failure counters on successful authentication
-    let pair_fail_key = format!("auth:login:fail:{}:{}", req.email, client_ip);
-    let pair_lock_key = format!("auth:login:lockout:{}:{}", req.email, client_ip);
-    let email_fail_key = format!("auth:login:fail:{}", req.email);
-    let email_lock_key = format!("auth:login:lockout:{}", req.email);
-    let _: Result<(), _> = redis_conn
-        .del(&[
-            &pair_fail_key,
-            &pair_lock_key,
-            &email_fail_key,
-            &email_lock_key,
-        ])
-        .await;
+    let keys: Vec<String> = login_attempt_keys(&req.email, &client_ip)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    let _: Result<(), _> = redis_conn.del(&keys).await;
 
     let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
@@ -398,11 +376,12 @@ pub async fn refresh(
     .await
     .map_err(HttpError::from)?;
 
-    let (user_id, new_refresh_token) = match outcome {
+    let (user_id, new_refresh_token, sid) = match outcome {
         RefreshOutcome::Rotated {
             user_id,
             refresh_token,
-        } => (user_id, refresh_token),
+            sid,
+        } => (user_id, refresh_token, sid),
         // A token rotated out before the grace window signals theft: the
         // whole family dies so the attacker's copy goes with the victim's.
         RefreshOutcome::Replayed { user_id } => {
@@ -432,6 +411,7 @@ pub async fn refresh(
         state.config.jwt_secret(),
         state.config.auth.access_expiry_minutes,
         now_secs(),
+        sid,
     )
     .map_err(HttpError::from)?;
     touch_session(
@@ -730,9 +710,10 @@ pub async fn revoke_all(
     let access_ttl = state.config.auth.access_expiry_minutes * 60;
 
     if query.keep_current.unwrap_or(false) {
-        let revoked = revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, access_ttl)
-            .await
-            .map_err(HttpError::from)?;
+        let revoked =
+            revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, auth.sid, access_ttl)
+                .await
+                .map_err(HttpError::from)?;
         return Ok((
             StatusCode::OK,
             Json(ApiResponse::success(serde_json::json!({

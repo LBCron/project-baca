@@ -375,6 +375,7 @@ async fn test_owasp_token_revocation_on_logout() {
     // Logout with only the refresh token: the session record names the
     // access token issued with it, so that token dies as well.
     let now = chrono::Utc::now().timestamp() as usize;
+    let sid = Uuid::new_v4();
     let (paired_access, jti) = infra::issue_access_token(
         test_user_id,
         "token_revoker@test.local",
@@ -382,6 +383,7 @@ async fn test_owasp_token_revocation_on_logout() {
         harness.state.config.jwt_secret(),
         15,
         now,
+        sid,
     )
     .unwrap();
     let paired_refresh = infra::generate_refresh_token();
@@ -392,6 +394,7 @@ async fn test_owasp_token_revocation_on_logout() {
         14,
         infra::SessionMeta {
             jti,
+            sid,
             ..infra::SessionMeta::default()
         },
     )

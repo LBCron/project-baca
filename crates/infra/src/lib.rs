@@ -55,7 +55,7 @@ pub use security::{
     ROTATION_GRACE_SECS,
 };
 pub use security::{
-    issue_access_token, list_sessions, revoke_other_sessions_keeping, revoke_session,
-    touch_session, SessionMeta, SessionRecord,
+    is_session_revoked, issue_access_token, list_sessions, revoke_other_sessions_keeping,
+    revoke_session, touch_session, SessionMeta, SessionRecord,
 };
 pub use storage::{StorageService, S3_OPERATION_TIMEOUT};

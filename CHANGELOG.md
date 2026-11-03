@@ -9,6 +9,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Security
 - Signup cannot hold or hijack someone else's address: registrations for one address live side by side, each holding its own password, and a code only activates the registration it was mailed for. Codes mailed to one address are capped at 3 per hour and 10 per day (the 60-second cooldown is gone), and guesses are capped at 10 per address per day across every code, so asking for a new code never buys more attempts.
+- Login answers unknown, unverified and wrong-password attempts in the same time (Argon2 always runs), and counts attempts atomically before Argon2, so twenty parallel guesses evaluate five. Signing a device out, or logging out, revokes every access token that device was given, not only the newest: access tokens carry a session id kept across refreshes. Refresh rotation and family revocation are single Redis scripts.
 
 ### Fixed
 - Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
