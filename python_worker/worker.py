@@ -226,7 +226,6 @@ class ParsedEpub:
     author: str
     language: str
     cover_bytes: bytes | None
-    cover_media_type: str
     chapters: list[ParsedChapter]
 
 
@@ -314,14 +313,12 @@ def parse_epub(data: bytes) -> ParsedEpub:
         )
 
     cover_bytes: bytes | None = None
-    cover_media = ""
     for item_id, (href, media) in manifest.items():
         props = ""
         for item in opf.findall("opf:manifest/opf:item", ns):
             if item.get("id") == item_id:
                 props = item.get("properties", "")
         if "cover-image" in props or item_id.lower() == "cover-image":
-            cover_media = media
             try:
                 cover_bytes = epub.read(_safe_member(prefix, href))
             except (KeyError, ValueError):
@@ -330,7 +327,6 @@ def parse_epub(data: bytes) -> ParsedEpub:
     if cover_bytes is None:
         for item_id, (href, media) in manifest.items():
             if media.startswith("image/") and "cover" in (item_id + href).lower():
-                cover_media = media
                 try:
                     cover_bytes = epub.read(_safe_member(prefix, href))
                 except (KeyError, ValueError):
@@ -379,7 +375,6 @@ def parse_epub(data: bytes) -> ParsedEpub:
         author=author,
         language=language,
         cover_bytes=cover_bytes,
-        cover_media_type=cover_media,
         chapters=chapters,
     )
 
@@ -612,14 +607,32 @@ def set_job(redis_client, job_id: str, status: str, progress: int, error: str = 
     write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, mapping=fields))
 
 
-def convert_cover_to_webp(cover_bytes: bytes) -> tuple[bytes, str]:
+# The cover formats an EPUB may carry; SVG, TIFF, JPEG 2000, BMP and the
+# rest never reach a decoder.
+COVER_FORMATS = ["JPEG", "PNG", "WEBP", "GIF"]
+# Pixels decoded for one cover. Past this Pillow refuses at the header,
+# before allocating anything, so a small file cannot claim gigabytes.
+MAX_COVER_PIXELS = 40_000_000
+# Longest edge of a stored cover; JPEGs decode straight to this scale.
+COVER_MAX_EDGE = 1600
+
+
+def convert_cover_to_webp(cover_bytes: bytes) -> bytes:
+    """Decodes an untrusted cover and re-encodes it as WebP. Raises on any
+    format outside :data:`COVER_FORMATS` or any decompression bomb."""
+    import warnings
+
     from PIL import Image
 
-    with Image.open(io.BytesIO(cover_bytes)) as image:
-        canvas = image.convert("RGB")
-        buffer = io.BytesIO()
-        canvas.save(buffer, format="WEBP", quality=82)
-        return buffer.getvalue(), "image/webp"
+    Image.MAX_IMAGE_PIXELS = MAX_COVER_PIXELS
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(io.BytesIO(cover_bytes), formats=COVER_FORMATS) as image:
+            image.thumbnail((COVER_MAX_EDGE, COVER_MAX_EDGE))
+            canvas = image.convert("RGB")
+            buffer = io.BytesIO()
+            canvas.save(buffer, format="WEBP", quality=82)
+            return buffer.getvalue()
 
 
 ARCHIVED_ERROR = "Book is archived; it was not republished"
@@ -674,22 +687,22 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 (*updates.values(), book_id),
             )
 
-        # Cover extraction (WebP when Pillow cooperates, original otherwise).
+        # Only a cover that decodes and re-encodes is stored; anything else
+        # leaves the book on the typographic cover the web draws.
+        cover_data = None
         if parsed.cover_bytes:
             try:
-                cover_data, cover_type = convert_cover_to_webp(parsed.cover_bytes)
-                cover_key = f"covers/{book_id}.webp"
-            except Exception as exc:  # noqa: BLE001 - Pillow must never kill ingestion
-                LOG.warning("cover conversion failed, storing original: %s", exc)
-                ext = "png" if "png" in parsed.cover_media_type else "jpg"
-                cover_data, cover_type = parsed.cover_bytes, parsed.cover_media_type or "image/jpeg"
-                cover_key = f"covers/{book_id}.{ext}"
+                cover_data = convert_cover_to_webp(parsed.cover_bytes)
+            except Exception as exc:  # noqa: BLE001 - a bad cover must never kill ingestion
+                LOG.warning("cover of %s refused, publishing without one: %s", book_id, exc)
+        if cover_data:
+            cover_key = f"covers/{book_id}.webp"
             minio_client.put_object(
                 settings.bucket_covers,
                 cover_key,
                 io.BytesIO(cover_data),
                 len(cover_data),
-                content_type=cover_type,
+                content_type="image/webp",
             )
             cur.execute(
                 "UPDATE books SET cover_url = %s, updated_at = NOW() WHERE id = %s",

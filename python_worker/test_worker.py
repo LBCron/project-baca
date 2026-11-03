@@ -179,6 +179,120 @@ class ArchiveLimitsTest(unittest.TestCase):
         check_archive_limits(fine)  # must not raise
 
 
+def png_of(width: int, height: int) -> bytes:
+    """A valid all-black grayscale PNG built row by row, so a 13000x13000
+    image costs a few hundred KiB and never 169 MB of pixels here."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    squeeze = zlib.compressobj(9)
+    row = b"\x00" * (width + 1)
+    idat = b"".join(squeeze.compress(row) for _ in range(height)) + squeeze.flush()
+    header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def image_bytes(fmt: str, size=(8, 8)) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, color="red").save(buffer, format=fmt)
+    return buffer.getvalue()
+
+
+class CoverTest(unittest.TestCase):
+    def test_allowed_formats_become_webp_within_the_edge(self):
+        for fmt in ("PNG", "JPEG", "GIF", "WEBP"):
+            webp = worker.convert_cover_to_webp(image_bytes(fmt))
+            self.assertEqual((webp[:4], webp[8:12]), (b"RIFF", b"WEBP"), fmt)
+        from PIL import Image
+
+        wide = worker.convert_cover_to_webp(image_bytes("PNG", (4000, 100)))
+        with Image.open(io.BytesIO(wide)) as shown:
+            self.assertEqual(max(shown.size), worker.COVER_MAX_EDGE)
+
+    def test_other_formats_never_reach_a_decoder(self):
+        refused = {
+            "svg": b'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>',
+            "tiff": image_bytes("TIFF"),
+            "bmp": image_bytes("BMP"),
+            "jp2": b"\x00\x00\x00\x0cjP  \r\n\x87\n" + b"\x00" * 64,
+        }
+        for name, data in refused.items():
+            with self.assertRaises(Exception, msg=name):
+                worker.convert_cover_to_webp(data)
+
+    def test_a_decompression_bomb_is_refused_with_little_memory(self):
+        """13000x13000 in 160 KiB used to cost 1.77 GB of RSS; it must be
+        refused at the header, measured in a fresh interpreter."""
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as bomb:
+            bomb.write(png_of(13000, 13000))
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = (
+            "import resource, sys\n"
+            f"sys.path.insert(0, {here!r})\n"
+            "import worker\n"
+            f"data = open({bomb.name!r}, 'rb').read()\n"
+            "try:\n"
+            "    worker.convert_cover_to_webp(data)\n"
+            "    print('decoded')\n"
+            "except Exception as exc:\n"
+            "    print(type(exc).__name__)\n"
+            "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
+        )
+        try:
+            out = subprocess.run(
+                [sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=True
+            ).stdout.split()
+        finally:
+            os.unlink(bomb.name)
+        self.assertEqual(out[0], "DecompressionBombError")
+        self.assertLess(int(out[1]) // 1024, 200, f"peak RSS {int(out[1]) // 1024} MB")
+
+    def test_a_refused_cover_publishes_the_book_without_one(self):
+        cursor = FakeCursor("draft")
+        cursor.rowcount = 1
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        minio = mock.Mock()
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+        epub = epub_with_cover(make_epub([("One", "Some text worth reading.")]), "cover.svg", "image/svg+xml", svg)
+        minio.get_object.return_value = io.BytesIO(epub)
+        minio.get_object.return_value.release_conn = lambda: None
+        with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
+             mock.patch.object(worker, "generate_json", return_value={}):
+            worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        minio.put_object.assert_not_called()
+        self.assertFalse(any("cover_url" in sql for sql in cursor.statements))
+        self.assertTrue(any("status = 'published'" in sql for sql in cursor.statements))
+
+
+def epub_with_cover(epub: bytes, href: str, media_type: str, cover: bytes) -> bytes:
+    """Copies ``epub`` with ``data`` added at ``href`` and named the cover."""
+    source = zipfile.ZipFile(io.BytesIO(epub))
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        for info in source.infolist():
+            data = source.read(info.filename)
+            if info.filename == "OEBPS/content.opf":
+                item = f'<item id="cover-image" href="{href}" media-type="{media_type}" properties="cover-image"/>'
+                data = data.decode().replace("</manifest>", item + "</manifest>").encode()
+            archive.writestr(info, data)
+        archive.writestr(f"OEBPS/{href}", cover)
+    return out.getvalue()
+
+
 if __name__ == "__main__":
     unittest.main()
 
