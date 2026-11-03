@@ -151,6 +151,16 @@ Memory, measured 2026-11-03 (release builds, dev data):
 | Ingestion worker | 35 MB RSS | 53 MB RSS, 19.5 MB Python heap, parsing a 300-chapter EPUB (6.3 MB of text) |
 | Web app | 1.3 MB JS heap, 1.3 MB WASM memory on the catalog | 2.8 MB JS heap in the reader; DOM nodes and listeners stay flat over 60 page turns, 45 sheet cycles, and 36 chapter jumps |
 
+Web first load, Lighthouse 12.6 mobile (simulated slow 4G, 4x CPU), release bundle behind Caddy with compression, dev data, median of 5 runs on the home page and 3 elsewhere, 2026-11-03:
+
+| Route | Before (on-the-fly gzip, no minify) | After (precompressed brotli 11, minified HTML, CSS, and glue) |
+|---|---|---|
+| Home | score 52, LCP 5.73 s, FCP 5.28 s, CLS 0.291 | score 71, LCP 4.89 s, FCP 4.43 s, CLS 0.072 (every run) |
+| Book | score 67, LCP 5.88 s | score 73, LCP 4.96 s |
+| Reader | score 65, LCP 5.81 s | score 71, LCP 4.89 s |
+
+The largest paint on every route is text the WASM app draws (the hero heading, the synopsis, a paragraph), so first paint waits on the 1.6 MB WASM: 473 KB with brotli, about 2.5 s of the simulated link. CLS came from the phone picks rail appearing above the catalog; it now holds its size while the books load. A further cut needs a static first paint before the WASM, which is a prerender.
+
 ## 10. Tests
 
 Functional server suites are modules of one binary (`crates/server/tests/it`); `performance_test` and `load_stress_test` stay separate so parallel tests cannot skew latency assertions. Web tests are a Playwright pyramid in `crates/web/tests` (e2e, component, integration, a11y, visual). Targets and counts: [GUIDE.md](GUIDE.md) section 5.

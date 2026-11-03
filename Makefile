@@ -207,11 +207,13 @@ build:
 	@$(MAKE) --no-print-directory build-web
 
 # Release WebAssembly bundle: wasm-release profile, wasm-opt -Oz (Trunk
-# fetches binaryen when it is not installed), then the size budget.
+# fetches binaryen when it is not installed), the size budget, then `.br`
+# and `.gz` copies the edge sends as they are.
 build-web:
 	@echo "Building the release WASM bundle into $(WEB_DIST)..."
 	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --cargo-profile wasm-release --public-url / --dist $(WEB_DIST)
 	@python3 scripts/check_bundle_budget.py $(WEB_DIST)
+	@python3 scripts/precompress.py $(WEB_DIST)
 
 # Tauri shell (apps/tauri, `cargo install tauri-cli --version "^2" --locked`).
 # The app injects APP_API_BASE as window.__ROTARIA_API__; desktop needs

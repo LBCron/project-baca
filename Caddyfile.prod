@@ -6,7 +6,7 @@
 # Dev equivalent: Caddyfile (host-run, https://localhost, Trunk dev :3000).
 
 {$DOMAIN} {
-	encode gzip
+	encode zstd gzip
 
 	# Content-hashed build output and the self-hosted fonts (renamed, never
 	# edited in place). The two matchers are exact complements.
@@ -52,7 +52,11 @@
 			not path_regexp \.[A-Za-z0-9]+$
 		}
 		rewrite @route /index.html
-		file_server
+		# The build writes .br and .gz beside each text file (brotli 11
+		# ships the WASM a quarter smaller than on-the-fly gzip).
+		file_server {
+			precompressed br gzip
+		}
 		header {
 			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"

@@ -208,6 +208,18 @@ fn RailCard(book: BookSummaryDto) -> impl IntoView {
     }
 }
 
+/// A rail card's footprint while the books load.
+#[component]
+fn RailSkeleton() -> impl IntoView {
+    view! {
+        <div class="rail-card" aria-hidden="true">
+            <div class="cover skeleton"></div>
+            <span class="rail-title skeleton">"\u{00A0}"</span>
+            <span class="rail-meta skeleton">"\u{00A0}"</span>
+        </div>
+    }
+}
+
 #[component]
 pub fn HomePage() -> impl IntoView {
     let (lang, _) = use_lang();
@@ -502,21 +514,31 @@ pub fn HomePage() -> impl IntoView {
                             {move || lang.get().text("chip_short")}
                         </button>
                     </div>
-                    {move || (!books.get().is_empty()).then(|| view! {
-                        <section class="picks narrow-only" aria-labelledby="picks-title">
+                    // Held open while the first page loads, with cards of the
+                    // same size, so the catalog below does not jump when the
+                    // books arrive.
+                    {move || (loading.get() || !books.get().is_empty()).then(|| view! {
+                        <section class="picks narrow-only" aria-labelledby="picks-title" aria-busy=move || loading.get()>
                             <div class="section-head">
                                 <h2 id="picks-title" class="section-title">{move || lang.get().text("picks")}</h2>
                                 <a href="#katalog" class="section-link">{move || lang.get().text("see_all")}</a>
                             </div>
                             <div class="book-rail">
-                                {books.get().into_iter().take(RAIL_SIZE).map(|b| view! { <RailCard book=b/> }).collect::<Vec<_>>()}
+                                {move || {
+                                    let shown = books.get();
+                                    if shown.is_empty() {
+                                        (0..RAIL_SIZE).map(|_| view! { <RailSkeleton/> }.into_any()).collect::<Vec<_>>()
+                                    } else {
+                                        shown.into_iter().take(RAIL_SIZE).map(|b| view! { <RailCard book=b/> }.into_any()).collect::<Vec<_>>()
+                                    }
+                                }}
                             </div>
                         </section>
                     })}
                 </div>
                 <div class="hero-art wide-only">
                     <figure class="plate">
-                        <img src=PLATE_SRC alt=move || lang.get().text("plate_alt") class="hero-slide" width="640" height="640"/>
+                        <img src=PLATE_SRC alt=move || lang.get().text("plate_alt") class="hero-slide" width="640" height="640" loading="lazy" decoding="async"/>
                         <figcaption class="plate-caption">
                             <span>{move || lang.get().text("plate_caption")}</span>
                             <span aria-hidden="true">"\u{2756}"</span>
