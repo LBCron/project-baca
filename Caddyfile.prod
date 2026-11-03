@@ -73,7 +73,6 @@
 		header @revalidate Cache-Control "no-cache"
 	}
 
-
 	# header_up Host is preserved by default. The server trusts the client
 	# address header only because TRUST_PROXY_HEADERS=true on the server
 	# service and this edge is the sole way in.

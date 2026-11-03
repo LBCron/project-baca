@@ -794,3 +794,11 @@ pub fn use_page_title(part: impl Fn(Lang) -> Option<String> + 'static) {
         }
     });
 }
+
+/// A book's language for a `lang` attribute, or none while the worker has
+/// not filled it: `lang=""` would mark the text as of no language and turn
+/// hyphenation off.
+pub fn text_lang(language: &str) -> Option<String> {
+    let language = language.trim();
+    (!language.is_empty()).then(|| language.to_string())
+}

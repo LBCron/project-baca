@@ -36,6 +36,13 @@ const PRECACHE_ASSETS = [
   "/assets/rotaria-mark.svg",
 ];
 
+/* Only the app document may become the offline shell: a file opened
+ * directly in a tab (robots.txt, an image) is a navigation too, and as the
+ * shell it would name no assets and prune them all. */
+function isShell(response) {
+  return response.ok && (response.headers.get("content-type") || "").startsWith("text/html");
+}
+
 /* Paths the shell document references (href/src), quoted or not: release
  * builds minify it and drop the quotes. */
 function referencedPaths(html) {
@@ -106,12 +113,13 @@ async function cacheFirst(request) {
   return fresh;
 }
 
-/* Network answer stored under `key`; offline, the stored copy. */
-async function networkFirst(request, cacheName, key) {
+/* Network answer stored under `key`; offline, the stored copy. `keep`
+ * decides whether a fresh answer may replace it. */
+async function networkFirst(request, cacheName, key, keep = (response) => response.ok) {
   const cache = await caches.open(cacheName);
   try {
     const fresh = await fetch(request);
-    if (fresh && fresh.ok) cache.put(key, fresh.clone());
+    if (fresh && keep(fresh)) cache.put(key, fresh.clone());
     return fresh;
   } catch (e) {
     const cached = await cache.match(key);
@@ -129,8 +137,8 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
-        const response = await networkFirst(request, SHELL_CACHE, SHELL_URL);
-        if (response.ok) pruneStaleAssets(response.clone());
+        const response = await networkFirst(request, SHELL_CACHE, SHELL_URL, isShell);
+        if (isShell(response)) pruneStaleAssets(response.clone());
         return response;
       })()
     );

@@ -91,7 +91,7 @@ pub fn QuoteFinder(
     book_id: String,
     show: RwSignal<bool>,
     /// The book's language, so its passages are read and hyphenated in it.
-    #[prop(optional, into)]
+    #[prop(default = None)]
     text_lang: Option<String>,
 ) -> impl IntoView {
     let text_lang = StoredValue::new(text_lang);

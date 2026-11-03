@@ -1109,10 +1109,11 @@ pub fn ReaderPage() -> impl IntoView {
         let open = menu_open.get();
         if open {
             request_animation_frame(|| {
-                let first = document()
-                    .query_selector(".type-sheet .swatch.active, .type-sheet button")
-                    .ok()
-                    .flatten()
+                // The chosen theme first; a selector list would match in
+                // document order and always take the first swatch.
+                let first = [".type-sheet .swatch.active", ".type-sheet button"]
+                    .iter()
+                    .find_map(|s| document().query_selector(s).ok().flatten())
                     .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok());
                 if let Some(first) = first {
                     let _ = first.focus();
@@ -1178,7 +1179,10 @@ pub fn ReaderPage() -> impl IntoView {
                 <a href=format!("/book/{}", book_id.get_value()) class="btn-icon" aria-label=move || lang.get().text("reader_back")>{icons::back()}</a>
                 // The name starts with what the button shows, so a voice
                 // command naming the visible chapter reaches it.
-                <button class="reader-title" aria-label=move || format!("{} {} {}, {}", lang.get().text("chapter"), roman(chapter_no.get()), chapter.get().map(|c| c.title).unwrap_or_default(), lang.get().text("open_chapters")) aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
+                <button class="reader-title" aria-label=move || {
+                    let shown = format!("{} {} {}", lang.get().text("chapter"), roman(chapter_no.get()), chapter.get().map(|c| c.title).unwrap_or_default());
+                    format!("{}, {}", shown.trim_end(), lang.get().text("open_chapters"))
+                } aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
                     <span class="kicker">{move || format!("{} {}", lang.get().text("chapter"), roman(chapter_no.get()))}</span>
                     <span class="label">{move || chapter.get().map(|c| c.title).unwrap_or_default()}{icons::arrow_down()}</span>
                 </button>
@@ -1240,7 +1244,7 @@ pub fn ReaderPage() -> impl IntoView {
                                     }.into_any()
                                 }
                             },
-                            Some(c) => view! { <div class="chapter-body" lang=move || book.get().map(|b| b.language) inner_html=c.html_content></div> }.into_any(),
+                            Some(c) => view! { <div class="chapter-body" lang=move || book.get().and_then(|b| crate::i18n::text_lang(&b.language)) inner_html=c.html_content></div> }.into_any(),
                         }}
                     </div>
                     <span class="spine" aria-hidden="true"></span>

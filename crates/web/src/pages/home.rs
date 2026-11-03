@@ -232,6 +232,9 @@ pub fn HomePage() -> impl IntoView {
     let (cursor, set_cursor) = signal(None::<String>);
     let (exhausted, set_exhausted) = signal(false);
     let (loading, set_loading) = signal(true);
+    // A Memo, so later loads ("load more", a filter) leave the rail and its
+    // scroll position in place instead of rebuilding it.
+    let show_picks = Memo::new(move |_| loading.get() || !books.get().is_empty());
     let (load_error, set_load_error) = signal(false);
     let (show_all, set_show_all) = signal(false);
     let (viewport_width, set_viewport_width) = signal(window_width());
@@ -517,7 +520,7 @@ pub fn HomePage() -> impl IntoView {
                     // Held open while the first page loads, with cards of the
                     // same size, so the catalog below does not jump when the
                     // books arrive.
-                    {move || (loading.get() || !books.get().is_empty()).then(|| view! {
+                    {move || show_picks.get().then(|| view! {
                         <section class="picks narrow-only" aria-labelledby="picks-title" aria-busy=move || loading.get()>
                             <div class="section-head">
                                 <h2 id="picks-title" class="section-title">{move || lang.get().text("picks")}</h2>

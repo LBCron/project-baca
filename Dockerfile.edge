@@ -19,7 +19,7 @@ COPY scripts/externalize_inline_scripts.py scripts/preconnect_api.py scripts/che
 COPY assets/illustrations ./assets/illustrations
 ARG API_BASE_URL=/api/v1
 ENV API_BASE_URL=$API_BASE_URL
-RUN make build-web
+RUN make build-web-edge
 
 FROM caddy:2-alpine
 COPY Caddyfile.prod /etc/caddy/Caddyfile
