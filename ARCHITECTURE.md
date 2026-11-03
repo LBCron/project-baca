@@ -28,7 +28,7 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 |---|---|---|
 | `GET /health` (root) | none | 503 `degraded` when the process has no database connection |
 | `GET /health` | none | Postgres and Redis status; answers 200 even when `degraded` (issue #51) |
-| `POST /auth/signup`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh` | none | auth limiter; signup 502 when SMTP is down, 60 s cooldown per email, 10/h per IP; OTP: three wrong codes lock for 5 min (429, `Retry-After`) |
+| `POST /auth/signup`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh` | none | auth limiter; signup 502 when SMTP is down, 10/h per IP, codes per address 3/h and 10/day; OTP: three wrong codes lock that registration for 5 min, 10 guesses per address per day (429, `Retry-After`) |
 | `POST /auth/logout`, `/auth/revoke-all?keep_current=` | bearer | logout blacklists the session's last access token; revoke-all drops other devices |
 | `GET`, `PATCH`, `DELETE /me` | bearer | profile; delete revokes first, then cascades |
 | `PUT /me/password` | bearer | revokes other sessions and returns a fresh token pair |
@@ -50,7 +50,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 ## 4. Security model
 
-- Passwords: Argon2id (19 MiB, 2 iterations). OTP: six digits, SHA-256 in Redis, 10 min TTL; attempts are counted with an atomic `INCR` before the comparison, three misses lock the code for 5 min.
+- Passwords: Argon2id (19 MiB, 2 iterations). Registration: each signup is its own record in Redis under a random `registration_id` (code SHA-256, name, password hash, 10 min TTL); `verify-otp` needs that id and writes the account row from that record only, so a second signup for an address neither blocks nor replaces the first. OTP attempts are counted with an atomic `INCR` before the comparison; three misses lock the code for 5 min.
 - Signup: emails are trimmed and lowercased at deserialization, so case variants are one account and one lockout key; a concurrent duplicate answers 409. While a code is pending, a signup with a different password answers 429 until it expires, so nobody can plant a password on someone else's registration; the same password gets a fresh code.
 - Tokens: HS256 access token (1440 min in dev, 60 min in production compose); refresh token stored as a SHA-256 hash with a session record (device label, IP prefix, last access `jti`), rotated atomically (`GETDEL`, 30 s grace for concurrent tabs, handing back the successor only while it is still live); a replayed token revokes the family including access tokens. Logout and per-device revocation blacklist the last access `jti`.
 - Lockouts: 5 failures per (email, IP) and 20 per email lock login for 15 min; unverified accounts behave like a wrong password.
