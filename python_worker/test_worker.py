@@ -151,6 +151,16 @@ class SanitizeTest(unittest.TestCase):
             leftover = allowed.sub("", sanitize_html(dirty))
             self.assertNotRegex(leftover, r"[<>]", dirty)
 
+    def test_stray_end_tags_cost_linear_time(self):
+        """Forty thousand unmatched end tags took seconds when each one
+        scanned the open-element stack."""
+        import time
+
+        dirty = "<b>" * 40_000 + "</i>" * 40_000
+        started = time.monotonic()
+        sanitize_html(dirty)
+        self.assertLess(time.monotonic() - started, 1.0)
+
     def test_extract_text_resolves_entities(self):
         self.assertEqual(
             extract_text("<p>A &amp; B</p><script>hidden</script>"),
@@ -266,6 +276,39 @@ class LimitsTest(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             self.assertEqual(len(archive.infolist()), 10, "the fixture is a real zip")
 
+    def test_an_end_record_signature_in_the_offset_field_is_no_way_past(self):
+        """``rfind`` on the signature used to land inside the real record
+        when its offset field spelled ``PK\\x05\\x06`` and skip the check."""
+        data = bytearray(many_entries_zip(6_000))
+        data[-6:-2] = b"PK\x05\x06"
+        with self.assertRaisesRegex(worker.RejectedEpub, "more than 5000 files"):
+            worker.check_central_directory(bytes(data), worker.EpubLimits())
+
+    def test_a_zip64_archive_behind_a_stub_with_false_counts_is_refused(self):
+        """A prepended stub moves the ZIP64 record away from where its
+        locator points; ZipFile still finds it, so the check must too."""
+        import struct
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+            for i in range(66_000):
+                archive.writestr(str(i), b"")
+        data = bytearray(b"MZ" + b"\0" * 4094 + buffer.getvalue())
+        data[-14:-10] = struct.pack("<HH", 1, 1)
+        data[-10:-6] = struct.pack("<I", 46)
+        with self.assertRaisesRegex(worker.RejectedEpub, "more than 5000 files"):
+            worker.check_central_directory(bytes(data), worker.EpubLimits())
+
+    def test_xml_that_does_not_parse_is_rejected_with_its_reason(self):
+        source = zipfile.ZipFile(io.BytesIO(make_epub([("One", "body words")])))
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as archive:
+            for info in source.infolist():
+                data = source.read(info.filename)
+                archive.writestr(info, b"<package><unclosed>" if info.filename.endswith(".opf") else data)
+        with self.assertRaisesRegex(worker.RejectedEpub, "not well-formed XML"):
+            parse_epub(out.getvalue())
+
     def test_a_400000_entry_archive_is_refused_with_little_memory(self):
         """Building every ZipInfo used to cost 469 MB just to refuse it."""
         import os
@@ -310,7 +353,7 @@ class LimitsTest(unittest.TestCase):
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "embed_batch") as embed:
-            with self.assertRaisesRegex(worker.RejectedEpub, "most one book may embed is 1"):
+            with self.assertRaisesRegex(worker.RejectedEpub, "more than 1 passages"):
                 worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, settings)
         embed.assert_not_called()
 
@@ -327,6 +370,32 @@ class LimitsTest(unittest.TestCase):
         client.xack.assert_called_once()
         status = client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual((status["status"], status["error"]), ("failed", "EPUB has more than 2000 chapters"))
+
+
+class ArchivedBeforeEmbeddingTest(unittest.TestCase):
+    def test_a_book_archived_after_the_first_commit_spends_nothing_more(self):
+        class ArchivedMidway(FakeCursor):
+            def fetchone(self):
+                archived = any("SELECT status FROM books" in sql for sql in self.statements)
+                return ("Title", "Author", "en", "archived" if archived else "draft")
+
+        cursor = ArchivedMidway("draft")
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text worth reading.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        redis_client = mock.MagicMock()
+        with mock.patch.object(worker, "make_redis", return_value=redis_client), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch") as embed, \
+             mock.patch.object(worker, "generate_json") as generate:
+            worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        embed.assert_not_called()
+        generate.assert_not_called()
+        status = redis_client.pipeline.return_value.hset.call_args.kwargs["mapping"]
+        self.assertEqual(status["error"], worker.ARCHIVED_ERROR)
 
 
 class ArchiveLimitsTest(unittest.TestCase):

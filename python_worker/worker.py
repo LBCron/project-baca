@@ -30,6 +30,7 @@ import time
 import urllib.request
 import uuid
 import zipfile
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,6 +128,9 @@ class _Sanitizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.open_tags: list[str] = []
+        # Counts of open_tags, so a stray end tag is O(1) to dismiss; a
+        # scan of the stack made ten thousand of them quadratic.
+        self.open_counts: Counter[str] = Counter()
         self.skip_from: int | None = None
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
@@ -135,6 +139,7 @@ class _Sanitizer(HTMLParser):
             if self.skip_from is None and tag in self.SKIP_TAGS:
                 self.skip_from = len(self.open_tags)
             self.open_tags.append(tag)
+            self.open_counts[tag] += 1
         if self.skip_from is not None:
             return
         if tag in ALLOWED_TAGS:
@@ -142,9 +147,12 @@ class _Sanitizer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in self.open_tags:
-            while self.open_tags.pop() != tag:
-                pass
+        if self.open_counts[tag]:
+            while True:
+                closed = self.open_tags.pop()
+                self.open_counts[closed] -= 1
+                if closed == tag:
+                    break
         if self.skip_from is not None:
             if len(self.open_tags) <= self.skip_from:
                 self.skip_from = None
@@ -239,6 +247,7 @@ class ParsedChapter:
     html: str
     text: str
     word_count: int
+    chunks: list[str]
 
 
 @dataclass
@@ -250,33 +259,27 @@ class ParsedEpub:
     chapters: list[ParsedChapter]
 
 
-# Smallest central directory record: a file header with an empty name.
-CENTRAL_HEADER_BYTES = 46
 # Room per central directory record for its name and extra fields.
 CENTRAL_RECORD_ALLOWANCE = 512
 
 
 def check_central_directory(data: bytes, limits: EpubLimits) -> None:
-    """Reads the entry count and directory size from the end record before
-    ``ZipFile`` builds one object per entry: 400,000 entries in 33 MiB used
-    to cost 469 MB just to be refused. ``ZipFile`` walks the directory by
-    its size, so the size is bounded as well as the declared count."""
-    tail = max(0, len(data) - (22 + 65_535))
-    end = data.rfind(b"PK\x05\x06", tail)
-    if end < 0 or end + 22 > len(data):
-        return  # no end record: ZipFile rejects the upload itself
-    entries = int.from_bytes(data[end + 10 : end + 12], "little")
-    size = int.from_bytes(data[end + 12 : end + 16], "little")
-    locator = end - 20
-    if locator >= 0 and data[locator : locator + 4] == b"PK\x06\x07":
-        record = int.from_bytes(data[locator + 8 : locator + 16], "little")
-        if data[record : record + 4] == b"PK\x06\x06":
-            entries = int.from_bytes(data[record + 32 : record + 40], "little")
-            size = int.from_bytes(data[record + 40 : record + 48], "little")
+    """Bounds the central directory before ``ZipFile`` builds one object per
+    entry: 400,000 entries in 33 MiB used to cost 469 MB just to be refused.
+    The end record is the one ``ZipFile`` itself will use (``_EndRecData``,
+    ZIP64 and prepended stubs included); a second parser could pick another
+    record and wave a crafted archive through. ``ZipFile`` walks the
+    directory by its size, never its declared count, so the size is bounded
+    as well as the count."""
+    try:
+        record = zipfile._EndRecData(io.BytesIO(data))
+    except OSError:
+        record = None
+    if record is None:
+        raise RejectedEpub("Upload is not a valid ZIP/EPUB archive")
+    entries, size = record[zipfile._ECD_ENTRIES_TOTAL], record[zipfile._ECD_SIZE]
     if entries > limits.archive_files or size > limits.archive_files * CENTRAL_RECORD_ALLOWANCE:
         raise RejectedEpub(f"EPUB holds more than {limits.archive_files} files")
-    if size < entries * CENTRAL_HEADER_BYTES:
-        raise RejectedEpub("EPUB central directory is malformed")
 
 
 def check_archive_limits(infos: list, limits: EpubLimits = EpubLimits()) -> None:
@@ -306,12 +309,19 @@ def _safe_member(prefix: str, href: str) -> str:
     return joined
 
 
+def _xml(text: str, name: str) -> ET.Element:
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise RejectedEpub(f"EPUB {name} is not well-formed XML") from exc
+
+
 def _opf_path(epub: zipfile.ZipFile) -> str:
     try:
         container = epub.read("META-INF/container.xml").decode("utf-8", "replace")
     except KeyError as exc:
         raise RejectedEpub("EPUB missing META-INF/container.xml") from exc
-    root = ET.fromstring(container)
+    root = _xml(container, "container.xml")
     ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
     node = root.find("c:rootfiles/c:rootfile", ns)
     if node is None or not node.get("full-path"):
@@ -333,7 +343,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     base = opf_path.rpartition("/")[0]
     prefix = f"{base}/" if base else ""
 
-    opf = ET.fromstring(epub.read(_safe_member("", opf_path)).decode("utf-8", "replace"))
+    opf = _xml(epub.read(_safe_member("", opf_path)).decode("utf-8", "replace"), "package document")
     ns = {
         "opf": "http://www.idpf.org/2007/opf",
         "dc": "http://purl.org/dc/elements/1.1/",
@@ -348,19 +358,15 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     language = clip(find_text("opf:metadata/dc:language"), LANGUAGE_MAX_CHARS) or "en"
 
     manifest: dict[str, tuple[str, str]] = {}
+    properties: dict[str, str] = {}
     for item in opf.findall("opf:manifest/opf:item", ns):
-        manifest[item.get("id", "")] = (
-            item.get("href", ""),
-            item.get("media-type", ""),
-        )
+        item_id = item.get("id", "")
+        manifest[item_id] = (item.get("href", ""), item.get("media-type", ""))
+        properties[item_id] = item.get("properties", "")
 
     cover_bytes: bytes | None = None
     for item_id, (href, media) in manifest.items():
-        props = ""
-        for item in opf.findall("opf:manifest/opf:item", ns):
-            if item.get("id") == item_id:
-                props = item.get("properties", "")
-        if "cover-image" in props or item_id.lower() == "cover-image":
+        if "cover-image" in properties[item_id] or item_id.lower() == "cover-image":
             try:
                 cover_bytes = epub.read(_safe_member(prefix, href))
             except (KeyError, ValueError):
@@ -382,6 +388,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     # A spine may name one document many times; it is one chapter.
     read: set[str] = set()
     text_bytes = 0
+    chunk_count = 0
     for itemref in spine.findall("opf:itemref", ns):
         ref = itemref.get("idref", "")
         if ref not in manifest:
@@ -409,6 +416,13 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
         text_bytes += len(text.encode("utf-8"))
         if text_bytes > limits.text_bytes:
             raise RejectedEpub(f"EPUB text exceeds {limits.text_bytes // 1_000_000} MB")
+        # Counted here, before anything is written or paid for.
+        chunks = chunk_words(text)
+        chunk_count += len(chunks)
+        if chunk_count > limits.chunks:
+            raise RejectedEpub(
+                f"EPUB yields more than {limits.chunks} passages, the most one book may embed"
+            )
         heading = ""
         for tag in ("h1", "h2", "h3"):
             start = cleaned.lower().find(f"<{tag}>")
@@ -422,6 +436,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
                 html=cleaned,
                 text=text,
                 word_count=len(text.split()),
+                chunks=chunks,
             )
         )
 
@@ -798,14 +813,19 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         # Scene chunking at ~400 words, then batched embeddings.
         pending: list[tuple[str, int, str]] = []
         for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            for index, piece in enumerate(chunk_words(chapter.text)):
+            for index, piece in enumerate(chapter.chunks):
                 pending.append((chapter_id, index, piece))
         if not pending:
             raise RuntimeError("No embeddable chunks produced")
-        if len(pending) > settings.limits.chunks:
-            raise RejectedEpub(
-                f"EPUB yields {len(pending)} passages; the most one book may embed is {settings.limits.chunks}"
-            )
+        # The book row is free since the first commit, so a curator may have
+        # archived it already; stop before the embeddings and summaries are paid.
+        cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
+        current = cur.fetchone()
+        if current is not None and current[-1] == "archived":
+            conn.rollback()
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s was archived before embedding; ingestion stopped", book_id)
+            return
 
         set_job(redis_client, job_id, "embedding", 55)
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
