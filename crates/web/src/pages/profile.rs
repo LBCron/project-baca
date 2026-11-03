@@ -47,6 +47,7 @@ fn GuestShelf() -> impl IntoView {
                     <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
                 </div>
             </div>
+            <crate::components::saved_shelf::SavedOnDevice/>
             {move || (!local.get().is_empty()).then(|| view! {
                 <section aria-labelledby="local-quotes-title">
                     <div class="section-head">

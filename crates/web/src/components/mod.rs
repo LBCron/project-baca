@@ -6,6 +6,7 @@ pub mod header;
 pub mod icons;
 pub mod insights;
 pub mod progress;
+pub mod saved_shelf;
 pub mod session;
 pub mod shell;
 pub mod tabbar;

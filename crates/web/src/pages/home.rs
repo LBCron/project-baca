@@ -575,6 +575,8 @@ pub fn HomePage() -> impl IntoView {
                         <p>{move || lang.get().text(if api::is_online() { "load_failed" } else { "offline_notice" })}</p>
                         <button class="btn btn-primary" on:click=move |_| load_page(true)>{move || lang.get().text("retry")}</button>
                     </div>
+                    // The notice promises saved books stay readable; here they are.
+                    <crate::components::saved_shelf::SavedOnDevice/>
                 })}
                 {move || (!loading.get() && !load_error.get() && visible().is_empty()).then(|| view! {
                     <div class="empty-state">

@@ -141,3 +141,47 @@ def test_native_shell_sets_the_api_base_and_skips_the_worker(browser: Browser):
         assert errors == [], errors[:3]
     finally:
         context.close()
+
+
+CACHED_PATHS = """async (name) => {
+  const cache = await caches.open(name);
+  return (await cache.keys()).map(r => new URL(r.url).pathname);
+}"""
+
+
+def test_first_visit_then_offline_keeps_type_art_and_saved_books(browser: Browser, book_with_chapters: str):
+    """One visit is enough: the worker precaches the house fonts and the
+    illustrations, and offline the home page and a guest's /me list the
+    books saved on the device, so none needs its URL remembered."""
+    context = browser.new_context(color_scheme="dark", viewport={"width": 1280, "height": 900})
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    book = book_with_chapters
+    title = api_get(f"/books/{book}")["title"]
+    try:
+        _controlled(page, f"/book/{book}")
+        cached = set(page.evaluate(CACHED_PATHS, ASSET_CACHE))
+        for path in ["/fonts/eb-garamond-italic-latin.woff2", "/fonts/newsreader-italic-latin.woff2",
+                     "/assets/library-bookshelf-ladder.webp"]:
+            assert path in cached, (path, sorted(cached))
+        save = '[aria-label="Save for offline reading"]'
+        page.wait_for_selector(f'{save}, [aria-label="Saved on this device"]')
+        if page.query_selector(save):
+            page.click(save)
+            page.wait_for_selector('[aria-label="Saved on this device"]', timeout=10000)
+
+        context.set_offline(True)
+        page.goto(f"{WEB}/", wait_until="domcontentloaded")
+        page.wait_for_selector(".saved-on-device")
+        assert page.locator(f".saved-on-device a[aria-label='{title}']").count() == 1
+        plate = page.locator(".hero-slide")
+        plate.scroll_into_view_if_needed()
+        page.wait_for_function("() => document.querySelector('.hero-slide').naturalWidth > 0")
+        page.goto(f"{WEB}/me", wait_until="domcontentloaded")
+        page.wait_for_selector(".saved-on-device")
+        assert page.locator(f".saved-on-device a[aria-label='{title}']").count() == 1
+        assert errors == [], errors[:3]
+    finally:
+        context.set_offline(False)
+        context.close()

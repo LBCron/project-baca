@@ -157,6 +157,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("continue_chapter", "Lanjutkan Bab", "Continue Chapter"),
     ("save_offline", "Simpan untuk dibaca luring", "Save for offline reading"),
     ("saved_offline", "Tersimpan di perangkat", "Saved on this device"),
+    ("saved_books_device", "Tersimpan di perangkat ini", "Saved on this device"),
     ("saving", "Menyimpan…", "Saving…"),
     ("quote_finder", "Cari kutipan", "Find a quote"),
     ("atomic_cards", "Kartu insight", "Insight cards"),
