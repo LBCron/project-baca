@@ -584,6 +584,21 @@ pub struct ReadingHeartbeatRequest {
     ))]
     #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 3600))]
     pub seconds_spent: i32,
+    /// Minutes the reader's clock is east of UTC (WIB 420, WIT 540): the
+    /// day the reading counts for is theirs. Absent means UTC.
+    #[serde(default)]
+    #[validate(range(min = -720, max = 840, message = "UTC offset must be between -720 and 840 minutes"))]
+    #[cfg_attr(feature = "openapi", schema(minimum = -720, maximum = 840))]
+    pub utc_offset_minutes: Option<i32>,
+}
+
+/// `GET /me/streak`: today's reading is summed over the reader's own day.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct StreakQuery {
+    #[validate(range(min = -720, max = 840, message = "UTC offset must be between -720 and 840 minutes"))]
+    #[cfg_attr(feature = "openapi", param(minimum = -720, maximum = 840))]
+    pub utc_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -595,6 +610,15 @@ pub struct ReadingHeartbeatResponse {
     pub total_xp: i32,
     pub xp_earned: i32,
     pub streak_incremented: bool,
+    /// False when the heartbeat came inside the per-reader interval (two
+    /// open tabs): nothing was logged and the standing is returned as is.
+    /// Absent from a server older than the field, where every 200 credited.
+    #[serde(default = "credited_by_default")]
+    pub credited: bool,
+}
+
+fn credited_by_default() -> bool {
+    true
 }
 
 /// Current streak standing for the profile page; zeros before the first

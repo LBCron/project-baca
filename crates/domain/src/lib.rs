@@ -2,7 +2,7 @@
 //!
 //! Only `shared` (error contract), `chrono`, and `thiserror` are allowed here.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -132,6 +132,19 @@ pub const DAILY_MILESTONE_BONUS_XP: i32 = 20;
 /// time even when a client reports the maximum.
 pub const MAX_HEARTBEAT_CREDIT_SECONDS: i32 = 90;
 
+/// Widest UTC offsets in use, in minutes: UTC-12 to UTC+14.
+pub const MIN_UTC_OFFSET_MINUTES: i32 = -720;
+pub const MAX_UTC_OFFSET_MINUTES: i32 = 840;
+
+/// The reader's calendar day at `now`, their clock `offset_minutes` east of
+/// UTC (WIB is 420). A streak day runs from the reader's midnight, not UTC's:
+/// in WIB, UTC days turn at 07:00, so a night's reading and the next
+/// morning's counted as one day.
+pub fn local_date(now: DateTime<Utc>, offset_minutes: i32) -> NaiveDate {
+    let offset = offset_minutes.clamp(MIN_UTC_OFFSET_MINUTES, MAX_UTC_OFFSET_MINUTES);
+    (now + Duration::minutes(i64::from(offset))).date_naive()
+}
+
 /// Reading seconds actually credited for one reported heartbeat.
 pub fn credited_heartbeat_seconds(reported: i32) -> i32 {
     reported.clamp(0, MAX_HEARTBEAT_CREDIT_SECONDS)
@@ -150,6 +163,9 @@ pub struct StreakOutcome {
 
 /// Pure streak transition (no database): below threshold nothing changes,
 /// otherwise count today once — consecutive day extends, gap restarts at 1.
+/// A day before the last active one (a client in a zone further west, or
+/// one sending no offset) changes nothing either: days are the client's,
+/// so they can arrive out of order.
 pub fn advance_streak(
     current_days: i32,
     longest_days: i32,
@@ -157,7 +173,7 @@ pub fn advance_streak(
     today: NaiveDate,
     threshold_met: bool,
 ) -> StreakOutcome {
-    if !threshold_met {
+    if !threshold_met || last_active.is_some_and(|last| today < last) {
         return StreakOutcome {
             current_days,
             longest_days,
@@ -268,11 +284,50 @@ pub fn ip_prefix(ip: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, TimeZone};
     use pretty_assertions::assert_eq;
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).expect("valid test date")
+    }
+
+    #[test]
+    fn a_night_and_the_next_morning_are_two_wib_days() {
+        let night = Utc
+            .with_ymd_and_hms(2026, 11, 3, 16, 0, 0)
+            .single()
+            .expect("valid"); // 23:00 WIB
+        let morning = Utc
+            .with_ymd_and_hms(2026, 11, 3, 23, 30, 0)
+            .single()
+            .expect("valid"); // 06:30 WIB
+        assert_eq!(
+            local_date(night, 420),
+            NaiveDate::from_ymd_opt(2026, 11, 3).expect("valid")
+        );
+        assert_eq!(
+            local_date(morning, 420),
+            NaiveDate::from_ymd_opt(2026, 11, 4).expect("valid")
+        );
+        // In UTC both fall on 3 November: the bug this replaces.
+        assert_eq!(local_date(night, 0), local_date(morning, 0));
+        // An offset past the widest real one is held to it.
+        assert_eq!(local_date(morning, 100_000), local_date(morning, 840));
+    }
+
+    #[test]
+    fn a_day_before_the_last_active_one_keeps_the_streak() {
+        let outcome = advance_streak(5, 9, Some(day(2026, 11, 4)), day(2026, 11, 3), true);
+        assert_eq!(
+            outcome,
+            StreakOutcome {
+                current_days: 5,
+                longest_days: 9,
+                incremented: false,
+                bonus_xp: 0,
+                last_active: Some(day(2026, 11, 4)),
+            }
+        );
     }
 
     #[test]

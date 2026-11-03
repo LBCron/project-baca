@@ -41,6 +41,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Pilih satu buku; posisi baca, kutipan, dan unduhanmu akan tersusun di sini.",
         "Pick a book; your reading position, quotes, and downloads will gather here.",
     ),
+    (
+        "shelf_none_reading",
+        "Belum ada buku yang sedang kamu baca.",
+        "No book in progress yet.",
+    ),
     ("browse_catalog", "Jelajahi katalog", "Browse the catalog"),
     ("page_missing", "Halaman ini belum tertulis.", "This page has not been written yet."),
     (
@@ -698,20 +703,27 @@ impl Lang {
         }
     }
 
-    /// "Okt 2026" or "Oct 2026".
+    /// "Okt 2026" or "Oct 2026", on the reader's own calendar.
     pub fn month_year(self, date: chrono::DateTime<chrono::Utc>) -> String {
         use chrono::Datelike;
-        format!("{} {}", self.month_short(date.month()), date.year())
+        let local = crate::format::local_time(date, crate::format::utc_offset_minutes_at(date));
+        format!("{} {}", self.month_short(local.month()), local.year())
     }
 
-    /// "8 Okt 2026" or "8 Oct 2026".
+    /// "8 Okt 2026" or "8 Oct 2026" on the reader's own calendar: a quote
+    /// kept at 06:56 WIB is dated that day, not the UTC day before.
     pub fn date_short(self, date: chrono::DateTime<chrono::Utc>) -> String {
+        self.date_short_at(date, crate::format::utc_offset_minutes_at(date))
+    }
+
+    pub fn date_short_at(self, date: chrono::DateTime<chrono::Utc>, offset_minutes: i32) -> String {
         use chrono::Datelike;
+        let local = crate::format::local_time(date, offset_minutes);
         format!(
             "{} {} {}",
-            date.day(),
-            self.month_short(date.month()),
-            date.year()
+            local.day(),
+            self.month_short(local.month()),
+            local.year()
         )
     }
 

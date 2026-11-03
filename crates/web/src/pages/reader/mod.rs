@@ -1070,6 +1070,7 @@ pub fn ReaderPage() -> impl IntoView {
                     let request = ReadingHeartbeatRequest {
                         book_id: uuid,
                         seconds_spent: elapsed.clamp(1, 3600),
+                        utc_offset_minutes: Some(crate::format::utc_offset_minutes()),
                     };
                     if let Ok(resp) = api::heartbeat(&request).await {
                         if resp.streak_incremented {

@@ -2,6 +2,7 @@
 //! ingestion queue with its dead letters, and the drop-off funnel.
 
 use crate::api;
+use crate::components::confirm::use_confirm;
 use crate::components::icons;
 use crate::components::session::use_session;
 use crate::components::toast::use_toasts;
@@ -218,7 +219,7 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>, on_queued: Callback<()>) -> i
 fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) -> impl IntoView {
     let (lang, _) = use_lang();
     let toasts = use_toasts();
-    let (armed, set_armed) = signal(false);
+    let confirm = use_confirm();
     let (busy, set_busy) = signal(false);
     let id = row.id;
     let status = row.status.clone();
@@ -234,8 +235,7 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
         format!("{} \u{00B7} {}", row.author, row.language.to_uppercase())
     };
     let archive = move |_| {
-        if !armed.get_untracked() {
-            set_armed.set(true);
+        if !confirm.press() {
             return;
         }
         set_busy.set(true);
@@ -248,7 +248,6 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
                 Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
             }
             set_busy.set(false);
-            set_armed.set(false);
         });
     };
     let restore = move |_| {
@@ -287,8 +286,8 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
             </div>
             <span class="tag" data-status=status_for_tag>{move || lang.get().text(status_key(&status))}</span>
             {archivable.then(|| view! {
-                <button class="btn btn-ghost" disabled=move || busy.get() on:click=archive>
-                    {move || if armed.get() { lang.get().text("confirm_again") } else { lang.get().text("archive") }}
+                <button class="btn btn-ghost" node_ref=confirm.node disabled=move || busy.get() on:click=archive>
+                    {move || if confirm.armed.get() { lang.get().text("confirm_again") } else { lang.get().text("archive") }}
                 </button>
             })}
             {restorable.then(|| view! {

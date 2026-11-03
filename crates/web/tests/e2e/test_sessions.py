@@ -1,6 +1,8 @@
 """Authed flow: OTP via Mailpit, automatic progress save, shelf, cleanup."""
 import base64
 import json
+import re
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -169,8 +171,6 @@ def test_guest_quote_merges_on_register(clean_page: Page, book_with_chapters: st
 def _chapter_phrases(book_id: str, count: int) -> list[str]:
     """``count`` distinct four-word phrases of the book's first chapter, each
     a quote the server accepts."""
-    import re
-
     html = api_get(f"/books/{book_id}/chapters/1")["html_content"]
     words = re.sub(r"<[^>]+>", " ", html).split()
     phrases: list[str] = []
@@ -443,3 +443,175 @@ def test_fourth_code_in_an_hour_is_refused_and_not_mailed():
     assert refused.value.headers.get("Retry-After")
     time.sleep(1)
     assert mailed() == before == 3
+
+
+def test_quote_dates_read_on_the_readers_clock(browser: Browser, book_with_chapters: str):
+    """A quote saved at 06:56 WIB on 3 November is dated 3 November in
+    Jakarta, though the server stored it at 23:56 UTC on the 2nd."""
+    tokens = register_reader("wib")
+    chapter_id = api_get(f"/books/{book_with_chapters}")["chapters"][0]["id"]
+    sql = (
+        "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at) "
+        f"VALUES (gen_random_uuid(), '{_owner(tokens)}', '{book_with_chapters}', '{chapter_id}', "
+        "'Pagi di Jakarta', '2026-11-02T23:56:00Z')"
+    )
+    subprocess.run(
+        ["docker", "exec", "project_baca_db", "psql", "-U", "baca_user", "-d", "project_baca_db", "-c", sql],
+        capture_output=True,
+        check=True,
+    )
+    context = browser.new_context(base_url=WEB, timezone_id="Asia/Jakarta", locale="en-US")
+    page = context.new_page()
+    page.errors = []  # type: ignore[attr-defined]
+    page.on("pageerror", lambda e: page.errors.append(str(e)))
+    try:
+        goto(page, "/")
+        page.evaluate(_sign_in_storage(tokens))
+        goto(page, "/me")
+        row = page.locator(".quote-row", has_text="Pagi di Jakarta")
+        expect(row.locator(".quote-meta")).to_contain_text("3 Nov 2026")
+        assert_no_page_errors(page)
+    finally:
+        context.close()
+        req = urllib.request.Request(f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+        with urllib.request.urlopen(req):
+            pass
+
+
+def _bearer(method: str, path: str, token: str, payload: dict | None = None):
+    req = urllib.request.Request(
+        f"{API}{path}",
+        method=method,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)["data"]
+
+
+def _email(tokens: dict) -> str:
+    payload = tokens["access_token"].split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["email"]
+
+
+def _signed_in_page(browser: Browser, tokens: dict) -> Page:
+    page = browser.new_context(base_url=WEB).new_page()
+    page.errors = []  # type: ignore[attr-defined]
+    page.on("pageerror", lambda e: page.errors.append(str(e)))
+    goto(page, "/")
+    page.evaluate(_sign_in_storage(tokens))
+    goto(page, "/me")
+    return page
+
+
+def test_sign_out_everywhere_disarms_itself(browser: Browser):
+    """The first tap only arms the button, and the arm lapses after four
+    seconds or at a click anywhere else, so a stray tap later signs nothing
+    out."""
+    tokens = register_reader("arm")
+    page = _signed_in_page(browser, tokens)
+    try:
+        button = page.locator("#akun > .sheet-actions button").first
+        expect(button).to_have_text("Sign out everywhere")
+        button.click()
+        expect(button).to_have_text("Tap again to confirm")
+        page.wait_for_timeout(4300)
+        expect(button).to_have_text("Sign out everywhere")
+        button.click()
+        expect(button).to_have_text("Tap again to confirm")
+        page.locator("#akun h2").click()
+        expect(button).to_have_text("Sign out everywhere")
+        assert page.evaluate("() => localStorage.getItem('baca_access_token')") == tokens["access_token"]
+        assert_no_page_errors(page)
+    finally:
+        page.context.close()
+        _bearer("DELETE", "/me", tokens["access_token"])
+
+
+def test_password_change_refreshes_the_device_list(browser: Browser):
+    tokens = register_reader("devices")
+    for _ in range(2):
+        _post("/auth/login", {"email": _email(tokens), "password": "E2EPassword123!"})
+    page = _signed_in_page(browser, tokens)
+    try:
+        rows = page.locator(".device-row")
+        expect(rows).to_have_count(3)
+        page.fill("input[autocomplete='current-password']", "E2EPassword123!")
+        page.fill("input[autocomplete='new-password']", "BrandNewPass123!")
+        page.click("#akun form button[type='submit']")
+        expect(page.get_by_text("Password updated.")).to_be_visible()
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_have_class(re.compile(r"\bcurrent\b"))
+        assert_no_page_errors(page)
+    finally:
+        page.context.close()
+
+
+def test_shelf_shows_every_book_in_progress(browser: Browser):
+    """Three books in progress all sit on the shelf, with no "still empty"
+    note above them; a reader with only quotes gets a short line instead of
+    the empty-shelf invitation."""
+    tokens = register_reader("shelf")
+    token = tokens["access_token"]
+    books = [b["id"] for b in api_get("/books?limit=3")]
+    for i, book in enumerate(books):
+        chapter = api_get(f"/books/{book}")["chapters"][0]["id"]
+        _bearer("PUT", f"/progress/{book}", token, {"chapter_id": chapter, "last_anchor_cfi": "p-1", "completion_percentage": 20.0 + i})
+    page = _signed_in_page(browser, tokens)
+    try:
+        shelf = page.locator("section[aria-labelledby='shelf-title']")
+        expect(shelf.locator(".shelf-item")).to_have_count(3)
+        expect(shelf.locator(".empty-state")).to_have_count(0)
+        assert_no_page_errors(page)
+    finally:
+        page.context.close()
+        _bearer("DELETE", "/me", token)
+
+    tokens = register_reader("quotes-only")
+    token = tokens["access_token"]
+    book = books[0]
+    detail = api_get(f"/books/{book}")
+    phrase = _chapter_phrases(book, 1)[0]
+    _post("/quotes/save-batch", {"items": [{"book_id": book, "chapter_id": detail["chapters"][0]["id"], "quote_text": phrase}]}, token)
+    page = _signed_in_page(browser, tokens)
+    try:
+        shelf = page.locator("section[aria-labelledby='shelf-title']")
+        expect(shelf.get_by_text("No book in progress yet.")).to_be_visible()
+        expect(shelf.locator(".empty-state")).to_have_count(0)
+    finally:
+        page.context.close()
+        _bearer("DELETE", "/me", token)
+
+
+def test_two_reader_tabs_beat_without_errors(browser: Browser, book_with_chapters: str):
+    """The same book open in two tabs: both beat once a minute, the server
+    credits one and answers the other `credited: false`, and nothing reaches
+    the console as an error."""
+    tokens = register_reader("twotabs")
+    context = browser.new_context(base_url=WEB)
+    beats: list[tuple[int, bool]] = []
+    console_errors: list[str] = []
+
+    def on_response(r):
+        if r.request.method == "POST" and r.url.endswith("/activity/heartbeat"):
+            beats.append((r.status, r.json()["data"]["credited"] if r.ok else None))
+
+    try:
+        pages = []
+        for _ in range(2):
+            page = context.new_page()
+            page.on("response", on_response)
+            page.on("console", lambda m: console_errors.append(m.text) if m.type == "error" else None)
+            goto(page, "/")
+            page.evaluate(_sign_in_storage(tokens))
+            goto(page, f"/read/{book_with_chapters}")
+            pages.append(page)
+        pages[0].wait_for_timeout(66_000)
+        assert len(beats) >= 2, beats
+        assert all(status == 200 for status, _ in beats), beats
+        assert [credited for _, credited in beats].count(True) >= 1, beats
+        # A refused heartbeat would surface as a 429 resource error.
+        assert not [e for e in console_errors if "429" in e or "Too Many" in e], console_errors[:3]
+    finally:
+        context.close()
+        _bearer("DELETE", "/me", tokens["access_token"])

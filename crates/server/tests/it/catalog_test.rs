@@ -516,16 +516,23 @@ async fn test_gamification_heartbeat_and_badges() {
 
     let (resp_hb, json_hb) = harness.send_json_request(req_heartbeat).await;
     assert_eq!(resp_hb.status(), StatusCode::OK);
-    assert!(
-        json_hb["data"]["total_reading_seconds"]
-            .as_i64()
-            .unwrap_or(0)
-            >= 65
+    assert_eq!(json_hb["data"]["total_reading_seconds"].as_i64(), Some(65));
+    // The heartbeat's own XP plus First Step's reward, exactly once.
+    let first_step_xp = badges
+        .iter()
+        .find(|b| b["id"] == "first_step")
+        .and_then(|b| b["xp_reward"].as_i64())
+        .expect("first_step is seeded with a reward");
+    let expected_xp = i64::from(domain::BASE_HEARTBEAT_XP) + first_step_xp;
+    assert_eq!(
+        json_hb["data"]["total_xp"].as_i64(),
+        Some(expected_xp),
+        "{json_hb}"
     );
-    assert!(json_hb["data"]["total_xp"].as_i64().unwrap_or(0) > 0);
+    assert_eq!(json_hb["data"]["credited"], true);
 
-    // A second heartbeat inside the 60 s min-interval is rejected so XP
-    // cannot be farmed by replaying cheap heartbeats.
+    // A second heartbeat inside the 55 s min-interval (a second tab) earns
+    // nothing, so XP cannot be farmed, yet it is no error either.
     let req_farm = Request::builder()
         .uri("/api/v1/activity/heartbeat")
         .method("POST")
@@ -534,8 +541,14 @@ async fn test_gamification_heartbeat_and_badges() {
         .body(Body::from(heartbeat_payload.to_string()))
         .unwrap();
     let (resp_farm, json_farm) = harness.send_json_request(req_farm).await;
-    assert_eq!(resp_farm.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(json_farm["error"]["code"], "RATE_LIMITED");
+    assert_eq!(resp_farm.status(), StatusCode::OK, "{json_farm}");
+    assert_eq!(json_farm["data"]["credited"], false);
+    assert_eq!(json_farm["data"]["xp_earned"], 0);
+    assert_eq!(json_farm["data"]["total_xp"].as_i64(), Some(expected_xp));
+    assert_eq!(
+        json_farm["data"]["total_reading_seconds"].as_i64(),
+        Some(65)
+    );
 
     // Verify user unlocked first_step badge
     let req_user_badges = Request::builder()
@@ -595,7 +608,8 @@ async fn test_heartbeat_credit_clamped_and_gate_per_user() {
     let (resp, json) = harness
         .send_json_request(heartbeat(seeded.book2_id, 30))
         .await;
-    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "{json}");
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["credited"], false, "{json}");
 
     // The profile reads the same standing back, including today's progress
     // toward the daily threshold.
@@ -1094,5 +1108,206 @@ async fn test_catalog_search_finds_words_only_in_the_description() {
         .filter_map(|b| b["id"].as_str())
         .collect();
     assert!(ids.contains(&book_id.to_string().as_str()), "{json}");
+    harness.cleanup().await;
+}
+
+async fn seed_reader(harness: &TestHarness) -> (Uuid, String) {
+    let now = Utc::now();
+    let user_id = harness.track_user(Uuid::new_v4());
+    let email = format!("tz_{}@baca.local", Uuid::new_v4());
+    users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.clone()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Pembaca WIB".to_string()),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("user seed must succeed");
+    let token = infra::generate_access_token(
+        user_id,
+        &email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        1440,
+    )
+    .expect("token");
+    (user_id, token)
+}
+
+async fn heartbeat(
+    harness: &TestHarness,
+    token: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .uri("/api/v1/activity/heartbeat")
+        .method("POST")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    (resp.status(), json)
+}
+
+/// A streak day is the reader's own: reading is logged on their calendar
+/// day, a reader whose local yesterday counted reaches day two today, and an
+/// offset no clock uses is refused.
+#[tokio::test]
+async fn test_streak_days_follow_the_readers_clock() {
+    use infra::entities::{reading_activity_logs, user_reading_streaks};
+    use sea_orm::QueryOrder;
+    let harness = TestHarness::new().await;
+    let book = common::seed_book(&harness, "published").await;
+    harness.track_book(book);
+    let db = &harness.state.db;
+
+    // The same instant is a different calendar day at UTC+14 and UTC-12.
+    let mut dates = Vec::new();
+    for offset in [840, -720] {
+        let (user, token) = seed_reader(&harness).await;
+        let (status, json) = heartbeat(
+            &harness,
+            &token,
+            serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": offset}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let logged = reading_activity_logs::Entity::find()
+            .filter(reading_activity_logs::Column::UserId.eq(user))
+            .order_by_desc(reading_activity_logs::Column::CreatedAt)
+            .one(db)
+            .await
+            .expect("query")
+            .expect("logged");
+        let expected = domain::local_date(logged.created_at.with_timezone(&Utc), offset);
+        assert_eq!(logged.activity_date, expected, "offset {offset}");
+        dates.push(logged.activity_date);
+    }
+    // 26 hours apart: whatever the instant, the two days differ.
+    assert!(dates[0] > dates[1], "{dates:?}");
+
+    // Read 23:00 yesterday (WIB), now 06:30: the second day of a streak.
+    let (user, token) = seed_reader(&harness).await;
+    let today = domain::local_date(Utc::now(), 420);
+    let yesterday = today.pred_opt().expect("a day before");
+    user_reading_streaks::ActiveModel {
+        user_id: Set(user),
+        current_streak_days: Set(1),
+        longest_streak_days: Set(1),
+        total_reading_seconds: Set(300),
+        total_xp: Set(0),
+        last_activity_date: Set(Some(yesterday)),
+        updated_at: Set(Utc::now().into()),
+    }
+    .insert(db)
+    .await
+    .expect("streak seed");
+    reading_activity_logs::ActiveModel {
+        user_id: Set(user),
+        book_id: Set(book),
+        seconds_spent: Set(290),
+        activity_date: Set(today),
+        created_at: Set(Utc::now().into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("log seed");
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 420}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["current_streak_days"], 2, "{json}");
+
+    let req = Request::builder()
+        .uri("/api/v1/me/streak?utc_offset_minutes=420")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, streak) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{streak}");
+    assert_eq!(streak["data"]["today_seconds"], 320, "{streak}");
+
+    let (_, token) = seed_reader(&harness).await;
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 9999}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["error"]["code"], "VALIDATION_FAILED");
+    harness.cleanup().await;
+}
+
+/// The shelf lists every unfinished book, most recently read first, and
+/// never one that has since left the catalog.
+#[tokio::test]
+async fn test_reading_shelf_lists_every_unfinished_book() {
+    let harness = TestHarness::new().await;
+    let (_, token) = seed_reader(&harness).await;
+    let mut books_read = Vec::new();
+    for percent in [45.0, 30.0, 10.0] {
+        let (book, chapter) = seed_book_with_chapter(&harness, "published").await;
+        let req = Request::builder()
+            .uri(format!("/api/v1/progress/{book}"))
+            .method("PUT")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"chapter_id": chapter, "last_anchor_cfi": "p-1", "completion_percentage": percent})
+                    .to_string(),
+            ))
+            .expect("valid request");
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{json}");
+        books_read.push(book);
+    }
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::Status,
+            sea_orm::sea_query::Expr::value("archived"),
+        )
+        .filter(books::Column::Id.eq(books_read[2]))
+        .exec(&harness.state.db)
+        .await
+        .expect("archive");
+
+    let req = Request::builder()
+        .uri("/api/v1/progress/reading")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|p| p["book_id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [books_read[1].to_string(), books_read[0].to_string()],
+        "{json}"
+    );
+    assert_eq!(json["data"][1]["completion_percentage"], 45.0);
+
+    let req = Request::builder()
+        .uri("/api/v1/progress/reading")
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     harness.cleanup().await;
 }

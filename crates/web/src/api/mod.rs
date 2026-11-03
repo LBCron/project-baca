@@ -427,6 +427,10 @@ pub async fn active_progress() -> Result<Option<ActiveProgressDto>, String> {
     get("/progress/active").await
 }
 
+pub async fn reading_progress() -> Result<Vec<ActiveProgressDto>, String> {
+    get("/progress/reading").await
+}
+
 pub async fn merge_guest_progress(req: &GuestMergeRequest) -> Result<(), String> {
     let _: serde_json::Value = post("/progress/merge", req).await?;
     Ok(())
@@ -538,7 +542,8 @@ pub async fn change_password(
 }
 
 pub async fn my_streak() -> Result<shared::ReadingStreakDto, String> {
-    get("/me/streak").await
+    let offset = crate::format::utc_offset_minutes();
+    get(&format!("/me/streak?utc_offset_minutes={offset}")).await
 }
 
 /// Uploads an EPUB. The form is rebuilt for each send, so an expired

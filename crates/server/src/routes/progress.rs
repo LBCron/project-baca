@@ -43,6 +43,28 @@ pub async fn get_active_progress(
     Ok(Json(ApiResponse::success(progress)).into_response())
 }
 
+/// Every unfinished book on the reader's shelf, most recently read first
+/// (at most 100).
+#[utoipa::path(
+    get,
+    path = "/api/v1/progress/reading",
+    responses(
+        (status = 200, description = "Unfinished reading positions, newest first", body = ApiResponse<Vec<ActiveProgressDto>>),
+        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Reading Progress"
+)]
+pub async fn list_reading(
+    State(state): State<Arc<AppState>>,
+    auth: AuthUser,
+) -> Result<Response, HttpError> {
+    let reading = infra::list_active_progress(&state.db, auth.id, infra::READING_SHELF_LIMIT)
+        .await
+        .map_err(HttpError::from)?;
+    Ok(Json(ApiResponse::success(reading)).into_response())
+}
+
 /// Persists reading position (chapter, CFI anchor, percentage).
 #[utoipa::path(
     put,
@@ -188,6 +210,7 @@ pub async fn merge_guest_progress(
 pub fn progress_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/active", get(get_active_progress))
+        .route("/reading", get(list_reading))
         .route("/{book_id}", put(update_progress))
         .route("/merge", post(merge_guest_progress))
 }
