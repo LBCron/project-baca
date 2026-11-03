@@ -103,6 +103,21 @@ class SanitizeTest(unittest.TestCase):
         self.assertIn("&amp; Tom &amp;amp; Jerry", clean)
         self.assertEqual(extract_text(clean), "<img src=x onerror=alert(1)> & Tom &amp; Jerry")
 
+    def test_a_void_embed_does_not_hide_what_follows(self):
+        self.assertEqual(sanitize_html("<p>a</p><embed src=x><p>b</p>"), "<p>a</p><p>b</p>")
+        self.assertEqual(sanitize_html("<embed src=x>tail text"), "tail text")
+
+    def test_an_unclosed_skipped_element_ends_with_its_parent(self):
+        dirty = "<div><p>a</p><iframe src=x><p>inside</p></div><p>b</p><object><p>c</p></object><p>d</p>"
+        self.assertEqual(sanitize_html(dirty), "<p>a</p><p>b</p><p>d</p>")
+        nested = "<section><object><iframe>x</iframe><p>still hidden</p></object><p>e</p></section>"
+        self.assertEqual(sanitize_html(nested), "<p>e</p>")
+        self.assertEqual(sanitize_html('<div><iframe src="x"/><p>f</p></div>'), "<p>f</p>")
+        self.assertEqual(
+            sanitize_html("<html><head><title>T</title></head><body><p>g</p></body></html>"),
+            "<p>g</p>",
+        )
+
     def test_extract_text_resolves_entities(self):
         self.assertEqual(
             extract_text("<p>A &amp; B</p><script>hidden</script>"),
@@ -318,6 +333,7 @@ class ArchivedBookTest(unittest.TestCase):
         conn = mock.Mock()
         conn.cursor.return_value = cursor
         redis_client = mock.Mock()
+        redis_client.pipeline.return_value.execute.return_value = [1, True]
         minio = mock.Mock()
         minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text.")]))
         minio.get_object.return_value.release_conn = lambda: None
@@ -330,7 +346,7 @@ class ArchivedBookTest(unittest.TestCase):
         embed.assert_not_called()
         generate.assert_not_called()
         self.assertFalse(any("status = 'published'" in sql for sql in cursor.statements))
-        last_status = redis_client.hset.call_args.kwargs["mapping"]
+        last_status = redis_client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual(last_status["status"], "failed")
         self.assertEqual(last_status["error"], worker.ARCHIVED_ERROR)
 
@@ -359,9 +375,24 @@ class ClaimAndShutdownTest(unittest.TestCase):
 
     def test_released_job_does_not_burn_an_attempt(self):
         client = mock.Mock()
+        pipe = client.pipeline.return_value
+        pipe.execute.return_value = [0, True]
         worker.release_job(client, "j9")
-        client.hincrby.assert_called_once_with("job:j9", "attempts", -1)
-        self.assertEqual(client.hset.call_args.kwargs["mapping"]["status"], "queued")
+        pipe.hincrby.assert_called_once_with("job:j9", "attempts", -1)
+        self.assertEqual(pipe.hset.call_args.kwargs["mapping"]["status"], "queued")
+
+    def test_every_job_write_refreshes_the_hash_ttl(self):
+        client = mock.Mock()
+        pipe = client.pipeline.return_value
+        pipe.execute.return_value = [1, True]
+        worker.set_job(client, "j1", "parsing", 5)
+        worker.release_job(client, "j1")
+        writes = len(pipe.hset.call_args_list) + len(pipe.hincrby.call_args_list)
+        self.assertEqual(writes, 3)
+        self.assertEqual(
+            [c.args for c in pipe.expire.call_args_list],
+            [("job:j1", worker.JOB_TTL_SECONDS)] * writes,
+        )
 
 
 class ReclaimTest(unittest.TestCase):

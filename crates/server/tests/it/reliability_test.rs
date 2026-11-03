@@ -144,10 +144,7 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     }
     let email = format!("smtp_down_{}@example.com", uuid::Uuid::new_v4());
     // A fresh address per run keeps the per-IP signup cap out of the picture.
-    let ip = format!(
-        "203.0.113.{}",
-        10 + (uuid::Uuid::new_v4().as_u128() % 200) as u8
-    );
+    let ip = common::unique_ip("198.21");
     harness.track_email(&email);
     let signup = || {
         Request::builder()
@@ -197,11 +194,7 @@ async fn test_redis_outage_answers_503_and_heals_without_restart() {
         .live_only()
         .await
         .expect("live Postgres + Redis required (db-up)");
-    let ip = format!(
-        "198.18.{}.{}",
-        (Uuid::new_v4().as_u128() % 250) as u8,
-        (Uuid::new_v4().as_u128() % 250) as u8
-    );
+    let ip = common::unique_ip("198.21");
     let (access, _) = provision_verified_user(&harness, &mut redis, "relay", &ip).await;
     let (resp, me) = harness
         .send_json_request(get_bearer("/api/v1/me", &access))

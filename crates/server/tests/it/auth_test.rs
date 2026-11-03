@@ -690,7 +690,7 @@ async fn test_auth_replay_kills_token_family() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "replay", &ip).await;
 
     let rotate = |token: &str| {
@@ -743,8 +743,8 @@ async fn test_auth_pair_lockout_five_failures() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
-    let other_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
+    let other_ip = common::unique_ip("198.18");
     let (email, password) = {
         let email = format!("lockpair_{}@example.com", Uuid::new_v4());
         harness.track_email(&email);
@@ -814,12 +814,11 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let base: u8 = 10 + (Uuid::new_v4().as_u128() % 150) as u8;
     let (email, password) = {
         let email = format!("lockagg_{}@example.com", Uuid::new_v4());
         harness.track_email(&email);
         let password = "LockoutAgg123!";
-        let ip0 = format!("198.51.100.{base}");
+        let ip0 = common::unique_ip("198.18");
         let signup_req = SignupRequest {
             display_name: "LockAgg".to_string(),
             email: email.clone(),
@@ -857,8 +856,8 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
 
     // 20 failures spread over 4 IPs (5 each — below the pair threshold of 5
     // triggering on the 5th, so use 4 per IP across 5 IPs to stay under pair).
-    for i in 0..5u8 {
-        let ip = format!("198.51.100.{}", base.wrapping_add(i));
+    for _ in 0..5 {
+        let ip = common::unique_ip("198.18");
         for _ in 0..4 {
             let (resp, _) = harness
                 .send_json_request(login_req(&email, "WrongPassword999!", &ip))
@@ -867,7 +866,7 @@ async fn test_auth_email_aggregate_lockout_twenty_failures() {
         }
     }
     // 21st failure from a fresh IP trips the aggregate lock.
-    let fresh_ip = format!("203.0.113.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let fresh_ip = common::unique_ip("198.18");
     let (resp, _) = harness
         .send_json_request(login_req(&email, password, &fresh_ip))
         .await;
@@ -949,7 +948,7 @@ async fn test_login_without_an_argon2_slot_answers_503() {
         .expect("live Postgres + Redis required (db-up)");
     let _held = harness.state.argon2.permit().await.expect("slot is free");
     let email = format!("noslot_{}@example.com", Uuid::new_v4());
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
@@ -1057,7 +1056,7 @@ async fn test_auth_signup_hourly_mail_budget_answers_503() {
     };
     let _: () = redis_conn.del("budget:otp:hour").await.unwrap();
     for i in 1..=3 {
-        let ip = common::unique_ip("198.19");
+        let ip = common::unique_ip("198.18");
         let resp = harness
             .send_request(signup_from(&harness, &ip, "budget"))
             .await;
@@ -1083,7 +1082,7 @@ async fn test_auth_otp_attempt_lock_and_expiry() {
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
     use redis::AsyncCommands;
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let email = format!("otplock_{}@example.com", Uuid::new_v4());
     harness.track_email(&email);
     let signup_req = SignupRequest {
@@ -1183,7 +1182,7 @@ async fn test_auth_password_change_kills_other_session_e2e() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let email = format!("pwd_{}@example.com", Uuid::new_v4());
     harness.track_email(&email);
     let password = "SessionKill123!";
@@ -1416,7 +1415,7 @@ async fn test_auth_refresh_grace_window() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "grace", &ip).await;
     let rotate = |token: &str| refresh_req(token, &ip);
 
@@ -1443,7 +1442,7 @@ async fn test_auth_concurrent_refresh_keeps_family_alive() {
         Some(c) => c,
         None => panic!("live services required (BACA_LIVE_TEST=1 with db-up)"),
     };
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let (_, refresh) = provision_verified_user(&harness, &mut redis_conn, "race", &ip).await;
 
     let (a, b) = tokio::join!(
@@ -1534,7 +1533,7 @@ async fn test_sessions_list_single_revoke_and_keep_current() {
         .live_only()
         .await
         .expect("live Redis required (db-up)");
-    let ip = format!("198.51.100.{}", 10 + (Uuid::new_v4().as_u128() % 200) as u8);
+    let ip = common::unique_ip("198.18");
     let (phone_access, phone_refresh) =
         provision_verified_user(&harness, &mut redis_conn, "sess", &ip).await;
     let email = {
@@ -1697,7 +1696,7 @@ fn verify_req(email: &str, registration_id: Uuid, otp: &str, ip: &str) -> Reques
 async fn test_registrations_for_one_address_live_side_by_side() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("pending_{}@example.com", Uuid::new_v4()));
     let owner_pw = "OwnerChoice123!";
     let squatter_pw = "AttackerPick123!";
@@ -1745,7 +1744,7 @@ async fn test_registrations_for_one_address_live_side_by_side() {
 async fn test_code_mail_is_capped_per_recipient() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("bomb_{}@example.com", Uuid::new_v4()));
     for _ in 0..3 {
         signup_with_code(&harness, &mut redis, &ip, &email, "BombOwner123!", "424242").await;
@@ -1796,7 +1795,7 @@ async fn test_code_mail_is_capped_per_recipient() {
 async fn test_spent_guesses_stop_new_codes() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("guess_{}@example.com", Uuid::new_v4()));
     let first = signup_with_code(
         &harness,
@@ -1856,7 +1855,7 @@ async fn signup_with_code_refused(harness: &TestHarness, ip: &str, email: &str) 
 async fn test_parallel_wrong_otps_are_counted_atomically() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("otprace_{}@example.com", Uuid::new_v4()));
     let registration =
         signup_with_code(&harness, &mut redis, &ip, &email, "RaceOwner123!", "424242").await;
@@ -1892,7 +1891,7 @@ async fn test_parallel_wrong_otps_are_counted_atomically() {
 async fn test_refresh_grace_after_revoke_all_is_refused() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (_, first_refresh) = provision_verified_user(&harness, &mut redis, "grace", &ip).await;
 
     let (resp, rotated) = harness
@@ -1931,7 +1930,7 @@ async fn test_password_change_keeps_old_hash_when_revocation_fails() {
     let relay_url = common::redis_url_via(&base, relay.port());
     let harness = TestHarness::with_config(|c| c.redis.url = relay_url).await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, _) = provision_verified_user(&harness, &mut redis, "pwfail", &ip).await;
     let me = Request::builder()
         .uri("/api/v1/me")
@@ -1978,7 +1977,7 @@ async fn test_password_change_keeps_old_hash_when_revocation_fails() {
 async fn test_email_variants_are_one_account() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let id = Uuid::new_v4();
     let canonical = harness.track_email_owned(format!("case_{id}@example.com"));
     let shouted = format!("  Case_{id}@Example.COM ");
@@ -2023,7 +2022,7 @@ async fn test_email_variants_are_one_account() {
 async fn test_signup_answers_alike_for_registered_and_new_addresses() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, _) = provision_verified_user(&harness, &mut redis, "known", &ip).await;
     let registered = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()
@@ -2056,7 +2055,7 @@ async fn test_signup_answers_alike_for_registered_and_new_addresses() {
 async fn test_concurrent_verifications_never_fail_with_5xx() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("twin_{}@example.com", Uuid::new_v4()));
     let a = signup_with_code(
         &harness,
@@ -2118,7 +2117,7 @@ async fn test_concurrent_verifications_never_fail_with_5xx() {
 async fn test_guesses_at_a_locked_code_spend_no_daily_budget() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let email = harness.track_email_owned(format!("lockburn_{}@example.com", Uuid::new_v4()));
     let squatter =
         signup_with_code(&harness, &mut redis, &ip, &email, "Squatter123!", "424242").await;
@@ -2139,7 +2138,7 @@ async fn test_guesses_at_a_locked_code_spend_no_daily_budget() {
 async fn test_refresh_of_a_revoked_session_is_refused() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, refresh) = provision_verified_user(&harness, &mut redis, "zombie", &ip).await;
     let sid = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()
@@ -2159,7 +2158,7 @@ async fn test_refresh_of_a_revoked_session_is_refused() {
 async fn test_concurrent_refreshes_stay_in_one_session() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, refresh) = provision_verified_user(&harness, &mut redis, "twotabs", &ip).await;
     let sid = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()
@@ -2192,7 +2191,7 @@ fn me_req(access: &str) -> Request<Body> {
 async fn test_device_sign_out_revokes_every_access_token_of_the_session() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (first_access, refresh) = provision_verified_user(&harness, &mut redis, "sid", &ip).await;
     let email = infra::verify_access_token(&first_access, harness.state.config.jwt_secret())
         .unwrap()
@@ -2267,12 +2266,12 @@ async fn test_device_sign_out_revokes_every_access_token_of_the_session() {
 async fn test_parallel_login_guesses_evaluate_only_five() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, _) = provision_verified_user(&harness, &mut redis, "burst", &ip).await;
     let email = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()
         .email;
-    let guesser = common::unique_ip("198.19");
+    let guesser = common::unique_ip("198.18");
     let statuses: Vec<StatusCode> = futures::future::join_all(
         (0..20).map(|_| harness.send_request(login_req(&email, "WrongGuess123!", &guesser))),
     )
@@ -2322,7 +2321,7 @@ async fn test_login_time_does_not_tell_pending_from_unknown() {
             .send_request(login_req(
                 &email,
                 "PendingTime123!",
-                &common::unique_ip("198.19"),
+                &common::unique_ip("198.18"),
             ))
             .await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -2352,7 +2351,7 @@ async fn test_login_time_does_not_tell_pending_from_unknown() {
 async fn test_wrong_current_password_is_403_and_keeps_the_session() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = common::unique_ip("198.19");
+    let ip = common::unique_ip("198.18");
     let (access, _) = provision_verified_user(&harness, &mut redis, "pwdwrong", &ip).await;
     let user_id = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()

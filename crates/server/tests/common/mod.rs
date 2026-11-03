@@ -20,7 +20,9 @@ use uuid::Uuid;
 pub const CLIENT_IP_HEADER: &str = "cf-connecting-ip";
 
 /// A random IPv4 address under `prefix` (two octets), drawn from 62,500 so
-/// tests running in the same minute do not share a rate-limit bucket.
+/// tests running in the same minute do not share a rate-limit bucket. Each
+/// suite keeps its own prefix: auth 198.18, semantic 198.19, load stress
+/// 198.20, reliability 198.21, catalog 198.22.
 #[allow(dead_code)]
 pub fn unique_ip(prefix: &str) -> String {
     let n = Uuid::new_v4().as_u128();

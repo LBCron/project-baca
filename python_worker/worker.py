@@ -82,32 +82,51 @@ class Settings:
 ALLOWED_TAGS = {"p", "em", "strong", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li", "br"}
 
 
-class _Sanitizer(HTMLParser):
-    """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs."""
+# Elements that never take an end tag; they cannot open a skipped region.
+VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+}
 
-    SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object", "embed"}
+
+class _Sanitizer(HTMLParser):
+    """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs.
+
+    Open elements are tracked as a stack so a skipped element that is never
+    closed (common for ``iframe`` and ``object`` in real XHTML) ends with its
+    parent instead of swallowing the rest of the chapter."""
+
+    SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object"}
+    # Chapters are XHTML: ``<iframe src="x"/>`` is a complete element there,
+    # but the HTML raw-text rule would read the rest of the chapter as the
+    # iframe's text. Its content is skipped either way.
+    CDATA_CONTENT_ELEMENTS = ("script", "style")
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self.skip_depth = 0
+        self.open_tags: list[str] = []
+        self.skip_from: int | None = None
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self.skip_depth += 1
-            return
-        if self.skip_depth:
+        if tag not in VOID_TAGS:
+            if self.skip_from is None and tag in self.SKIP_TAGS:
+                self.skip_from = len(self.open_tags)
+            self.open_tags.append(tag)
+        if self.skip_from is not None:
             return
         if tag in ALLOWED_TAGS:
             self.parts.append(f"<{tag}>" if tag != "br" else "<br/>")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self.skip_depth = max(0, self.skip_depth - 1)
-            return
-        if self.skip_depth:
+        if tag in self.open_tags:
+            while self.open_tags.pop() != tag:
+                pass
+        if self.skip_from is not None:
+            if len(self.open_tags) <= self.skip_from:
+                self.skip_from = None
             return
         if tag in ALLOWED_TAGS and tag not in {"br", "hr"}:
             self.parts.append(f"</{tag}>")
@@ -115,7 +134,7 @@ class _Sanitizer(HTMLParser):
     def handle_data(self, data: str) -> None:
         # convert_charrefs decoded entities into text, so an encoded
         # ``&lt;img onerror=...&gt;`` would otherwise be re-emitted as live markup.
-        if not self.skip_depth:
+        if self.skip_from is None:
             self.parts.append(html.escape(data, quote=False))
 
 
@@ -567,6 +586,20 @@ def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
 
 LOG = logging.getLogger("ingestion")
 
+# Mirrors JOB_TTL_SECS in crates/infra/src/queue.rs.
+JOB_TTL_SECONDS = 7 * 24 * 3600
+
+
+def write_job(redis_client, job_id: str, write):
+    """Runs ``write(pipe, key)`` with the hash TTL refreshed in the same
+    MULTI: a job hash the server let expire is never recreated without one.
+    Returns the reply of the write."""
+    key = f"job:{job_id}"
+    pipe = redis_client.pipeline()
+    write(pipe, key)
+    pipe.expire(key, JOB_TTL_SECONDS)
+    return pipe.execute()[0]
+
 
 def set_job(redis_client, job_id: str, status: str, progress: int, error: str = "") -> None:
     fields = {
@@ -576,7 +609,7 @@ def set_job(redis_client, job_id: str, status: str, progress: int, error: str = 
     }
     if error:
         fields["error"] = error[:2000]
-    redis_client.hset(f"job:{job_id}", mapping=fields)
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, mapping=fields))
 
 
 def convert_cover_to_webp(cover_bytes: bytes) -> tuple[bytes, str]:
@@ -864,7 +897,7 @@ def reclaim_idle(redis_client, settings: Settings, consumer: str) -> list:
 def release_job(redis_client, job_id: str) -> None:
     """Hands an interrupted job back: the attempt does not count, the entry
     stays pending for another worker, and the curator sees it queued."""
-    redis_client.hincrby(f"job:{job_id}", "attempts", -1)
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", -1))
     set_job(redis_client, job_id, "queued", 0)
 
 def ensure_group(redis_client, settings: Settings) -> None:
@@ -910,9 +943,12 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
             continue
         for msg_id, fields in entries:
                 job_id = fields.get("job_id", msg_id)
-                attempts_key = f"job:{job_id}"
                 try:
-                    attempts = int(redis_client.hincrby(attempts_key, "attempts", 1))
+                    attempts = int(
+                        write_job(
+                            redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", 1)
+                        )
+                    )
                 except (TypeError, ValueError):
                     attempts = 0
                 try:
