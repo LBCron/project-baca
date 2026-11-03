@@ -23,14 +23,16 @@ SCRIPT_RE = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.DOT
 MODULE_RE = re.compile(r"""\btype\s*=\s*["']?module\b""")
 
 
-# `trunk serve` injects a live-reload script whose address placeholders are
-# filled at request time; it never ships in a release build and stays inline.
+# `trunk serve` injects a live-reload script whose address placeholders
+# (`{{__TRUNK_ADDRESS__}}` in Trunk 0.22) are filled at request time; it never
+# ships in a release build and stays inline. Matched without case, since the
+# placeholders' case changed between Trunk releases.
 SERVE_ONLY_MARKER = "{{__trunk_"
 
 
 def _is_inline(match: re.Match) -> bool:
     body = match.group("body")
-    return "src=" not in match.group("attrs") and bool(body.strip()) and SERVE_ONLY_MARKER not in body
+    return "src=" not in match.group("attrs") and bool(body.strip()) and SERVE_ONLY_MARKER not in body.lower()
 
 
 def externalize(dist: Path, public_url: str) -> int:

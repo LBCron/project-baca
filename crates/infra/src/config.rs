@@ -463,6 +463,7 @@ impl AppConfig {
                 "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true".to_string(),
             ));
         }
+        self.bind_addr()?;
         if self.server.argon2_max_concurrency == 0 {
             return Err(AppError::ValidationError(
                 "ARGON2_MAX_CONCURRENCY must be at least 1: with 0 no login or signup could ever run".to_string(),
@@ -492,6 +493,19 @@ impl AppConfig {
     /// Accessor for server port
     pub fn port(&self) -> u16 {
         self.server.port
+    }
+
+    /// The address the API listens on: `APP_HOST` must be an IP address
+    /// (`127.0.0.1` for a dev machine, `0.0.0.0` or `::` in a container), not
+    /// a hostname, so a typo stops the boot instead of exposing the port.
+    pub fn bind_addr(&self) -> Result<std::net::SocketAddr, AppError> {
+        let host: std::net::IpAddr = self.server.host.parse().map_err(|e| {
+            AppError::ValidationError(format!(
+                "APP_HOST '{}' is not an IP address: {e}",
+                self.server.host
+            ))
+        })?;
+        Ok(std::net::SocketAddr::from((host, self.server.port)))
     }
 
     /// Whether the server runs in production (Swagger disabled, secrets strict).
@@ -536,6 +550,27 @@ mod tests {
         assert_eq!(config.storage.bucket_epubs, "baca-epubs");
         assert_eq!(config.ai.provider, "gemini");
         assert_eq!(config.ai.dimension, 768);
+    }
+
+    #[test]
+    fn test_bind_addr_takes_ip_addresses_only() {
+        let mut config = AppConfig::default();
+        for (host, ok) in [
+            ("127.0.0.1", true),
+            ("0.0.0.0", true),
+            ("::", true),
+            ("localhost", false),
+            ("[::]", false),
+        ] {
+            config.server.host = host.to_string();
+            assert_eq!(config.bind_addr().is_ok(), ok, "{host}");
+            assert_eq!(config.validate().is_ok(), ok, "{host}");
+        }
+        config.server.host = "127.0.0.1".to_string();
+        assert_eq!(
+            config.bind_addr().map(|a| a.to_string()).ok(),
+            Some(format!("127.0.0.1:{}", config.port()))
+        );
     }
 
     #[test]

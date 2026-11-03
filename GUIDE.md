@@ -38,7 +38,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger |
+| `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger; `.env.example` sets `APP_HOST=127.0.0.1` so the dev API stays off the network (the Android emulator reaches it at 10.0.2.2), while the server image keeps `0.0.0.0` |
 | `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist; the last two are the Tauri app WebView origins |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
