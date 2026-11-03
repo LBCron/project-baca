@@ -13,7 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{init_redis_conn, AppConfig, EmbeddingProvider, RedisConn, StorageService};
+use infra::{init_redis_conn, AppConfig, Argon2Gate, EmbeddingProvider, RedisConn, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
@@ -38,6 +38,8 @@ pub struct AppState {
     /// S3-compatible object storage. `None` when MinIO/S3 is unreachable at
     /// startup; upload endpoints fail closed with a 500 in that case.
     pub storage: Option<Arc<StorageService>>,
+    /// Bounds the Argon2 work of logins, signups and password changes.
+    pub argon2: Argon2Gate,
 }
 
 impl AppState {
@@ -401,19 +403,32 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         }
     };
 
+    let account_writes = |router: Router<Arc<AppState>>| {
+        router.layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::user_write_rate_limit_middleware,
+        ))
+    };
+
     Router::new()
         .merge(swagger_routes(&state))
         .route("/health", get(health_check))
         .route("/api/v1/health", get(api_health_check))
         .nest("/api/v1/auth", auth_router)
-        .nest("/api/v1/me", routes::user_routes())
+        .nest("/api/v1/me", account_writes(routes::user_routes()))
         .nest("/api/v1/books", public(routes::books_routes()))
         .nest("/api/v1/covers", public(routes::covers_routes()))
-        .nest("/api/v1/progress", routes::progress_routes())
+        .nest(
+            "/api/v1/progress",
+            account_writes(routes::progress_routes()),
+        )
         .nest("/api/v1", public(routes::gamification_routes()))
         .nest("/api/v1/books", quotes_router)
         .nest("/api/v1/books", public(routes::insights_routes()))
-        .nest("/api/v1/quotes", routes::saved_quotes_routes())
+        .nest(
+            "/api/v1/quotes",
+            account_writes(routes::saved_quotes_routes()),
+        )
         .nest("/api/v1/admin", routes::admin_routes())
         .fallback(not_found_handler)
         .layer(axum_mw::from_fn(security_headers_middleware))

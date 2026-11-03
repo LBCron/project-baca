@@ -659,8 +659,15 @@ pub async fn save_quote(
     post("/quotes/save", req).await
 }
 
-pub async fn my_quotes() -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
-    get("/quotes").await
+/// One page of the reader's saved quotes, newest first, after `cursor`.
+pub async fn my_quotes(
+    cursor: Option<uuid::Uuid>,
+) -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
+    let mut path = format!("/quotes?limit={}", shared::SAVED_QUOTES_PAGE);
+    if let Some(cursor) = cursor {
+        path.push_str(&format!("&cursor={cursor}"));
+    }
+    get(&path).await
 }
 
 pub async fn save_quotes_batch(

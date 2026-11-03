@@ -167,10 +167,59 @@ pub async fn get_chapter_recap(
 
 // Saved Quotes Management & Vintage Quote Card
 
+/// Quotes one account may keep; storage per account stays bounded however
+/// a script drives the save endpoints.
+pub const MAX_SAVED_QUOTES_PER_USER: i64 = 5_000;
+
+fn quota_exceeded() -> AppError {
+    AppError::QuotaExceeded(format!(
+        "An account keeps at most {MAX_SAVED_QUOTES_PER_USER} quotes"
+    ))
+}
+
+/// Opens a transaction holding the user's row lock and returns it with the
+/// number of quotes the user keeps. The lock serialises one user's saves,
+/// so two parallel saves cannot both pass the quota check; `NO KEY` leaves
+/// the row free for inserts elsewhere that only reference it.
+async fn lock_user_quotes(
+    db: &DatabaseConnection,
+    user_id: Uuid,
+) -> Result<(sea_orm::DatabaseTransaction, i64), AppError> {
+    use sea_orm::TransactionTrait;
+
+    #[derive(Debug, FromQueryResult)]
+    struct CountRow {
+        kept: i64,
+    }
+
+    let txn = db
+        .begin()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to open quote transaction: {e}")))?;
+    let lock = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE",
+        [sea_orm::Value::from(user_id)],
+    );
+    txn.execute(lock)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to lock user for quotes: {e}")))?;
+    let count = Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Postgres,
+        "SELECT COUNT(*) AS kept FROM saved_quotes WHERE user_id = $1",
+        [sea_orm::Value::from(user_id)],
+    );
+    let kept = CountRow::find_by_statement(count)
+        .one(&txn)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to count saved quotes: {e}")))?
+        .map_or(0, |row| row.kept);
+    Ok((txn, kept))
+}
+
 /// Persists a user-selected quote to `saved_quotes`, or reports the identical
 /// quote the user already keeps for that chapter so a retried save is
-/// idempotent. Two concurrent first saves may both insert; that window is
-/// accepted over a unique index on free text.
+/// idempotent. A new quote past [`MAX_SAVED_QUOTES_PER_USER`] is refused.
 pub async fn save_quote(
     db: &DatabaseConnection,
     id: Uuid,
@@ -180,13 +229,17 @@ pub async fn save_quote(
     quote_text: &str,
     image_card_url: Option<&str>,
 ) -> Result<QuoteSaveOutcome, AppError> {
+    let (txn, kept) = lock_user_quotes(db, user_id).await?;
     if let Some(existing) =
-        find_saved_quote_duplicate(db, user_id, book_id, chapter_id, quote_text).await?
+        find_saved_quote_duplicate(&txn, user_id, book_id, chapter_id, quote_text).await?
     {
         return Ok(QuoteSaveOutcome::Duplicate(existing));
     }
+    if kept >= MAX_SAVED_QUOTES_PER_USER {
+        return Err(quota_exceeded());
+    }
     insert_quote(
-        db,
+        &txn,
         id,
         user_id,
         book_id,
@@ -195,6 +248,9 @@ pub async fn save_quote(
         image_card_url,
     )
     .await?;
+    txn.commit()
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to commit quote: {e}")))?;
     Ok(QuoteSaveOutcome::Saved(id))
 }
 
@@ -274,18 +330,15 @@ pub enum QuoteSaveOutcome {
 
 /// Saves several already-validated quotes in one transaction. An identical
 /// quote on the shelf is reported, not duplicated, so a merge can be replayed.
+/// A batch that would carry the account past its quota is refused whole, so
+/// a device merging its quotes keeps every one it could not hand over.
 pub async fn save_quotes_batch(
     db: &DatabaseConnection,
     user_id: Uuid,
     items: &[(Uuid, Uuid, String)],
     card_url: impl Fn(Uuid) -> String,
 ) -> Result<Vec<QuoteSaveOutcome>, AppError> {
-    use sea_orm::TransactionTrait;
-
-    let txn = db
-        .begin()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to open quote transaction: {e}")))?;
+    let (txn, mut kept) = lock_user_quotes(db, user_id).await?;
     let mut outcomes = Vec::with_capacity(items.len());
     for (book_id, chapter_id, text) in items {
         if let Some(existing) =
@@ -294,6 +347,10 @@ pub async fn save_quotes_batch(
             outcomes.push(QuoteSaveOutcome::Duplicate(existing));
             continue;
         }
+        if kept >= MAX_SAVED_QUOTES_PER_USER {
+            return Err(quota_exceeded());
+        }
+        kept += 1;
         let id = Uuid::new_v4();
         insert_quote(
             &txn,
@@ -346,22 +403,34 @@ pub async fn get_saved_quote_by_id(
     }))
 }
 
-/// Retrieve all saved quotes for a user, ordered by most recent first.
+/// One page of a user's saved quotes, newest first, after the quote
+/// `cursor` (keyset on `created_at, id`). A cursor that is not one of the
+/// user's quotes yields an empty page rather than someone else's order.
 pub async fn list_saved_quotes(
     db: &DatabaseConnection,
     user_id: Uuid,
+    cursor: Option<Uuid>,
+    limit: u64,
 ) -> Result<Vec<SavedQuoteDto>, AppError> {
     let sql = r#"
         SELECT id, book_id, chapter_id, quote_text, image_card_url, created_at
         FROM saved_quotes
         WHERE user_id = $1
-        ORDER BY created_at DESC
+          AND ($2::uuid IS NULL OR (created_at, id) < (
+              SELECT created_at, id FROM saved_quotes WHERE id = $2 AND user_id = $1
+          ))
+        ORDER BY created_at DESC, id DESC
+        LIMIT $3
     "#;
 
     let stmt = Statement::from_sql_and_values(
         sea_orm::DatabaseBackend::Postgres,
         sql,
-        [sea_orm::Value::from(user_id)],
+        [
+            sea_orm::Value::from(user_id),
+            sea_orm::Value::from(cursor),
+            sea_orm::Value::from(limit as i64),
+        ],
     );
 
     let rows = SavedQuoteRow::find_by_statement(stmt)

@@ -932,7 +932,10 @@ pub fn ReaderPage() -> impl IntoView {
         spawn_local(async move {
             match keep_quote(book_uuid, ch.id, text).await {
                 Ok(message) => toasts.info(lang.get_untracked().text(message)),
-                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+                Err(e) => toasts.error(crate::components::auth::friendly_error(
+                    &e,
+                    lang.get_untracked(),
+                )),
             }
         });
     };

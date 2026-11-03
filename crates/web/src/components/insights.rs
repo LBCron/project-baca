@@ -1,6 +1,7 @@
 //! Quote finder, insight cards, and the spoiler-free recap, rendered as
 //! paper cards inside a sheet.
 
+use crate::components::auth::friendly_error;
 use crate::components::focus::{close_after_event, manage_sheet_focus};
 use crate::components::icons;
 use crate::components::toast::use_toasts;
@@ -145,7 +146,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     set_saved.update(|s| s.push(row.chunk_id));
                     toasts.info(lang.get_untracked().text(message));
                 }
-                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+                Err(e) => toasts.error(friendly_error(&e, lang.get_untracked())),
             }
         });
     };

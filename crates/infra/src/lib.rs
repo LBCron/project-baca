@@ -16,7 +16,7 @@ pub use config::{
     AiConfig, AppConfig, AuthConfig, DatabaseConfig, EmailConfig, RedisConfig, ServerConfig,
     SmtpSecurity, StorageConfig,
 };
-pub use counter::hit_window;
+pub use counter::{hit_window, release_hits};
 pub use email::{send_account_exists_email, send_otp_email};
 pub use pool::{
     init_db_pool, init_redis_client, init_redis_conn, RedisConn, REDIS_RETRY_AFTER_SECS,
@@ -37,7 +37,7 @@ pub use repositories::{
     quote_repository::{
         get_chapter_recap, get_saved_quote_by_id, get_tldr_cache, list_saved_quotes, save_quote,
         save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome, QuoteSearchRow,
-        SavedQuoteDto,
+        SavedQuoteDto, MAX_SAVED_QUOTES_PER_USER,
     },
     user_repository::{
         activate_registration, create_inactive_user, delete_user_by_id, find_user_by_email,
@@ -47,12 +47,12 @@ pub use repositories::{
 pub use security::{
     blacklist_access_token, claim_code_quota, ensure_guesses_left, generate_access_token,
     generate_access_token_issued_at, generate_refresh_token, hash_otp, hash_password,
-    hash_password_async, invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked,
-    registration_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
-    revoke_refresh_token, rotation_grace_key, start_registration, store_refresh_token,
-    validate_and_rotate_refresh_token, verify_access_token, verify_password, verify_password_async,
-    verify_registration, Claims, PendingRegistration, RefreshOutcome, DUMMY_ARGON2_HASH,
-    ROTATION_GRACE_SECS,
+    invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked, registration_key,
+    release_code_quota, revoke_all_user_sessions, revoke_family_on_reuse,
+    revoke_other_user_sessions, revoke_refresh_token, rotation_grace_key, start_registration,
+    store_refresh_token, validate_and_rotate_refresh_token, verify_access_token, verify_password,
+    verify_registration, Argon2Gate, Claims, PendingRegistration, RefreshOutcome,
+    DUMMY_ARGON2_HASH, ROTATION_GRACE_SECS,
 };
 pub use security::{
     is_session_revoked, issue_access_token, list_sessions, revoke_other_sessions_keeping,

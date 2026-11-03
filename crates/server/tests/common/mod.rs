@@ -82,6 +82,7 @@ impl TestHarness {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         })
         .expect("mock provider must always succeed");
 
@@ -97,6 +98,7 @@ impl TestHarness {
             config: Arc::clone(&config),
             embedding,
             storage,
+            argon2: infra::Argon2Gate::new(config.server.argon2_max_concurrency),
         });
 
         let app = create_app(state.clone());

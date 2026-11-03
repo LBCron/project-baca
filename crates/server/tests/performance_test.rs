@@ -114,7 +114,7 @@ async fn test_perf_auth_login_latency() {
     let password = "PerfPassword123!".to_string();
 
     // Setup active test user
-    let hash = infra::hash_password_async(password.clone()).await.unwrap();
+    let hash = harness.state.argon2.hash(password.clone()).await.unwrap();
     let _ = infra::activate_registration(&harness.state.db, &test_email, "PerfUser", &hash)
         .await
         .unwrap();

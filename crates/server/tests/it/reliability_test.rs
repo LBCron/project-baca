@@ -28,6 +28,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         api_key: String::new(),
         model_name: "text-embedding-004".to_string(),
         dimension: 768,
+        daily_budget: 0,
     })
     .expect("fastembed stub must always succeed");
 
@@ -38,6 +39,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         config: Arc::new(config),
         embedding,
         storage: storage.map(Arc::new),
+        argon2: infra::Argon2Gate::new(2),
     }))
 }
 
@@ -172,6 +174,13 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     let (resp, body) = harness.send_json_request(signup()).await;
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
+
+    // No mail went out, so none counts against the address.
+    let mut redis = harness.live_only().await.expect("live Redis");
+    let sent: Option<i64> = redis::AsyncCommands::get(&mut redis, format!("otp:sent:3600:{email}"))
+        .await
+        .unwrap();
+    assert_eq!(sent.unwrap_or(0), 0);
     harness.cleanup().await;
 }
 
@@ -249,6 +258,10 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
         .env("DATABASE_CONNECT_TIMEOUT_SECS", "2")
         .env("JWT_SECRET", "p".repeat(48))
         .env("SMTP_SECURITY", "starttls")
+        .env("TRUST_PROXY_HEADERS", "true")
+        .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
+        .env("OTP_HOURLY_BUDGET", "100")
+        .env("AI_DAILY_BUDGET", "5000")
         .env("RUST_LOG", "server=info")
         .kill_on_drop(true)
         .output();
@@ -285,6 +298,7 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         api_key: String::new(),
         model_name: "text-embedding-004".to_string(),
         dimension: 768,
+        daily_budget: 0,
     })
     .expect("fastembed stub must always succeed");
     let app = create_app(Arc::new(AppState {
@@ -294,6 +308,7 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         config: Arc::new(config),
         embedding,
         storage: Some(Arc::new(storage)),
+        argon2: infra::Argon2Gate::new(2),
     }));
 
     let started = Instant::now();

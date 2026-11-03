@@ -2,7 +2,10 @@
 
 use crate::{
     error::HttpError,
-    middleware::{auth::AuthUser, rate_limit::client_ip_from_headers},
+    middleware::{
+        auth::AuthUser,
+        rate_limit::{client_ip_from_headers, client_subject_from_headers, first_refusal},
+    },
     AppState,
 };
 use axum::{
@@ -16,13 +19,12 @@ use chrono::Utc;
 use infra::{
     activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
     ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
-    generate_refresh_token, hash_password_async, hit_window, is_session_revoked,
-    issue_access_token, list_sessions, revoke_all_user_sessions, revoke_family_on_reuse,
+    generate_refresh_token, hit_window, is_session_revoked, issue_access_token, list_sessions,
+    release_code_quota, release_hits, revoke_all_user_sessions, revoke_family_on_reuse,
     revoke_other_sessions_keeping, revoke_refresh_token, revoke_session, revoke_session_tokens,
     send_account_exists_email, send_otp_email, start_registration, store_refresh_token,
     touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
-    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
-    DUMMY_ARGON2_HASH,
+    verify_access_token, verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -140,6 +142,25 @@ async fn claim_login_attempt(
     Ok(())
 }
 
+/// Gives the attempt back when the password was never checked (no Argon2
+/// slot): under a flood a reader's retries must not lock them out.
+async fn release_login_attempt(redis: &mut infra::RedisConn, email: &str, ip: &str) {
+    let keys = login_attempt_keys(email, ip).map(|(key, _)| key);
+    if let Err(e) = release_hits(redis, &keys).await {
+        tracing::warn!(target: "server::auth", error = %e, "Could not give back an unchecked login attempt");
+    }
+}
+
+/// Gives back the mail counted for this signup when none went out.
+async fn release_signup_mail(redis: &mut infra::RedisConn, email: &str, budget: u32) {
+    release_code_quota(redis, email).await;
+    if budget > 0 {
+        if let Err(e) = release_hits(redis, &[MAIL_BUDGET_KEY.to_string()]).await {
+            tracing::warn!(target: "server::auth", error = %e, "Could not give back unsent signup mail");
+        }
+    }
+}
+
 /// A failed attempt that spent a budget locks it for a full window from now.
 async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
     for (key, limit) in login_attempt_keys(email, ip) {
@@ -161,6 +182,30 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
         is_active: user.is_active,
         created_at: user.created_at.with_timezone(&Utc),
     }
+}
+
+const MAIL_BUDGET_KEY: &str = "budget:otp:hour";
+
+/// Counts one signup mail against the hourly ceiling of every address
+/// together; past it signup answers 503 and the first refusal of the hour
+/// is logged once for the operator.
+async fn claim_mail_budget(redis: &mut infra::RedisConn, budget: u32) -> Result<(), HttpError> {
+    if budget == 0 {
+        return Ok(());
+    }
+    let (sent, ttl) = hit_window(redis, MAIL_BUDGET_KEY, 3600)
+        .await
+        .map_err(redis_unavailable)?;
+    let budget = i64::from(budget);
+    if sent <= budget {
+        return Ok(());
+    }
+    if first_refusal(sent, budget) {
+        tracing::warn!(target: "server::auth", event = "otp_budget_exhausted", budget, "Hourly signup mail budget spent; signups answer 503 until the hour turns");
+    }
+    Err(HttpError(AppError::ServiceUnavailable {
+        retry_after: ttl.max(1) as u64,
+    }))
 }
 
 /// Register a new account with email OTP verification
@@ -185,7 +230,7 @@ pub async fn signup(
 
     // Per-IP signup cap: rotating the local part cannot bypass this, so one
     // client cannot burn SMTP quota or sender reputation at will.
-    let client_ip = client_ip_from_headers(&headers, &state.config.server);
+    let client_ip = client_subject_from_headers(&headers, &state.config.server);
     let ip_key = format!("otp:signup:ip:{client_ip}");
     let (ip_count, ip_ttl) = hit_window(&mut redis_conn, &ip_key, 3600)
         .await
@@ -210,10 +255,16 @@ pub async fn signup(
     claim_code_quota(&mut redis_conn, &req.email)
         .await
         .map_err(HttpError::from)?;
+    claim_mail_budget(&mut redis_conn, state.config.email.otp_hourly_budget).await?;
 
-    let password_hash = hash_password_async(req.password.clone())
-        .await
-        .map_err(HttpError::from)?;
+    let mail_budget = state.config.email.otp_hourly_budget;
+    let password_hash = match state.argon2.hash(req.password.clone()).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            release_signup_mail(&mut redis_conn, &req.email, mail_budget).await;
+            return Err(HttpError(e));
+        }
+    };
     let (registration_id, otp) = start_registration(
         &mut redis_conn,
         &req.email,
@@ -234,6 +285,7 @@ pub async fn signup(
     };
     if let Err(e) = delivered {
         tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
+        release_signup_mail(&mut redis_conn, &req.email, mail_budget).await;
         return Err(HttpError(e));
     }
 
@@ -313,7 +365,7 @@ pub async fn login(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let client_ip = client_ip_from_headers(&headers, &state.config.server);
+    let client_ip = client_subject_from_headers(&headers, &state.config.server);
     claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await?;
 
     let user = find_user_by_email(&state.db, &req.email)
@@ -324,14 +376,24 @@ pub async fn login(
     // usable one, before anything branches on the account: unknown, pending
     // and wrong-password answers take the same time and say the same thing.
     let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
-    let matches = verify_password_async(
-        req.password.clone(),
-        stored_hash
-            .clone()
-            .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
-    )
-    .await
-    .map_err(HttpError::from)?;
+    let checked = state
+        .argon2
+        .verify(
+            req.password.clone(),
+            stored_hash
+                .clone()
+                .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
+        )
+        .await;
+    let matches = match checked {
+        Ok(matches) => matches,
+        Err(e) => {
+            if matches!(e, AppError::ServiceUnavailable { .. }) {
+                release_login_attempt(&mut redis_conn, &req.email, &client_ip).await;
+            }
+            return Err(HttpError(e));
+        }
+    };
     let user = match user {
         Some(user) if matches && stored_hash.is_some() && user.is_active => user,
         _ => {
@@ -610,7 +672,9 @@ pub async fn change_password(
         .ok_or_else(|| HttpError(AppError::NotFound("User not found".to_string())))?;
 
     let is_valid = match &user.password_hash {
-        Some(hash) => verify_password_async(req.current_password.clone(), hash.clone())
+        Some(hash) => state
+            .argon2
+            .verify(req.current_password.clone(), hash.clone())
             .await
             .map_err(HttpError::from)?,
         None => false,
@@ -628,7 +692,9 @@ pub async fn change_password(
     }
     let _: Result<(), _> = redis_conn.del(&attempts_key).await;
 
-    let new_hash = hash_password_async(req.new_password.clone())
+    let new_hash = state
+        .argon2
+        .hash(req.new_password.clone())
         .await
         .map_err(HttpError::from)?;
 

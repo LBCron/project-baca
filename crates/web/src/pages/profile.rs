@@ -11,7 +11,9 @@ use crate::i18n::{use_lang, Lang};
 use crate::storage;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDto};
+use shared::{
+    BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDto, SAVED_QUOTES_PAGE,
+};
 
 #[component]
 fn GuestShelf() -> impl IntoView {
@@ -302,6 +304,8 @@ pub fn ProfilePage() -> impl IntoView {
     let (streak, set_streak) = signal(None::<ReadingStreakDto>);
     let (badges, set_badges) = signal(Vec::<UserBadgeDto>::new());
     let (quotes, set_quotes) = signal(Vec::<SavedQuoteResponseDto>::new());
+    let (quotes_more, set_quotes_more) = signal(false);
+    let (quotes_loading, set_quotes_loading) = signal(false);
     let (offline_books, set_offline_books) = signal(Vec::<BookDetailDto>::new());
     let (active, set_active) = signal(None::<(uuid::Uuid, f32)>);
     let (loaded, set_loaded) = signal(false);
@@ -317,7 +321,8 @@ pub fn ProfilePage() -> impl IntoView {
             if let Ok(list) = api::my_badges().await {
                 set_badges.set(list);
             }
-            if let Ok(saved) = api::my_quotes().await {
+            if let Ok(saved) = api::my_quotes(None).await {
+                set_quotes_more.set(saved.len() as u64 >= SAVED_QUOTES_PAGE);
                 set_quotes.set(saved);
             }
             if let Ok(Some(progress)) = api::active_progress().await {
@@ -339,6 +344,21 @@ pub fn ProfilePage() -> impl IntoView {
             if !api::share_text("Rotaria", &body).await && api::copy_text(&body).await {
                 toasts.info(lang.get_untracked().text("quote_saved"));
             }
+        });
+    };
+
+    let more_quotes = move |_| {
+        let cursor = quotes.with_untracked(|all| all.last().map(|q| q.id));
+        set_quotes_loading.set(true);
+        spawn_local(async move {
+            match api::my_quotes(cursor).await {
+                Ok(page) => {
+                    set_quotes_more.set(page.len() as u64 >= SAVED_QUOTES_PAGE);
+                    set_quotes.update(|all| all.extend(page));
+                }
+                Err(e) => toasts.error(friendly_error(&e, lang.get_untracked())),
+            }
+            set_quotes_loading.set(false);
         });
     };
 
@@ -446,7 +466,10 @@ pub fn ProfilePage() -> impl IntoView {
                             <div class="section-head">
                                 <h2 id="quotes-title" class="section-title">{move || lang.get().text("saved_quotes")}</h2>
                                 {move || (!quotes.get().is_empty()).then(|| view! {
-                                    <span class="form-hint">{move || lang.get().text_with("quotes_all", "n", &quotes.get().len().to_string())}</span>
+                                    <span class="form-hint">{move || {
+                                        let more = if quotes_more.get() { "+" } else { "" };
+                                        lang.get().text_with("quotes_all", "n", &format!("{}{more}", quotes.get().len()))
+                                    }}</span>
                                 })}
                             </div>
                             {move || if !loaded.get() {
@@ -473,6 +496,13 @@ pub fn ProfilePage() -> impl IntoView {
                                     </ol>
                                 }.into_any()
                             }}
+                            {move || quotes_more.get().then(|| view! {
+                                <div class="load-more">
+                                    <button class="btn btn-ghost" on:click=more_quotes disabled=move || quotes_loading.get()>
+                                        {move || if quotes_loading.get() { lang.get().text("loading") } else { lang.get().text("load_more") }}
+                                    </button>
+                                </div>
+                            })}
                         </section>
 
                         <SessionsPanel/>

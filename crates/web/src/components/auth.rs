@@ -227,6 +227,9 @@ async fn merge_local_quotes() {
 
 /// Turns the API layer's "CODE: message" strings into reader-facing copy.
 pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
+    if raw.contains("QUOTA_EXCEEDED") {
+        return lang.text("quotes_full");
+    }
     if raw.contains("RATE_LIMITED") {
         let seconds = raw
             .split(|c: char| !c.is_ascii_digit())

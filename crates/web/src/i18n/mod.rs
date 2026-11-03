@@ -396,6 +396,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Terlalu banyak percobaan. Coba lagi dalam {t}.",
         "Too many attempts. Try again in {t}.",
     ),
+    (
+        "quotes_full",
+        "Rak kutipanmu sudah penuh. Kutipan ini belum bisa disimpan.",
+        "Your quote shelf is full. This one could not be kept.",
+    ),
     ("unit_minutes", "menit", "minutes"),
     ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
