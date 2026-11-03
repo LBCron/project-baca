@@ -116,7 +116,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 ## 7. Data
 
 - Paired migrations in `migrations/`; schema and index matrix in `knowledge/erd.md`.
-- Hot indexes: partial GIN FTS and trigram `WHERE status = 'published'`, HNSW cosine on `book_chunks.embedding`, foreign-key B-trees, catalog index on `(publication_year DESC NULLS LAST, id)`. The catalog query orders `NULLS FIRST` and its cursor skips books without a year, so that index is not used and later pages can come back empty (issue #11).
+- Hot indexes: partial GIN FTS and trigram `WHERE status = 'published'`, HNSW cosine on `book_chunks.embedding`, foreign-key B-trees, catalog index on `(publication_year DESC NULLS LAST, id)`. The catalog query orders the same way (books without a year last), and its keyset cursor continues past them, so a page reads the index without a sort and every published book is reached once.
 - Covers: the worker stores `covers/<book uuid>.<ext>` in the covers bucket and `books.cover_url` holds that key.
 - `tldr_cache` has a unique key per (chapter, kind); replays upsert.
 
