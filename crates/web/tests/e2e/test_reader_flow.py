@@ -554,6 +554,52 @@ def test_book_search_opens_the_page_that_holds_the_hit(new_context, book_with_ch
         context.close()
 
 
+PARAGRAPH_COUNT = """html => new DOMParser().parseFromString(html, 'text/html').querySelectorAll('p').length"""
+
+
+def test_quote_search_hit_opens_its_paragraph(new_context, book_with_chapters: str):
+    """A quote hit carries the anchor of the paragraph its passage starts
+    in; its jump link opens the reader on that paragraph, lit as an in-book
+    hit is. The search answer is stubbed: the seeded books hold no
+    embeddings, and the anchor itself is covered by the worker and API tests."""
+    book_id = book_with_chapters
+    chapter, _ = _chapter_no(book_id)
+    html = api_get(f"/books/{book_id}/chapters/{chapter}")["html_content"]
+    context, page, errors = _context(new_context)
+    try:
+        goto(page, f"/book/{book_id}")
+        last = page.evaluate(PARAGRAPH_COUNT, html)
+        assert last > 3, "the seeded chapter spans several pages"
+        hit = {
+            "chunk_id": "00000000-0000-4000-8000-0000000000aa",
+            "chapter_number": chapter,
+            "chapter_title": None,
+            "cfi_range": f"p-{last}",
+            "content": "A passage from the end of the chapter.",
+            "similarity_score": 0.9,
+        }
+        page.route(
+            "**/quotes/search",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"success": True, "data": [hit]})
+            ),
+        )
+        page.click("text=Find a quote")
+        page.fill(".sheet .search-bar input", "the end of the chapter")
+        page.click(".sheet .search-bar .btn-primary")
+        jump = page.locator(".quote-row .quote-actions a.btn-primary")
+        expect(jump).to_have_attribute("href", f"/read/{book_id}?chapter={chapter}&at=p-{last}")
+        jump.click()
+        page.wait_for_selector(".chapter-body")
+        page.wait_for_timeout(1600)
+        assert page.evaluate(FLASHED_ON_SHOWN_PAGE) is True, "the quote's paragraph is on the page shown"
+        assert page.evaluate("document.querySelector('.reader-viewport').scrollLeft") > 0, "opened past page one"
+        assert "at=" not in page.url, "a reload returns to the saved place, not the hit"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 def test_book_search_field_takes_focus_and_keeps_it(new_context, book_with_chapters: str):
     """The search field gets focus when the sheet opens, and a frame that
     arrives late on a slow device must not pull focus away from someone who
@@ -576,6 +622,43 @@ def test_book_search_field_takes_focus_and_keeps_it(new_context, book_with_chapt
         assert hits.count() >= 1
         assert errors == [], errors[:3]
     finally:
+        context.close()
+
+
+HITS_JS = """() => [...document.querySelectorAll('.search-hit')].map(b =>
+    `${b.dataset.chapter}:${b.dataset.paragraph}:${b.querySelector('.hit-text').textContent}`)"""
+
+
+def test_book_search_online_and_offline_agree(new_context, book_with_chapters: str):
+    """The server's paragraph index and the saved copy find the same
+    paragraphs with the same snippets: one normalization on both sides."""
+    book_id = book_with_chapters
+    queries = ["surat", "kapal", "di pelabuhan", "dan"]
+    context, page, errors = _context(new_context)
+    try:
+        page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
+        save = '[aria-label="Save for offline reading"]'
+        if page.query_selector(save):
+            page.click(save)
+            page.wait_for_selector('[aria-label="Saved on this device"]', timeout=10000)
+        _open(page, book_id, settle_ms=1500)
+        page.click(".btn-search")
+
+        def results(query: str) -> list[str]:
+            page.fill("#book-search", query)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1200)
+            return page.evaluate(HITS_JS)
+
+        online = {q: results(q) for q in queries}
+        context.set_offline(True)
+        offline = {q: results(q) for q in queries}
+        expect(page.locator(".sheet .form-hint")).to_have_text("Searched in the copy on your device.")
+        assert any(online.values()), "the queries must find something"
+        assert online == offline
+        assert errors == [], errors[:3]
+    finally:
+        context.set_offline(False)
         context.close()
 
 

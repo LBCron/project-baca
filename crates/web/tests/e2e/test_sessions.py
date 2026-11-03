@@ -86,7 +86,9 @@ def test_guest_profile_and_admin_guard(clean_page: Page):
     assert_no_page_errors(page)
 
 
-LOCAL_QUOTE = "Kata-kata lebih setia daripada manusia."
+# Words of the seeded book's first chapter: the server keeps only quotes
+# that are in their chapter.
+LOCAL_QUOTE = "Ia menulis surat pertamanya di meja dapur"
 
 
 def _put_local_quote(page: Page, book_id: str, chapter_id: str) -> None:
@@ -164,6 +166,23 @@ def test_guest_quote_merges_on_register(clean_page: Page, book_with_chapters: st
     assert_no_page_errors(page)
 
 
+def _chapter_phrases(book_id: str, count: int) -> list[str]:
+    """``count`` distinct four-word phrases of the book's first chapter, each
+    a quote the server accepts."""
+    import re
+
+    html = api_get(f"/books/{book_id}/chapters/1")["html_content"]
+    words = re.sub(r"<[^>]+>", " ", html).split()
+    phrases: list[str] = []
+    for i in range(len(words) - 3):
+        phrase = " ".join(words[i : i + 4])
+        if phrase not in phrases:
+            phrases.append(phrase)
+        if len(phrases) == count:
+            return phrases
+    raise AssertionError(f"the first chapter holds fewer than {count} phrases")
+
+
 def test_profile_quotes_open_a_page_at_a_time(clean_page: Page, book_with_chapters: str):
     """Sixty saved quotes open fifty at a time and the rest follow on request.
     Each batch shares one timestamp, so the pages also prove the id tiebreak:
@@ -172,7 +191,7 @@ def test_profile_quotes_open_a_page_at_a_time(clean_page: Page, book_with_chapte
     tokens = register_reader("pages")
     token = tokens["access_token"]
     chapter_id = api_get(f"/books/{book_with_chapters}")["chapters"][0]["id"]
-    texts = [f"Paged quote {i:02d}" for i in range(60)]
+    texts = _chapter_phrases(book_with_chapters, 60)
     for batch in (texts[:50], texts[50:]):
         items = [{"book_id": book_with_chapters, "chapter_id": chapter_id, "quote_text": t} for t in batch]
         _post("/quotes/save-batch", {"items": items}, token)
@@ -188,7 +207,7 @@ def test_profile_quotes_open_a_page_at_a_time(clean_page: Page, book_with_chapte
         expect(rows).to_have_count(60)
         expect(more).to_have_count(0)
         expect(page.get_by_text("All (60)")).to_be_visible()
-        assert sorted(rows.all_inner_texts()) == texts
+        assert sorted(rows.all_inner_texts()) == sorted(texts)
         assert_no_page_errors(page)
     finally:
         req = urllib.request.Request(f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {token}"})

@@ -96,6 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 chapter_id: Set(*chapter_id),
                 chunk_index: Set(*chunk_index),
                 chunk_text: Set(text.clone()),
+                cfi_range: Set(None),
                 embedding: Set(PgVector::from(vector)),
                 created_at: Set(chrono::Utc::now().into()),
             };

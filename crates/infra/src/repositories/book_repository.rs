@@ -1,8 +1,9 @@
 //! Catalog, search, chapter, and bundle queries.
 
+use sea_orm::sea_query::NullOrdering;
 use sea_orm::{
-    ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait, FromQueryResult, QueryFilter,
-    QueryOrder, QuerySelect, Statement, Value,
+    ColumnTrait, Condition, DatabaseBackend, DatabaseConnection, EntityTrait, FromQueryResult,
+    Order, QueryFilter, QueryOrder, QuerySelect, Select, Statement, Value,
 };
 use shared::{
     AdminBookRowDto, AppError, BookCatalogQuery, BookDetailDto, BookSearchQuery,
@@ -25,6 +26,35 @@ struct SearchResultRow {
     score: f32,
 }
 
+/// One keyset page of the catalog after `cursor`, in the order
+/// `idx_books_published_year_id` stores it: year descending with undated
+/// books last, then id. Postgres puts NULLs first on a plain DESC, which both
+/// forced a sort and stranded every undated book behind an `id > cursor`
+/// that ignored the year.
+pub fn catalog_page(
+    select: Select<books::Entity>,
+    cursor: Option<&books::Model>,
+    limit: u64,
+) -> Select<books::Entity> {
+    let year = books::Column::PublicationYear;
+    let select = match cursor {
+        Some(c) => select.filter(match c.publication_year {
+            Some(y) => Condition::any()
+                .add(year.lt(y))
+                .add(year.eq(y).and(books::Column::Id.gt(c.id)))
+                .add(year.is_null()),
+            None => Condition::all()
+                .add(year.is_null())
+                .add(books::Column::Id.gt(c.id)),
+        }),
+        None => select,
+    };
+    select
+        .order_by_with_nulls(year, Order::Desc, NullOrdering::Last)
+        .order_by_asc(books::Column::Id)
+        .limit(limit)
+}
+
 /// Lists published books with cursor pagination and taxonomy filters.
 pub async fn list_books(
     db: &DatabaseConnection,
@@ -42,26 +72,13 @@ pub async fn list_books(
         select = select.filter(books::Column::PrimaryTheme.eq(theme));
     }
 
-    // Cursor pagination based on ID or publication year
-    if let Some(cursor_id) = query.cursor {
-        if let Some(cursor_book) = books::Entity::find_by_id(cursor_id)
+    let cursor_book = match query.cursor {
+        Some(cursor_id) => books::Entity::find_by_id(cursor_id)
             .one(db)
             .await
-            .map_err(|e| AppError::Database(format!("Failed to retrieve cursor book: {e}")))?
-        {
-            if let Some(cursor_year) = cursor_book.publication_year {
-                select = select.filter(
-                    books::Column::PublicationYear.lt(cursor_year).or(
-                        books::Column::PublicationYear
-                            .eq(cursor_year)
-                            .and(books::Column::Id.gt(cursor_id)),
-                    ),
-                );
-            } else {
-                select = select.filter(books::Column::Id.gt(cursor_id));
-            }
-        }
-    }
+            .map_err(|e| AppError::Database(format!("Failed to retrieve cursor book: {e}")))?,
+        None => None,
+    };
 
     // Tag filter
     if let Some(ref tag_query) = query.tag {
@@ -94,12 +111,7 @@ pub async fn list_books(
         select = select.filter(books::Column::Id.is_in(book_ids));
     }
 
-    select = select
-        .order_by_desc(books::Column::PublicationYear)
-        .order_by_asc(books::Column::Id)
-        .limit(limit);
-
-    let book_models = select
+    let book_models = catalog_page(select, cursor_book.as_ref(), limit)
         .all(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to query catalog: {e}")))?;
@@ -149,34 +161,31 @@ pub async fn list_books(
     Ok(result)
 }
 
-/// Typo-tolerant lexical search via PostgreSQL 17 GIN Trigram and FTS indexes.
 /// Paragraphs of one published book that contain `query`, in reading order.
 ///
-/// Chapters are split at `</p>`, so the n-th piece is the reader's `p-n`
-/// anchor. The SQL `ILIKE` over the tag-stripped text narrows the rows; the
-/// snippet comes from [`shared::text_hit_snippet`], as in offline search.
+/// Reads `chapter_paragraphs`, the plain text the worker indexes per `<p>`
+/// with the reader's numbering, matching the folded copy through its
+/// trigram index; the snippet comes
+/// from [`shared::text_hit_snippet`], as in offline search.
 pub async fn search_book_text(
     db: &DatabaseConnection,
     book_id: Uuid,
     query: &str,
 ) -> Result<Vec<BookTextHitDto>, AppError> {
     ensure_book_published(db, book_id).await?;
-    let needle = query.trim();
     let pattern = format!(
         "%{}%",
-        needle
+        shared::fold_for_search(query)
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_")
     );
     let sql = r#"
-        SELECT c.chapter_number, c.title AS chapter_title, p.n::int4 AS paragraph,
-               regexp_replace(p.piece, '<[^>]*>', ' ', 'g') AS text
-        FROM chapters c
-        CROSS JOIN LATERAL regexp_split_to_table(c.html_content, '</p>') WITH ORDINALITY AS p(piece, n)
-        WHERE c.book_id = $1
-          AND regexp_replace(p.piece, '<[^>]*>', ' ', 'g') ILIKE $2 ESCAPE '\'
-        ORDER BY c.chapter_number, p.n
+        SELECT p.chapter_number, c.title AS chapter_title, p.n AS paragraph, p.text
+        FROM chapter_paragraphs p
+        JOIN chapters c ON c.book_id = p.book_id AND c.chapter_number = p.chapter_number
+        WHERE p.book_id = $1 AND p.folded LIKE $2 ESCAPE '\'
+        ORDER BY p.chapter_number, p.n
         LIMIT $3;
     "#;
     let stmt = Statement::from_sql_and_values(
@@ -195,8 +204,7 @@ pub async fn search_book_text(
     Ok(rows
         .into_iter()
         .filter_map(|row| {
-            let text = decode_entities(&row.text);
-            shared::text_hit_snippet(&text, needle).map(|snippet| BookTextHitDto {
+            shared::text_hit_snippet(&row.text, query).map(|snippet| BookTextHitDto {
                 chapter_number: row.chapter_number,
                 chapter_title: row.chapter_title,
                 paragraph: row.paragraph,
@@ -214,47 +222,7 @@ struct TextHitRow {
     text: String,
 }
 
-/// Character references left in stored chapter HTML, decoded so a snippet
-/// reads like the page (the browser decodes them for offline search).
-fn decode_entities(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let tail = &rest[amp..];
-        let decoded = tail.find(';').filter(|end| *end <= 10).and_then(|end| {
-            let name = &tail[1..end];
-            let ch = match name {
-                "amp" => Some('&'),
-                "lt" => Some('<'),
-                "gt" => Some('>'),
-                "quot" => Some('"'),
-                "apos" => Some('\''),
-                "nbsp" => Some(' '),
-                _ => name
-                    .strip_prefix("#x")
-                    .or_else(|| name.strip_prefix("#X"))
-                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                    .or_else(|| name.strip_prefix('#').and_then(|dec| dec.parse().ok()))
-                    .and_then(char::from_u32),
-            }?;
-            Some((ch, end + 1))
-        });
-        match decoded {
-            Some((ch, len)) => {
-                out.push(ch);
-                rest = &tail[len..];
-            }
-            None => {
-                out.push('&');
-                rest = &tail[1..];
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
+/// Typo-tolerant lexical search via PostgreSQL 17 GIN Trigram and FTS indexes.
 pub async fn search_books(
     db: &DatabaseConnection,
     search: &BookSearchQuery,
@@ -279,7 +247,7 @@ pub async fn search_books(
               OR author %> $1
               OR title % $1
               OR author % $1
-              OR to_tsvector('simple', title || ' ' || author || ' ' || description) @@ plainto_tsquery($1)
+              OR to_tsvector('simple', title || ' ' || author || ' ' || description) @@ plainto_tsquery('simple', $1)
           )
         ORDER BY score DESC, title ASC
         LIMIT $3;
@@ -391,6 +359,97 @@ pub async fn get_chapter_book_id(
         .ok_or_else(|| AppError::NotFound(format!("Chapter not found: {chapter_id}")))?;
 
     Ok(chapter.book_id)
+}
+
+/// The chapter's text in the form quotes are matched in: folded, with no
+/// whitespace at all. A reader's selection runs paragraphs together with
+/// line breaks and inline tags without spaces, while a quote-search passage
+/// puts a space at every tag, and either must match the page it came from.
+/// A long chapter is megabytes of text, so the work runs off the async
+/// threads; a caller checking several quotes reuses one result per chapter.
+pub async fn chapter_quote_text(
+    db: &DatabaseConnection,
+    chapter_id: Uuid,
+) -> Result<String, AppError> {
+    let html: Option<String> = chapters::Entity::find_by_id(chapter_id)
+        .select_only()
+        .column(chapters::Column::HtmlContent)
+        .into_tuple()
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?;
+    let html =
+        html.ok_or_else(|| AppError::NotFound(format!("Chapter not found: {chapter_id}")))?;
+    tokio::task::spawn_blocking(move || squeezed(&decode_entities(&strip_tags(&html))))
+        .await
+        .map_err(|e| AppError::Internal(format!("Chapter text task failed: {e}")))
+}
+
+/// True when `quote` occurs in text from [`chapter_quote_text`].
+pub fn quote_in_text(chapter_text: &str, quote: &str) -> bool {
+    let needle = squeezed(quote);
+    !needle.is_empty() && chapter_text.contains(&needle)
+}
+
+fn strip_tags(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Soft hyphens go too: a browser may leave them out of a selection.
+fn squeezed(text: &str) -> String {
+    shared::fold_for_search(text).replace([' ', '\u{00AD}'], "")
+}
+
+/// Character references left in stored chapter HTML, decoded as a browser
+/// decodes them.
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let tail = &rest[amp..];
+        let decoded = tail.find(';').filter(|end| *end <= 10).and_then(|end| {
+            let name = &tail[1..end];
+            let ch = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                "shy" => Some('\u{00AD}'),
+                _ => name
+                    .strip_prefix("#x")
+                    .or_else(|| name.strip_prefix("#X"))
+                    .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                    .or_else(|| name.strip_prefix('#').and_then(|dec| dec.parse().ok()))
+                    .and_then(char::from_u32),
+            }?;
+            Some((ch, end + 1))
+        });
+        match decoded {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Returns the chapter number for a chapter UUID, if it exists.
@@ -731,7 +790,7 @@ pub async fn set_book_status(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_entities;
+    use super::{decode_entities, squeezed, strip_tags};
 
     #[test]
     fn character_references_decode_like_a_browser() {
@@ -745,5 +804,26 @@ mod tests {
             decode_entities("AT&T and &unknown; stay"),
             "AT&T and &unknown; stay"
         );
+    }
+
+    #[test]
+    fn a_quote_matches_however_the_page_was_selected() {
+        let html = "<h2>Bab I</h2><p>Laras menulis <em>surat</em>-nya &amp; menunggu.</p><p>Kapal tiba.</p>";
+        let page = squeezed(&decode_entities(&strip_tags(html)));
+        // A browser selection: inline tag without spaces, a paragraph break.
+        assert!(page.contains(&squeezed("surat-nya & menunggu.\n\nKapal tiba.")));
+        // A quote-search passage: a space at every tag, the heading included.
+        assert!(page.contains(&squeezed(
+            "Bab I Laras menulis surat -nya & menunggu. Kapal tiba."
+        )));
+        assert!(!page.contains(&squeezed("Laras menulis puisi")));
+    }
+
+    #[test]
+    fn a_soft_hyphen_does_not_split_a_quote() {
+        let page = squeezed(&decode_entities(&strip_tags(
+            "<p>sur&shy;at\u{00AD}nya</p>",
+        )));
+        assert_eq!(page, squeezed("suratnya"));
     }
 }

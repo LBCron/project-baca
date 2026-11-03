@@ -105,7 +105,18 @@ class SanitizeTest(unittest.TestCase):
 
     def test_a_void_embed_does_not_hide_what_follows(self):
         self.assertEqual(sanitize_html("<p>a</p><embed src=x><p>b</p>"), "<p>a</p><p>b</p>")
-        self.assertEqual(sanitize_html("<embed src=x>tail text"), "tail text")
+        self.assertEqual(sanitize_html("<embed src=x>tail text"), "<p>tail text</p>")
+
+    def test_loose_text_is_wrapped_in_a_paragraph(self):
+        self.assertEqual(sanitize_html("<div>teks lepas</div>"), "<p>teks lepas</p>")
+        self.assertEqual(sanitize_html("<div>a</div><div>b <em>c</em></div>"), "<p>a</p><p>b <em>c</em></p>")
+        self.assertEqual(
+            sanitize_html("<p>in p</p>loose<br/>line<h2>H</h2>tail"),
+            "<p>in p</p><p>loose<br/>line</p><h2>H</h2><p>tail</p>",
+        )
+        self.assertEqual(sanitize_html("<blockquote>q</blockquote>"), "<blockquote><p>q</p></blockquote>")
+        self.assertEqual(sanitize_html("<ul><li>item</li></ul>\n"), "<ul><li>item</li></ul>\n")
+        self.assertEqual(worker.paragraph_texts(sanitize_html("<div>teks lepas</div>")), ["teks lepas"])
 
     def test_an_unclosed_skipped_element_ends_with_its_parent(self):
         dirty = "<div><p>a</p><iframe src=x><p>inside</p></div><p>b</p><object><p>c</p></object><p>d</p>"
@@ -468,6 +479,128 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
             any("SET status = 'processing'" in sql for sql in cursor.statements),
             "a draft shows as processing once its job starts",
         )
+
+
+GUTENBERG_HEADER = (
+    "The Project Gutenberg eBook of Kisah Lama. This eBook is for the use of anyone anywhere."
+    "<p>*** START OF THE PROJECT GUTENBERG EBOOK KISAH LAMA ***</p>"
+)
+GUTENBERG_LICENSE = (
+    "<p>*** END OF THE PROJECT GUTENBERG EBOOK KISAH LAMA ***</p>"
+    "<p>Updated editions will replace the previous one. Section 1. General Terms of Use.</p>"
+)
+
+
+class GutenbergTest(unittest.TestCase):
+    def test_header_and_license_are_not_part_of_the_book(self):
+        parsed = worker.parse_epub(make_epub([
+            ("Cover", "A Gutenberg cover page with credits."),
+            ("Kisah Lama", GUTENBERG_HEADER + "<p>Pada suatu pagi kabut turun.</p>"),
+            ("Bab Dua", "Laras menulis surat."),
+            ("Akhir", "<p>Kapal tiba.</p>" + GUTENBERG_LICENSE),
+            ("THE FULL PROJECT GUTENBERG LICENSE", "Section 2. Information about the Mission."),
+        ]))
+        texts = [c.text for c in parsed.chapters]
+        self.assertEqual(len(parsed.chapters), 3, texts)
+        self.assertTrue(texts[0].endswith("Pada suatu pagi kabut turun."), texts[0])
+        self.assertTrue(texts[-1].endswith("Kapal tiba."), texts[-1])
+        self.assertFalse(any("Gutenberg" in t or "Section" in t for t in texts), texts)
+
+    def test_a_book_without_markers_is_untouched(self):
+        parsed = worker.parse_epub(make_epub([("One", "Satu."), ("Two", "Dua.")]))
+        self.assertEqual([c.text for c in parsed.chapters], ["One Satu.", "Two Dua."])
+
+
+class ParagraphIndexTest(unittest.TestCase):
+    def test_paragraphs_are_numbered_as_a_browser_parses_them(self):
+        html = (
+            "<h2>Opening</h2><p>The secure\n   ancestral hall</p>"
+            "<p>Tom &amp; Jerry<br/>again</p>"
+            "<p>open<blockquote>quoted</blockquote></p>"
+            "<ul><li>item</li></ul><p><em>last</em> one</p>"
+        )
+        # A blockquote closes the open <p>; its stray </p> opens an empty one.
+        self.assertEqual(
+            worker.paragraph_texts(html),
+            ["The secure ancestral hall", "Tom & Jerry again", "open", "", "last one"],
+        )
+
+    def test_folding_matches_the_server(self):
+        # The same literal is asserted for shared::fold_for_search.
+        self.assertEqual(
+            worker.fold_for_search("\u0130STANBUL \u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03c2"),
+            "istanbul \u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c3 \u03c3",
+        )
+
+    def test_each_chunk_anchors_on_the_paragraph_it_starts_in(self):
+        paragraphs = ["", "alpha beta gamma", "delta epsilon", "zeta eta theta"]
+        # The heading sits before any paragraph; a chunk starting there opens
+        # the first paragraph after it, one starting mid-paragraph opens that one.
+        chunks = ["Heading alpha", "beta gamma delta", "epsilon zeta eta", "theta"]
+        self.assertEqual(worker.chunk_anchors(chunks, paragraphs), ["p-2", "p-2", "p-3", "p-4"])
+
+    def test_a_chunk_past_every_paragraph_anchors_on_the_last(self):
+        self.assertEqual(worker.chunk_anchors(["one", "tail"], ["one"]), ["p-1", "p-1"])
+        self.assertEqual(worker.chunk_anchors(["loose"], []), [None])
+
+    def test_ingestion_writes_the_paragraph_index(self):
+        cursor = FakeCursor("draft")
+        cursor.fetchone = lambda: ("chapter-id",) if cursor.statements[-1].lstrip().startswith("INSERT INTO chapters") else ("Title", "Author", "en", "draft")
+        params = []
+        record = cursor.execute
+        cursor.execute = lambda sql, p=(): (record(sql, p), params.append((sql, p)))
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        conn.commit.side_effect = [None, RuntimeError("stop at publish")]
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text worth reading.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
+             mock.patch.object(worker, "generate_json", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "stop at publish"):
+                worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        inserts = [p for sql, p in params if sql.startswith("INSERT INTO chapter_paragraphs")]
+        self.assertEqual(inserts, [["b", 1, 1, "Some text worth reading.", "some text worth reading."]])
+        chunk = next(p for sql, p in params if "INSERT INTO book_chunks" in sql)
+        self.assertEqual(chunk[5], "p-1")
+
+
+class ParagraphBackfillTest(unittest.TestCase):
+    def test_each_book_is_indexed_and_committed_on_its_own(self):
+        events: list[str] = []
+
+        class Cursor:
+            last = ""
+
+            def execute(self, sql, params=()):
+                self.last = sql
+                if sql.startswith("SELECT id, chapter_number"):
+                    events.append(f"read {params[0]}")
+                if sql.startswith("UPDATE book_chunks"):
+                    events.append(f"anchor {params[1]} {params[0]}")
+
+            def fetchall(self):
+                if "DISTINCT" in self.last:
+                    return [("b1",), ("b2",)]
+                if "FROM chapters" in self.last:
+                    return [("c1", 1, "<h2>Bab</h2><p>alpha beta</p>")]
+                if "FROM book_chunks" in self.last:
+                    return [("k1", "Bab alpha beta")]
+                return []
+
+        conn = mock.Mock()
+        conn.cursor.return_value = Cursor()
+        conn.commit.side_effect = lambda: events.append("commit")
+        with mock.patch.object(worker, "make_db", return_value=conn):
+            self.assertEqual(worker.backfill_paragraphs(worker.Settings()), 2)
+        self.assertEqual(
+            events,
+            ["read b1", "anchor k1 p-1", "commit", "read b2", "anchor k1 p-1", "commit"],
+        )
+        conn.close.assert_called_once()
 
 
 class CorruptMemberTest(unittest.TestCase):

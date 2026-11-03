@@ -405,6 +405,18 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         }
     };
 
+    let book_search_cap = state.config.server.book_search_rate_limit_per_minute;
+    let book_search = |router: Router<Arc<AppState>>| {
+        if book_search_cap > 0 {
+            router.layer(axum_mw::from_fn_with_state(
+                state.clone(),
+                crate::middleware::book_search_rate_limit_middleware,
+            ))
+        } else {
+            router
+        }
+    };
+
     let account_writes = |router: Router<Arc<AppState>>| {
         router.layer(axum_mw::from_fn_with_state(
             state.clone(),
@@ -418,7 +430,10 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/health", get(api_health_check))
         .nest("/api/v1/auth", auth_router)
         .nest("/api/v1/me", account_writes(routes::user_routes()))
-        .nest("/api/v1/books", public(routes::books_routes()))
+        .nest(
+            "/api/v1/books",
+            public(routes::books_routes().merge(book_search(routes::book_text_search_routes()))),
+        )
         .nest("/api/v1/covers", public(routes::covers_routes()))
         .nest(
             "/api/v1/progress",

@@ -173,7 +173,8 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                 })}
                 {move || results.get().into_iter().map(|r| {
                     let id = book.get_value();
-                    let jump = format!("/read/{id}?chapter={}", r.chapter_number);
+                    let at = r.cfi_range.as_deref().map(|a| format!("&at={a}")).unwrap_or_default();
+                    let jump = format!("/read/{id}?chapter={}{at}", r.chapter_number);
                     let label = format!("{} {} · {:.0}% {}", lang.get().text("chapter"), r.chapter_number, r.similarity_score * 100.0, lang.get().text("similarity"));
                     let is_saved = saved.get().contains(&r.chunk_id);
                     let share_text = r.content.clone();

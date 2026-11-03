@@ -649,3 +649,59 @@ async fn test_db_tldr_cache_unique_per_chapter_and_type() {
         .expect("cleanup cascades chapters and cache rows");
     harness.cleanup().await;
 }
+
+/// In-book search answers a rare phrase from the trigram index over folded
+/// paragraph text, the book filter inside the same index, instead of reading
+/// every paragraph of the book.
+#[tokio::test]
+async fn test_db_in_book_search_uses_the_trigram_index() {
+    let harness = TestHarness::new().await;
+    let _ = harness.live_only().await.expect("live DB required (db-up)");
+    let book_id = Uuid::new_v4();
+    let txn = harness.state.db.begin().await.expect("begin");
+    // A book of 10,000 paragraphs, rolled back at the end. A dev table
+    // holds little besides it, so a sequential scan would look cheapest;
+    // in production every other book makes it the dearest, which
+    // `enable_seqscan = off` stands in for.
+    txn.execute_unprepared(&format!(
+        "SET LOCAL statement_timeout = 0; SET LOCAL enable_seqscan = off; \
+         INSERT INTO books (id, title, author, language, primary_theme, description, cover_url, \
+           epub_storage_path, total_words, estimated_reading_minutes, source_name, license, status, \
+           created_at, updated_at) \
+         VALUES ('{book_id}', 'Plan Tome', 'Plan', 'en', 'Test', '', '', '', 1, 1, 'Test', 'Private', \
+           'published', NOW(), NOW()); \
+         INSERT INTO chapters (id, book_id, chapter_number, title, word_count, html_content, created_at) \
+         SELECT gen_random_uuid(), '{book_id}', c, 'Chapter ' || c, 1, '', NOW() FROM generate_series(1, 20) c; \
+         INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) \
+         SELECT '{book_id}', c, n, t, lower(t) FROM ( \
+           SELECT c, n, 'the harbour lay quiet ' || md5((c * 10000 + n)::text) AS t \
+           FROM generate_series(1, 20) c, generate_series(1, 500) n) s; \
+         ANALYZE chapter_paragraphs; ANALYZE chapters;"
+    ))
+    .await
+    .expect("seed the book");
+    let rows = txn
+        .query_all(Statement::from_string(
+            harness.state.db.get_database_backend(),
+            format!(
+                "EXPLAIN (FORMAT TEXT) SELECT p.chapter_number, c.title, p.n, p.text \
+                 FROM chapter_paragraphs p \
+                 JOIN chapters c ON c.book_id = p.book_id AND c.chapter_number = p.chapter_number \
+                 WHERE p.book_id = '{book_id}' AND p.folded LIKE '%zqxjv absent%' \
+                 ORDER BY p.chapter_number, p.n LIMIT 50;"
+            ),
+        ))
+        .await
+        .expect("EXPLAIN query failed");
+    let plan: String = rows
+        .iter()
+        .filter_map(|r| r.try_get_by_index::<String>(0).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    txn.rollback().await.expect("rollback");
+    assert!(
+        plan.contains("idx_chapter_paragraphs_folded"),
+        "in-book search must use idx_chapter_paragraphs_folded. Plan:\n{plan}"
+    );
+    harness.cleanup().await;
+}

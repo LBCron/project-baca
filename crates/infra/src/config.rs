@@ -25,6 +25,10 @@ pub struct ServerConfig {
     /// the limiter (dev stack and in-memory tests share one fallback IP);
     /// production sets a positive value.
     pub public_rate_limit_per_minute: u32,
+    /// Per-client cap on in-book search, the one public read that scans a
+    /// book's text. Zero disables it, as for the public cap (the dev stack
+    /// and in-memory tests share one fallback IP); production sets it.
+    pub book_search_rate_limit_per_minute: u32,
     /// Argon2 operations allowed at once (19 MiB each); requests past it
     /// wait briefly, then answer 503.
     pub argon2_max_concurrency: usize,
@@ -44,6 +48,7 @@ impl Default for ServerConfig {
             trust_proxy_headers: false,
             trusted_ip_header: "x-forwarded-for".to_string(),
             public_rate_limit_per_minute: 0,
+            book_search_rate_limit_per_minute: 0,
             // More slots than cores adds no throughput, and past 8 slots the
             // 19 MiB each costs more memory than a small host can spare.
             argon2_max_concurrency: std::thread::available_parallelism()
@@ -62,6 +67,11 @@ pub struct DatabaseConfig {
     pub min_connections: u32,
     pub connect_timeout_secs: u64,
     pub idle_timeout_secs: u64,
+    /// Longest a single API statement may run; past it Postgres cancels it,
+    /// so one slow public query cannot hold a pooled connection. It must
+    /// stay above the 2 s row-lock wait of a status change, which answers
+    /// 409 on its own.
+    pub statement_timeout_ms: u64,
 }
 
 impl Default for DatabaseConfig {
@@ -72,6 +82,7 @@ impl Default for DatabaseConfig {
             min_connections: 5,
             connect_timeout_secs: 10,
             idle_timeout_secs: 300,
+            statement_timeout_ms: 5000,
         }
     }
 }
@@ -277,6 +288,10 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_server.public_rate_limit_per_minute);
+        let book_search_rate_limit_per_minute = env_number(
+            "BOOK_SEARCH_RATE_LIMIT_PER_MINUTE",
+            default_server.book_search_rate_limit_per_minute,
+        )?;
         let argon2_max_concurrency = env_number(
             "ARGON2_MAX_CONCURRENCY",
             default_server.argon2_max_concurrency,
@@ -291,6 +306,7 @@ impl AppConfig {
             trust_proxy_headers,
             trusted_ip_header,
             public_rate_limit_per_minute,
+            book_search_rate_limit_per_minute,
             argon2_max_concurrency,
         };
 
@@ -318,6 +334,10 @@ impl AppConfig {
             min_connections: db_min_conn,
             connect_timeout_secs: db_connect_timeout,
             idle_timeout_secs: db_idle_timeout,
+            statement_timeout_ms: env::var("DATABASE_STATEMENT_TIMEOUT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default_db.statement_timeout_ms),
         };
 
         let redis_url = env::var("REDIS_URL").unwrap_or(default_redis.url);

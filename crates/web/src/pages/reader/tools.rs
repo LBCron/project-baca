@@ -72,7 +72,9 @@ async fn search_on_device(book: &str, query: &str) -> Vec<BookTextHitDto> {
         let Ok(holder) = document.create_element("div") else {
             continue;
         };
-        holder.set_inner_html(&chapter.html_content);
+        // A line break reads as a space, as the server's paragraph index
+        // reads it; textContent alone would run verse lines together.
+        holder.set_inner_html(&chapter.html_content.replace("<br/>", "<br/> "));
         let Ok(paragraphs) = holder.query_selector_all("p") else {
             continue;
         };
@@ -97,24 +99,36 @@ async fn search_on_device(book: &str, query: &str) -> Vec<BookTextHitDto> {
     hits
 }
 
+/// Byte range of the searched phrase in a snippet, folded per character
+/// as the search matched it, so positions carry over to the original text.
+fn mark_range(snippet: &str, query: &str) -> Option<(usize, usize)> {
+    let hay: Vec<char> = snippet.chars().map(shared::fold).collect();
+    let needle: Vec<char> = shared::fold_for_search(query).chars().collect();
+    if needle.is_empty() {
+        return None;
+    }
+    let start = hay
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?;
+    let byte = |chars: usize| {
+        snippet
+            .char_indices()
+            .nth(chars)
+            .map_or(snippet.len(), |(i, _)| i)
+    };
+    Some((byte(start), byte(start + needle.len())))
+}
+
 /// The snippet with the searched phrase marked.
 fn marked(snippet: &str, query: &str) -> impl IntoView {
-    let folded = snippet.to_lowercase();
-    let needle = query.trim().to_lowercase();
-    match folded
-        .find(&needle)
-        .filter(|_| folded.len() == snippet.len())
-    {
-        Some(at) if !needle.is_empty() => {
-            let end = at + needle.len();
-            view! {
-                <span>{snippet[..at].to_string()}</span>
-                <mark>{snippet[at..end].to_string()}</mark>
-                <span>{snippet[end..].to_string()}</span>
-            }
-            .into_any()
+    match mark_range(snippet, query) {
+        Some((at, end)) => view! {
+            <span>{snippet[..at].to_string()}</span>
+            <mark>{snippet[at..end].to_string()}</mark>
+            <span>{snippet[end..].to_string()}</span>
         }
-        _ => view! { <span>{snippet.to_string()}</span> }.into_any(),
+        .into_any(),
+        None => view! { <span>{snippet.to_string()}</span> }.into_any(),
     }
 }
 
@@ -193,7 +207,7 @@ pub fn BookSearch(
                             let target = (hit.chapter_number, hit.paragraph);
                             view! {
                                 <li>
-                                    <button class="search-hit" on:click=move |_| on_pick.run(target)>
+                                    <button class="search-hit" data-chapter=hit.chapter_number data-paragraph=hit.paragraph on:click=move |_| on_pick.run(target)>
                                         <span class="hit-where">{format!("{} {} \u{00B7} {}", lang.get_untracked().text("chapter"), roman(hit.chapter_number), hit.chapter_title)}</span>
                                         <span class="hit-text">{marked(&hit.snippet, &q)}</span>
                                     </button>
@@ -214,12 +228,18 @@ pub fn selected_chapter_text() -> Option<String> {
     if selection.is_collapsed() {
         return None;
     }
-    let anchor = selection.anchor_node()?;
-    let element = match anchor.dyn_ref::<web_sys::Element>() {
-        Some(el) => el.clone(),
-        None => anchor.parent_element()?,
+    // Both ends: a drag past the body would pick up a folio's page number,
+    // which the server then refuses as not in the chapter.
+    let in_body = |node: Option<web_sys::Node>| {
+        let node = node?;
+        let element = match node.dyn_ref::<web_sys::Element>() {
+            Some(el) => el.clone(),
+            None => node.parent_element()?,
+        };
+        element.closest(".chapter-body").ok()?
     };
-    element.closest(".chapter-body").ok()??;
+    in_body(selection.anchor_node())?;
+    in_body(selection.focus_node())?;
     let text: String = selection.to_string().into();
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!text.is_empty() && text.chars().count() <= 2000).then_some(text)
@@ -251,5 +271,22 @@ pub fn watch_selection(on_change: impl Fn() + 'static) {
 pub fn clear_selection() {
     if let Some(selection) = web_sys::window().and_then(|w| w.get_selection().ok().flatten()) {
         let _ = selection.remove_all_ranges();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mark_range;
+
+    #[test]
+    fn the_mark_follows_the_search_folding() {
+        let snippet = "Di \u{0130}STANBUL kapal tiba";
+        let (at, end) = mark_range(snippet, "istanbul").expect("found");
+        assert_eq!(&snippet[at..end], "\u{0130}STANBUL");
+        let spaced = "the secure ancestral hall";
+        let (at, end) = mark_range(spaced, "secure   ancestral").expect("found");
+        assert_eq!(&spaced[at..end], "secure ancestral");
+        assert_eq!(mark_range("nothing here", "absent"), None);
+        assert_eq!(mark_range("anything", "   "), None);
     }
 }

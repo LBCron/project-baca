@@ -184,6 +184,10 @@ worker-test-live:
 	@echo "Running worker live tests (needs Redis + Postgres)..."
 	@cd python_worker && RECLAIM_IDLE_MS=0 .venv/bin/python -m unittest test_worker_live -v
 
+backfill-paragraphs:
+	@echo "Indexing the paragraphs of every stored chapter and anchoring its chunks (one-off, idempotent)..."
+	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python worker.py --backfill-paragraphs
+
 worker:
 	@echo "Starting ingestion worker (long-running consumer)..."
 	@cd python_worker && .venv/bin/python worker.py
@@ -248,6 +252,11 @@ prod-down:
 prod-logs:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml logs -f
 
+# After migrating and before the new server takes traffic: until it has run,
+# in-book search finds nothing in books ingested earlier.
+prod-backfill-paragraphs:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml run --rm worker python worker.py --backfill-paragraphs
+
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
 purge-test-debris:
@@ -257,6 +266,7 @@ purge-test-debris:
 seed-dev:
 	@echo "Seeding the development catalog (four CC0 works with fixed ids)..."
 	@docker exec -i project_baca_db psql -U baca_user -d project_baca_db -v ON_ERROR_STOP=1 -q < scripts/seed_dev_catalog.sql
+	@$(MAKE) --no-print-directory backfill-paragraphs
 	@echo "Seeded. The web suite pins a0000000-0000-4000-8000-000000000001."
 
 # Clean build artifacts
@@ -265,5 +275,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs clean purge-test-debris seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

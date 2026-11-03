@@ -6,7 +6,7 @@ pub mod role;
 
 pub use auth::AuthUser;
 pub use rate_limit::{
-    ai_rate_limit_middleware, public_rate_limit_middleware, rate_limit_middleware,
-    user_write_rate_limit_middleware,
+    ai_rate_limit_middleware, book_search_rate_limit_middleware, public_rate_limit_middleware,
+    rate_limit_middleware, user_write_rate_limit_middleware,
 };
 pub use role::require_admin;

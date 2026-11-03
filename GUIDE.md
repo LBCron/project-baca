@@ -43,10 +43,11 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
 | `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on unauthenticated reads; production compose sets 600 |
+| `BOOK_SEARCH_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on in-book search; production compose sets 30 |
 | `ARGON2_MAX_CONCURRENCY` | cores, at most 8 | Argon2 hashes and verifies run at once (19 MiB each); a login or signup that waits 2 s for a slot answers 503; 0 is refused |
 | `OTP_HOURLY_BUDGET`, `AI_DAILY_BUDGET` | `0` (off) | ceilings across every client: signup mail per hour (past it signup answers 503 and logs `otp_budget_exhausted` once) and semantic searches per day (past it 429 `AI_RATE_LIMITED` and `ai_budget_exhausted`; guests share a fifth); a value that is not a whole number stops the boot; production compose sets 100 and 5000, and production refuses to boot with either at 0 or without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
-| `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |
+| `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS`, `DATABASE_STATEMENT_TIMEOUT_MS` | dev URL, `20`, `5`, `10`, `300`, `5000` | SeaORM pool; Postgres cancels an API statement past the timeout |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `S3_FORCE_PATH_STYLE` | MinIO dev values | any S3-compatible store |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Mailpit, `starttls` | `SMTP_SECURITY=none` for Mailpit (refused in production); credentials sent only when `SMTP_USER` is set; signup answers 502 when the relay is unreachable |
@@ -66,6 +67,7 @@ make worker            # after make worker-install
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
 - Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
+- Paragraph index and quote anchors for books ingested before them: `make backfill-paragraphs` (production `make prod-backfill-paragraphs`), one book per transaction, idempotent, no embeddings paid. Run it after migrating and before the new server takes traffic, or in-book search finds nothing in those books.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
 
 App shell:

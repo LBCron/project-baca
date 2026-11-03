@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import socket
 import sys
@@ -117,12 +118,25 @@ VOID_TAGS = {
 }
 
 
+# Allowed elements that hold running text themselves; text outside all of
+# them is wrapped in a <p> so it gets a p-N anchor and is searchable.
+TEXT_CONTAINERS = {"p", "li", "h1", "h2", "h3"}
+# Allowed elements that end a run of loose text.
+BLOCK_TAGS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+# Dropped elements that still separate paragraphs in the source layout.
+LAYOUT_BLOCKS = {
+    "div", "section", "article", "header", "footer", "main", "aside", "nav", "body",
+    "figure", "figcaption", "table", "tr", "td", "th", "pre", "dl", "dt", "dd", "center",
+}
+
+
 class _Sanitizer(HTMLParser):
     """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs.
 
     Open elements are tracked as a stack so a skipped element that is never
     closed (common for ``iframe`` and ``object`` in real XHTML) ends with its
-    parent instead of swallowing the rest of the chapter."""
+    parent instead of swallowing the rest of the chapter. Text that sits in
+    no paragraph (a dropped ``div``'s content) is wrapped in one."""
 
     SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object"}
     # Chapters are XHTML: ``<iframe src="x"/>`` is a complete element there,
@@ -138,6 +152,18 @@ class _Sanitizer(HTMLParser):
         # scan of the stack made ten thousand of them quadratic.
         self.open_counts: Counter[str] = Counter()
         self.skip_from: int | None = None
+        self.containers = 0
+        self.loose_p = False
+
+    def _end_loose(self) -> None:
+        if self.loose_p:
+            self.parts.append("</p>")
+            self.loose_p = False
+
+    def _start_loose(self) -> None:
+        if not self.containers and not self.loose_p:
+            self.parts.append("<p>")
+            self.loose_p = True
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
@@ -148,8 +174,14 @@ class _Sanitizer(HTMLParser):
             self.open_counts[tag] += 1
         if self.skip_from is not None:
             return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
+        elif tag in ALLOWED_TAGS and tag != "br":
+            self._start_loose()
         if tag in ALLOWED_TAGS:
             self.parts.append(f"<{tag}>" if tag != "br" else "<br/>")
+            if tag in TEXT_CONTAINERS:
+                self.containers += 1
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -163,13 +195,19 @@ class _Sanitizer(HTMLParser):
             if len(self.open_tags) <= self.skip_from:
                 self.skip_from = None
             return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
         if tag in ALLOWED_TAGS and tag not in {"br", "hr"}:
             self.parts.append(f"</{tag}>")
+            if tag in TEXT_CONTAINERS and self.containers:
+                self.containers -= 1
 
     def handle_data(self, data: str) -> None:
         # convert_charrefs decoded entities into text, so an encoded
         # ``&lt;img onerror=...&gt;`` would otherwise be re-emitted as live markup.
         if self.skip_from is None:
+            if data.strip():
+                self._start_loose()
             self.parts.append(html.escape(data, quote=False))
 
 
@@ -177,6 +215,8 @@ def sanitize_html(html: str) -> str:
     """Returns cleaned HTML containing only allowlisted semantic tags."""
     parser = _Sanitizer()
     parser.feed(html)
+    parser.close()
+    parser._end_loose()
     return "".join(parser.parts)
 
 
@@ -212,6 +252,59 @@ def extract_text(html: str) -> str:
     return " ".join("".join(parser.parts).split())
 
 
+# Start tags that close an open <p> under the HTML parsing rules, among the
+# tags the sanitizer keeps; "</p>" with no <p> open creates an empty one.
+P_CLOSERS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+
+
+def fold_for_search(text: str) -> str:
+    """Case-folds one character at a time, final sigma as sigma; mirrors
+    ``shared::fold_for_search`` so the stored text and a query fold alike."""
+    return "".join((ch.lower()[:1] or ch) for ch in text).replace("\u03c2", "\u03c3")
+
+
+def paragraph_texts(html: str) -> list[str]:
+    """Plain text of each <p> element of sanitized chapter HTML, in the
+    order and count a browser parses them, so entry ``N-1`` is the reader's
+    ``p-N``. Entities are decoded, a ``<br>`` reads as a space (a verse line
+    must not run into the next), and whitespace is collapsed, exactly as
+    offline search reads the stored HTML."""
+
+    class _Paragraphs(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.found: list[list[str]] = []
+            self.open = False
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            tag = tag.lower()
+            if tag in P_CLOSERS:
+                self.open = False
+            if tag == "br" and self.open:
+                self.found[-1].append(" ")
+            if tag == "p":
+                self.found.append([])
+                self.open = True
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag.lower() != "p":
+                if tag.lower() in P_CLOSERS:
+                    self.open = False
+                return
+            if not self.open:
+                self.found.append([])
+            self.open = False
+
+        def handle_data(self, data: str) -> None:
+            if self.open:
+                self.found[-1].append(data)
+
+    parser = _Paragraphs()
+    parser.feed(html)
+    parser.close()
+    return [" ".join("".join(parts).split()) for parts in parser.found]
+
+
 def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     """Splits text into ~target-word chunks at whitespace boundaries.
 
@@ -236,6 +329,30 @@ def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     return chunks
 
 
+def chunk_anchors(chunks: list[str], paragraphs: list[str]) -> list[str | None]:
+    """The reader anchor (``p-N``) each chunk starts in, or the first
+    paragraph after its start when that is a heading. Positions are compared
+    with all whitespace removed, because chunks and paragraphs space the same
+    text differently (tag boundaries, ``<br>``). A paragraph the chapter text
+    does not contain is skipped rather than guessed."""
+    text = "".join("".join(chunks).split())
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for n, paragraph in enumerate(paragraphs, start=1):
+        squeezed = "".join(paragraph.split())
+        at = text.find(squeezed, cursor) if squeezed else -1
+        if at >= 0:
+            spans.append((n, at + len(squeezed)))
+            cursor = at + len(squeezed)
+    anchors: list[str | None] = []
+    offset = 0
+    for chunk in chunks:
+        n = next((n for n, end in spans if end > offset), spans[-1][0] if spans else None)
+        anchors.append(f"p-{n}" if n is not None else None)
+        offset += len("".join(chunk.split()))
+    return anchors
+
+
 # Widths of the VARCHAR columns the parsed metadata lands in; an EPUB that
 # overflows them must not fail the job after its embeddings were paid for.
 TITLE_MAX_CHARS = 255
@@ -254,6 +371,7 @@ class ParsedChapter:
     text: str
     word_count: int
     chunks: list[str]
+    paragraphs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -349,6 +467,15 @@ def _opf_path(epub: zipfile.ZipFile) -> str:
     return node.get("full-path", "")
 
 
+# Project Gutenberg wraps every book in a header and a license, both inside
+# the spine. The book's own text lies between these two marker lines.
+GUTENBERG_START = re.compile(r"\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+GUTENBERG_END = re.compile(r"\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+# Tags a cut leaves dangling: closers after the start, openers before the end.
+LEADING_CLOSERS = re.compile(r"^(?:\s*</[a-z0-9]+>)+")
+TRAILING_OPENERS = re.compile(r"(?:<[a-z0-9]+>\s*)+$")
+
+
 def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     """Parses EPUB bytes into metadata, optional cover, and spine-ordered
     chapters, refusing anything past ``limits`` with :class:`RejectedEpub`."""
@@ -409,7 +536,10 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     read: set[str] = set()
     text_bytes = 0
     chunk_count = 0
+    gutenberg_ended = False
     for itemref in spine.findall("opf:itemref", ns):
+        if gutenberg_ended:
+            break
         ref = itemref.get("idref", "")
         if ref not in manifest:
             continue
@@ -428,6 +558,16 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
         except KeyError:
             continue
         cleaned = sanitize_html(raw)
+        start = GUTENBERG_START.search(cleaned)
+        if start:
+            # Everything before the marker was the header: spend nothing on it.
+            chapters.clear()
+            text_bytes = chunk_count = 0
+            cleaned = LEADING_CLOSERS.sub("", cleaned[start.end() :])
+        end = GUTENBERG_END.search(cleaned)
+        if end:
+            gutenberg_ended = True
+            cleaned = TRAILING_OPENERS.sub("", cleaned[: end.start()].rstrip())
         text = extract_text(cleaned)
         if not text:
             continue
@@ -457,6 +597,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
                 text=text,
                 word_count=len(text.split()),
                 chunks=chunks,
+                paragraphs=paragraph_texts(cleaned),
             )
         )
 
@@ -861,12 +1002,14 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 ),
             )
             chapter_ids.append(str(cur.fetchone()[0]))
+            write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
         # Scene chunking at ~400 words, then batched embeddings.
-        pending: list[tuple[str, int, str]] = []
+        pending: list[tuple[str, int, str, str | None]] = []
         for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            for index, piece in enumerate(chapter.chunks):
-                pending.append((chapter_id, index, piece))
+            anchors = chunk_anchors(chapter.chunks, chapter.paragraphs)
+            for index, (piece, anchor) in enumerate(zip(chapter.chunks, anchors)):
+                pending.append((chapter_id, index, piece, anchor))
         if not pending:
             raise PermanentJobError("EPUB yields no passages to embed")
         # The book row is free since the first commit, so a curator may have
@@ -883,19 +1026,20 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
-            vectors = embed_batch([text for _, _, text in batch], settings, job_id)
-            for (chapter_id, index, text), vector in zip(batch, vectors):
+            vectors = embed_batch([text for _, _, text, _ in batch], settings, job_id)
+            for (chapter_id, index, text, anchor), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
                 cur.execute(
                     """INSERT INTO book_chunks
-                       (id, book_id, chapter_id, chunk_index, chunk_text, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                       (id, book_id, chapter_id, chunk_index, chunk_text, cfi_range, embedding)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
                     (
                         str(uuid.uuid4()),
                         book_id,
                         chapter_id,
                         index,
                         text,
+                        anchor,
                         literal,
                     ),
                 )
@@ -983,6 +1127,73 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             conn.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# Rows per INSERT when writing paragraphs: one statement per paragraph
+# would cost a round trip each for books of tens of thousands.
+PARAGRAPH_BATCH = 500
+
+
+def write_paragraphs(cur, book_id: str, chapter_number: int, paragraphs: list[str]) -> None:
+    """Replaces the indexed paragraphs of one chapter (re-ingestion and the
+    backfill both rewrite them whole)."""
+    cur.execute(
+        "DELETE FROM chapter_paragraphs WHERE book_id = %s AND chapter_number = %s",
+        (book_id, chapter_number),
+    )
+    rows = [(n, text) for n, text in enumerate(paragraphs, start=1)]
+    for offset in range(0, len(rows), PARAGRAPH_BATCH):
+        batch = rows[offset : offset + PARAGRAPH_BATCH]
+        values = ", ".join(["(%s, %s, %s, %s, %s)"] * len(batch))
+        params = [
+            v for n, text in batch for v in (book_id, chapter_number, n, text, fold_for_search(text))
+        ]
+        cur.execute(
+            f"INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES {values}",
+            params,
+        )
+
+
+def backfill_paragraphs(settings: Settings) -> int:
+    """Indexes the paragraphs of every chapter from its stored HTML and
+    anchors its stored chunks on them, for books ingested before either
+    existed; the embeddings are kept, nothing is paid again. Returns
+    chapters done."""
+    conn = make_db(settings)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT book_id FROM chapters")
+        books = [str(row[0]) for row in cur.fetchall()]
+        done = 0
+        # One book's HTML in memory and one transaction per book: a large
+        # library neither loads whole nor holds its locks until the end.
+        for book_id in books:
+            done += backfill_book(cur, book_id)
+            conn.commit()
+        return done
+    finally:
+        conn.close()
+
+
+def backfill_book(cur, book_id: str) -> int:
+    """Indexes one book's paragraphs and anchors its chunks. Returns chapters done."""
+    cur.execute(
+        "SELECT id, chapter_number, html_content FROM chapters WHERE book_id = %s ORDER BY chapter_number",
+        (book_id,),
+    )
+    chapters = cur.fetchall()
+    for chapter_id, chapter_number, html_content in chapters:
+        paragraphs = paragraph_texts(html_content or "")
+        write_paragraphs(cur, book_id, chapter_number, paragraphs)
+        cur.execute(
+            "SELECT id, chunk_text FROM book_chunks WHERE chapter_id = %s ORDER BY chunk_index",
+            (str(chapter_id),),
+        )
+        chunks = cur.fetchall()
+        anchors = chunk_anchors([text for _, text in chunks], paragraphs)
+        for (chunk_id, _), anchor in zip(chunks, anchors):
+            cur.execute("UPDATE book_chunks SET cfi_range = %s WHERE id = %s", (anchor, str(chunk_id)))
+    return len(chapters)
 
 
 # Consumer loop
@@ -1210,6 +1421,10 @@ def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, rea
 
 
 def main() -> None:
+    if "--backfill-paragraphs" in sys.argv[1:]:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        LOG.info("indexed the paragraphs of %d chapters", backfill_paragraphs(Settings()))
+        return
     try:
         sys.exit(run(once="--once" in sys.argv[1:]))
     except WorkerShutdown as reason:

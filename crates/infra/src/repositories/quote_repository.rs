@@ -16,6 +16,7 @@ struct ChunkSearchRow {
     chapter_number: i32,
     chapter_title: Option<String>,
     chunk_text: String,
+    cfi_range: Option<String>,
     cosine_similarity: f64,
 }
 
@@ -79,6 +80,7 @@ pub async fn search_quotes_by_embedding(
             ch.chapter_number,
             ch.title        AS chapter_title,
             c.chunk_text,
+            c.cfi_range,
             (1.0 - (c.embedding <=> $1::vector))::float8 AS cosine_similarity
         FROM book_chunks c
         JOIN chapters ch ON ch.id = c.chapter_id
@@ -108,7 +110,7 @@ pub async fn search_quotes_by_embedding(
             chunk_id: r.chunk_id,
             chapter_number: r.chapter_number,
             chapter_title: r.chapter_title,
-            cfi_range: None,
+            cfi_range: r.cfi_range,
             content: r.chunk_text,
             similarity_score: r.cosine_similarity as f32,
         })

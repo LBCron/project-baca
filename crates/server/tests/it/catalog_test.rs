@@ -783,18 +783,22 @@ async fn test_book_text_search_finds_paragraphs() {
     if harness.live_only().await.is_none() {
         panic!("live DB required (db-up)");
     }
-    let (book_id, chapter_id) = seed_book_with_chapter(&harness, "published").await;
-    chapters::Entity::update_many()
-        .col_expr(
-            chapters::Column::HtmlContent,
-            sea_orm::sea_query::Expr::value(
-                "<h2>Pembuka</h2><p>Kabut turun di pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100% penuh.</p><p>Kapal tiba.</p>",
-            ),
-        )
-        .filter(chapters::Column::Id.eq(chapter_id))
-        .exec(&harness.state.db)
-        .await
-        .unwrap();
+    let (book_id, _) = seed_book_with_chapter(&harness, "published").await;
+    // The rows the worker writes for "<h2>Pembuka</h2><p>Kabut turun di
+    // pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100%
+    // penuh.</p><p>Kapal tiba.</p><p>the secure\n   ancestral hall</p>":
+    // entities decoded, whitespace collapsed, numbered like the reader's p-N.
+    seed_paragraphs(
+        &harness,
+        book_id,
+        &[
+            "Kabut turun di pelabuhan.",
+            "Laras menulis surat & menunggu kapal 100% penuh.",
+            "Kapal tiba.",
+            "the secure ancestral hall",
+        ],
+    )
+    .await;
     let search = |q: &str| {
         Request::builder()
             .uri(format!("/api/v1/books/{book_id}/search?q={}", urlencode(q)))
@@ -830,6 +834,14 @@ async fn test_book_text_search_finds_paragraphs() {
         "wildcards stay literal"
     );
 
+    let (_, body) = harness.send_json_request(search("secure ancestral")).await;
+    assert_eq!(
+        body["data"][0]["paragraph"], 4,
+        "a phrase broken across source lines: {body}"
+    );
+    let (_, body) = harness.send_json_request(search("surat & menunggu")).await;
+    assert_eq!(body["data"][0]["paragraph"], 2, "a decoded entity: {body}");
+
     let (resp, _) = harness.send_json_request(search("k")).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let (draft_id, _) = seed_book_with_chapter(&harness, "draft").await;
@@ -842,6 +854,23 @@ async fn test_book_text_search_finds_paragraphs() {
         StatusCode::NOT_FOUND
     );
     harness.cleanup().await;
+}
+
+/// Writes chapter 1's paragraph index the way the worker does.
+async fn seed_paragraphs(harness: &TestHarness, book_id: Uuid, texts: &[&str]) {
+    use sea_orm::ConnectionTrait;
+    for (n, text) in texts.iter().enumerate() {
+        harness
+            .state
+            .db
+            .execute(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Postgres,
+                "INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES ($1, 1, $2, $3, lower($3))",
+                [book_id.into(), (n as i32 + 1).into(), (*text).into()],
+            ))
+            .await
+            .expect("paragraph seed must succeed");
+    }
 }
 
 fn urlencode(text: &str) -> String {
@@ -887,5 +916,183 @@ async fn test_unpublished_and_missing_books_answer_the_same_404() {
         answers.iter().all(|a| *a == answers[0]),
         "bodies differ: {answers:?}"
     );
+    harness.cleanup().await;
+}
+
+async fn seed_dated_book(
+    harness: &TestHarness,
+    theme: &str,
+    year: Option<i32>,
+    description: &str,
+) -> Uuid {
+    let now = Utc::now();
+    let book_id = harness.track_book(Uuid::new_v4());
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set(format!("Keyset {year:?}")),
+        author: Set("Keyset Author".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set(theme.to_string()),
+        sub_theme: Set(None),
+        description: Set(description.to_string()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(100),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(year),
+        status: Set("published".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("book seed must succeed");
+    book_id
+}
+
+async fn catalog_ids(harness: &TestHarness, query: &str) -> Vec<String> {
+    let req = Request::builder()
+        .uri(format!("/api/v1/books?{query}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    json["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .map(|b| b["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+/// Walking the catalog page by page reaches every published book exactly
+/// once, books without a publication year included, at any page size.
+#[tokio::test]
+async fn test_catalog_cursor_reaches_every_book_once() {
+    let harness = TestHarness::new().await;
+    // A theme of its own keeps books other tests publish out of the walk.
+    let theme = format!("Keyset {}", Uuid::new_v4().simple());
+    for year in [
+        Some(2001),
+        Some(2001),
+        Some(1999),
+        None,
+        None,
+        Some(2010),
+        None,
+    ] {
+        seed_dated_book(&harness, &theme, year, "").await;
+    }
+    let theme_q = urlencode(&theme);
+    let everything = catalog_ids(&harness, &format!("theme={theme_q}&limit=100")).await;
+    assert_eq!(everything.len(), 7, "{everything:?}");
+
+    for limit in [1, 3] {
+        let mut walked: Vec<String> = Vec::new();
+        let mut cursor = String::new();
+        for _ in 0..10 {
+            let page =
+                catalog_ids(&harness, &format!("theme={theme_q}&limit={limit}{cursor}")).await;
+            let Some(last) = page.last() else { break };
+            cursor = format!("&cursor={last}");
+            walked.extend(page);
+        }
+        assert_eq!(
+            walked, everything,
+            "limit={limit} must walk the same order once"
+        );
+    }
+    harness.cleanup().await;
+}
+
+/// The catalog query reads `idx_books_published_year_id` in its own order,
+/// with and without a cursor, so no page pays for a sort.
+#[tokio::test]
+async fn test_catalog_page_plan_reads_the_index_without_a_sort() {
+    use sea_orm::{ConnectionTrait, QueryTrait, Statement, TransactionTrait};
+    let harness = TestHarness::new().await;
+    let cursor = books::Model {
+        id: Uuid::new_v4(),
+        title: String::new(),
+        author: String::new(),
+        language: "en".to_string(),
+        primary_theme: String::new(),
+        sub_theme: None,
+        description: String::new(),
+        cover_url: String::new(),
+        epub_storage_path: String::new(),
+        total_words: 0,
+        estimated_reading_minutes: 0,
+        source_name: String::new(),
+        source_url: None,
+        license: String::new(),
+        publication_year: Some(1950),
+        status: "published".to_string(),
+        created_at: Utc::now().into(),
+        updated_at: Utc::now().into(),
+    };
+    let undated = books::Model {
+        publication_year: None,
+        ..cursor.clone()
+    };
+    let backend = harness.state.db.get_database_backend();
+    for page_after in [None, Some(&cursor), Some(&undated)] {
+        let published = books::Entity::find().filter(books::Column::Status.eq("published"));
+        let sql = infra::repositories::book_repository::catalog_page(published, page_after, 20)
+            .build(backend)
+            .to_string();
+        let txn = harness.state.db.begin().await.expect("begin");
+        // A small dev table makes a sort cheap; with sorting penalised, a plan
+        // still sorts only when the order is one the index cannot give.
+        for switch in ["enable_seqscan", "enable_bitmapscan", "enable_sort"] {
+            txn.execute(Statement::from_string(
+                backend,
+                format!("SET LOCAL {switch} = OFF"),
+            ))
+            .await
+            .expect("planner switch");
+        }
+        let plan: String = txn
+            .query_all(Statement::from_string(backend, format!("EXPLAIN {sql}")))
+            .await
+            .expect("EXPLAIN")
+            .iter()
+            .filter_map(|row| row.try_get_by_index::<String>(0).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        txn.rollback().await.expect("rollback");
+        assert!(
+            plan.contains("idx_books_published_year_id"),
+            "{sql}\n{plan}"
+        );
+        assert!(!plan.contains("Sort"), "{sql}\n{plan}");
+    }
+    harness.cleanup().await;
+}
+
+/// Words only the description holds are found: the query is parsed with
+/// the same `simple` config the index uses, not the database's `english`.
+#[tokio::test]
+async fn test_catalog_search_finds_words_only_in_the_description() {
+    let harness = TestHarness::new().await;
+    let theme = format!("Keyset {}", Uuid::new_v4().simple());
+    let book_id =
+        seed_dated_book(&harness, &theme, None, "The running stories of the harbour").await;
+    let req = Request::builder()
+        .uri("/api/v1/books/search?q=running%20stories")
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    assert!(ids.contains(&book_id.to_string().as_str()), "{json}");
     harness.cleanup().await;
 }

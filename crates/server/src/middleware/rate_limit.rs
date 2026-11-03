@@ -111,6 +111,14 @@ pub fn public_policy(max_requests: u32) -> RateLimitPolicy {
     }
 }
 
+/// In-book search per client: it reads a whole book's paragraph index.
+pub fn book_search_policy(max_requests: u32) -> RateLimitPolicy {
+    RateLimitPolicy {
+        key_prefix: "rate_limit:book_search",
+        ..public_policy(max_requests)
+    }
+}
+
 /// Address every direct client shares when no trusted header is available.
 const FALLBACK_CLIENT_IP: &str = "127.0.0.1";
 
@@ -337,6 +345,18 @@ pub async fn public_rate_limit_middleware(
 ) -> Response {
     let subject = extract_client_subject(&req, &state.config.server);
     let policy = public_policy(state.config.server.public_rate_limit_per_minute);
+    enforce(&state, &[(policy, subject)], req, next).await
+}
+
+/// Caps in-book search per IP. Mounted only when
+/// `BOOK_SEARCH_RATE_LIMIT_PER_MINUTE` is positive.
+pub async fn book_search_rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let subject = extract_client_subject(&req, &state.config.server);
+    let policy = book_search_policy(state.config.server.book_search_rate_limit_per_minute);
     enforce(&state, &[(policy, subject)], req, next).await
 }
 
