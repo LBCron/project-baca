@@ -100,6 +100,7 @@ impl AppState {
         routes::admin::patch_book,
         routes::admin::list_dlq,
         routes::admin::replay_dlq,
+        routes::admin::dismiss_dlq,
     ),
     components(
         schemas(
@@ -145,6 +146,7 @@ impl AppState {
             AdminBookRowDto,
             AdminBookPatchRequest,
             DlqEntryDto,
+            DlqPageDto,
             DlqReplayResponseDto,
             DropOffPointDto
         )

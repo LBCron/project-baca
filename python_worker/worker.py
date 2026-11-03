@@ -773,6 +773,12 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
             LOG.info("book %s is archived; ingestion skipped", book_id)
             return
+        # The catalog shows the book as processing until it publishes; a
+        # failure for good hands it back to draft (see fail_job).
+        cur.execute(
+            "UPDATE books SET status = 'processing', updated_at = NOW() WHERE id = %s AND status = 'draft'",
+            (book_id,),
+        )
         updates: dict[str, str] = {}
         if (not row[0] or row[0] == "Unknown") and parsed.title:
             updates["title"] = parsed.title
@@ -1144,7 +1150,27 @@ def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason
     job_id = fields.get("job_id", msg_id)
     dead_letter(redis_client, settings, job_id, fields.get("book_id", ""), reason)
     set_job(redis_client, job_id, "failed", 100, error=reason)
+    return_to_draft(settings, fields.get("book_id", ""))
     redis_client.xack(settings.stream, settings.group, msg_id)
+
+
+def return_to_draft(settings: Settings, book_id: str) -> None:
+    """A book whose job failed for good is no longer processing. Best effort:
+    the dead letter already holds the failure, and a replay moves it again."""
+    if not book_id:
+        return
+    try:
+        conn = make_db(settings)
+        try:
+            conn.cursor().execute(
+                "UPDATE books SET status = 'draft', updated_at = NOW() WHERE id = %s AND status = 'processing'",
+                (book_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - must not undo the dead letter
+        LOG.warning("book %s left processing: %s", book_id, exc)
 
 
 def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, reason: str) -> None:

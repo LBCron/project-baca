@@ -751,7 +751,18 @@ pub struct DlqEntryDto {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub book_id: Option<Uuid>,
+    /// Title of the book, while its row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_title: Option<String>,
     pub failed_at: DateTime<Utc>,
+}
+
+/// One page of dead letters, newest first, and how many the stream holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DlqPageDto {
+    pub total: u64,
+    pub entries: Vec<DlqEntryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

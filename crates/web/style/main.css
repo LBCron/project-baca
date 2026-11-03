@@ -2944,6 +2944,13 @@ button.reader-title {
     grid-column: 1 / -1;
 }
 
+.dlq-row > .dlq-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
 .tag[data-status="published"] {
     color: var(--success);
 }
@@ -3319,7 +3326,8 @@ select.input {
     }
 
     .manuscript-row .btn,
-    .dlq-row .btn {
+    .dlq-row .btn,
+    .dlq-row > .dlq-actions {
         grid-column: auto;
     }
 

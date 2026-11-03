@@ -9,20 +9,20 @@ use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use domain::BookStatus;
 use infra::{
-    chapter_dropoff, entities::books, get_book_by_id, get_book_for_admin, get_book_status,
-    get_job_status, list_books_for_admin, list_dlq_entries, publish_ingestion_job,
-    replay_dlq_entry, set_book_status,
+    book_titles, chapter_dropoff, dismiss_dlq_entry, dlq_length, entities::books, get_book_by_id,
+    get_book_for_admin, get_book_status, get_job_status, is_fully_ingested, list_books_for_admin,
+    list_dlq_entries, publish_ingestion_job, replay_dlq_entry, set_book_status,
 };
 use sea_orm::ActiveModelTrait;
 use sea_orm::Set;
 use serde::Deserialize;
 use shared::{
-    AdminBookPatchRequest, AdminBookRowDto, ApiResponse, AppError, DlqEntryDto,
+    AdminBookPatchRequest, AdminBookRowDto, ApiResponse, AppError, DlqPageDto,
     DlqReplayResponseDto, DropOffPointDto, JobStatusDto, UploadBookResponseDto,
 };
 use std::str::FromStr;
@@ -45,6 +45,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/books/{book_id}", patch(patch_book))
         .route("/jobs/{job_id}", get(ingestion_status))
         .route("/dlq", get(list_dlq))
+        .route("/dlq/{entry_id}", delete(dismiss_dlq))
         .route("/dlq/{entry_id}/replay", post(replay_dlq))
         .route("/analytics/drop-off", get(dropoff_analytics))
 }
@@ -96,7 +97,8 @@ pub async fn list_catalog(
 }
 
 /// Moves a manuscript along its lifecycle; the domain refuses illegal steps
-/// (a draft cannot be published by hand, an archived book stays archived).
+/// (a draft cannot be published by hand), and an archived book is published
+/// again only if its ingestion had finished.
 #[utoipa::path(
     patch,
     path = "/api/v1/admin/books/{book_id}",
@@ -128,9 +130,19 @@ pub async fn patch_book(
     let current = BookStatus::from_str(&current_raw).map_err(|e| HttpError(e.into()))?;
     if !current.can_transition_to(next) {
         return Err(HttpError(AppError::Conflict(format!(
-            "A {current_raw} book cannot move to {}",
+            "A book that is {current_raw} cannot become {}",
             req.status
         ))));
+    }
+    if current == BookStatus::Archived
+        && next == BookStatus::Published
+        && !is_fully_ingested(&state.db, book_id)
+            .await
+            .map_err(HttpError)?
+    {
+        return Err(HttpError(AppError::Conflict(
+            "This book was archived before its ingestion finished; upload it again".to_string(),
+        )));
     }
     if current != next {
         set_book_status(&state.db, book_id, &req.status)
@@ -150,13 +162,13 @@ pub struct DlqQuery {
     limit: Option<usize>,
 }
 
-/// Dead-letter entries, newest first.
+/// Dead-letter entries, newest first, with the book title and the stream total.
 #[utoipa::path(
     get,
     path = "/api/v1/admin/dlq",
     params(("limit" = Option<usize>, Query, description = "Entries to return, 1-200 (default 50)")),
     responses(
-        (status = 200, description = "Dead-letter entries", body = Vec<DlqEntryDto>),
+        (status = 200, description = "Dead-letter page", body = DlqPageDto),
         (status = 401, description = "Authentication required"),
         (status = 403, description = "Admin role required")
     ),
@@ -170,10 +182,60 @@ pub async fn list_dlq(
 ) -> Result<impl IntoResponse, HttpError> {
     require_admin(&state, &auth_user).await.map_err(HttpError)?;
     let mut redis = state.get_redis_conn().await.map_err(HttpError)?;
-    let entries = list_dlq_entries(&mut redis, query.limit.unwrap_or(50))
+    let mut entries = list_dlq_entries(&mut redis, query.limit.unwrap_or(50))
         .await
         .map_err(HttpError)?;
-    Ok((StatusCode::OK, Json(ApiResponse::success(entries))))
+    let total = dlq_length(&mut redis).await.map_err(HttpError)?;
+    let titles = book_titles(
+        &state.db,
+        entries.iter().filter_map(|e| e.book_id).collect(),
+    )
+    .await
+    .map_err(HttpError)?;
+    for entry in &mut entries {
+        entry.book_title = entry.book_id.and_then(|id| titles.get(&id).cloned());
+    }
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse::success(DlqPageDto { total, entries })),
+    ))
+}
+
+/// Removes one dead letter for good, for a job that should not run again.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/dlq/{entry_id}",
+    params(("entry_id" = String, Path, description = "Dead-letter stream entry id")),
+    responses(
+        (status = 200, description = "Entry removed: `{\"dismissed\": true}`"),
+        (status = 401, description = "Authentication required"),
+        (status = 403, description = "Admin role required"),
+        (status = 404, description = "Entry not found (already removed or replayed)")
+    ),
+    security(("BearerAuth" = [])),
+    tag = "Administration"
+)]
+pub async fn dismiss_dlq(
+    State(state): State<Arc<AppState>>,
+    auth_user: AuthUser,
+    Path(entry_id): Path<String>,
+) -> Result<impl IntoResponse, HttpError> {
+    require_admin(&state, &auth_user).await.map_err(HttpError)?;
+    let mut redis = state.get_redis_conn().await.map_err(HttpError)?;
+    if !dismiss_dlq_entry(&mut redis, &entry_id)
+        .await
+        .map_err(HttpError)?
+    {
+        return Err(HttpError(AppError::NotFound(
+            "Dead-letter entry not found".to_string(),
+        )));
+    }
+    Ok((
+        StatusCode::OK,
+        Json(ApiResponse::success(
+            serde_json::json!({ "dismissed": true }),
+        )),
+    ))
 }
 
 /// Re-queues one dead-letter entry under its original job id. A second call

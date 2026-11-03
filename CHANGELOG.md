@@ -4,7 +4,11 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Added
+- Curator desk: a dead letter names its book and can be dismissed for good (`DELETE /admin/dlq/{id}`), and the queue counter shows every dead letter in the stream, not the hundred on screen. An archived book can be published again ("Terbitkan lagi") when its ingestion had finished; one archived midway answers 409 and asks for a new upload. A book shows as Processing while its job runs and returns to Draft if the job fails for good. After a queued upload the form clears and the manuscript list reloads.
+
 ### Changed
+- `GET /admin/dlq` returns `{ total, entries }`; each entry adds `book_title`. A refused status change reads "A book that is archived cannot become draft".
 - `GET /quotes` returns one page, newest first: `limit` (default 50, at most 100) and `cursor` (the id of the last quote of the previous page). The profile loads further pages with "Muat lebih banyak".
 - `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
 

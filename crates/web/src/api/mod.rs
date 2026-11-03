@@ -559,8 +559,23 @@ pub async fn admin_set_status(
     .await
 }
 
-pub async fn admin_dlq() -> Result<Vec<shared::DlqEntryDto>, String> {
+pub async fn admin_dlq() -> Result<shared::DlqPageDto, String> {
     get("/admin/dlq?limit=100").await
+}
+
+pub async fn admin_dismiss(entry_id: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/admin/dlq/{entry_id}", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::delete(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
 }
 
 pub async fn admin_replay(entry_id: &str) -> Result<shared::DlqReplayResponseDto, String> {

@@ -376,6 +376,7 @@ def run_once_with(attempts: int = 1, **process):
     with mock.patch.object(worker, "make_redis", return_value=client), \
          mock.patch.object(worker, "keep_claimed"), \
          mock.patch.object(worker, "process_message", **process) as run_job, \
+         mock.patch.object(worker, "return_to_draft"), \
          mock.patch.object(worker, "dead_letter") as dead:
         worker.run(once=True, settings=worker.Settings())
     return client, dead, run_job
@@ -420,6 +421,17 @@ class FailureHandlingTest(unittest.TestCase):
         process.assert_not_called()
         client.xack.assert_called_once_with(worker.Settings().stream, worker.Settings().group, "5-0")
 
+    def test_a_failed_book_goes_back_to_draft(self):
+        conn = mock.Mock()
+        with mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "dead_letter"):
+            worker.fail_job(mock.MagicMock(), worker.Settings(), "1-0", {"job_id": "j", "book_id": "b"}, "why")
+        sql, params = conn.cursor.return_value.execute.call_args.args
+        self.assertIn("status = 'draft'", sql)
+        self.assertIn("status = 'processing'", sql)
+        self.assertEqual(params, ("b",))
+        conn.commit.assert_called_once()
+
     def test_reclaim_carries_its_cursor(self):
         client = mock.MagicMock()
         client.xautoclaim.return_value = ["7-0", [("3-0", {"job_id": "j"})], []]
@@ -452,6 +464,10 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
         generate.assert_not_called()
         status = redis_client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual(status["error"], worker.ARCHIVED_ERROR)
+        self.assertTrue(
+            any("SET status = 'processing'" in sql for sql in cursor.statements),
+            "a draft shows as processing once its job starts",
+        )
 
 
 class ArchiveLimitsTest(unittest.TestCase):

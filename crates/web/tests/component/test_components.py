@@ -81,11 +81,19 @@ CURATOR_BOOKS = [
     {"id": "22222222-2222-4222-8222-222222222222", "title": "Naskah Draf", "author": "B. Penulis", "language": "en",
      "status": "draft", "chapter_count": 0, "chunk_count": 0,
      "created_at": "2026-10-02T10:00:00Z", "updated_at": "2026-10-02T10:00:00Z"},
+    {"id": "44444444-4444-4444-8444-444444444444", "title": "Naskah Arsip", "author": "C. Penulis", "language": "id",
+     "status": "archived", "chapter_count": 2, "chunk_count": 5,
+     "created_at": "2026-09-30T10:00:00Z", "updated_at": "2026-09-30T10:00:00Z"},
 ]
 CURATOR_DLQ = [
     {"id": "1700000000000-0", "job_id": "deadbeef-0000-4000-8000-000000000000",
+     "book_id": "22222222-2222-4222-8222-222222222222", "book_title": "Naskah Draf",
      "error": "Gemini API unavailable (HTTP 503)", "failed_at": "2026-10-03T08:00:00Z"},
+    {"id": "1700000000001-0", "job_id": "cafef00d-0000-4000-8000-000000000000",
+     "error": "The uploaded EPUB is gone from storage; upload it again", "failed_at": "2026-10-03T09:00:00Z"},
 ]
+# The stream holds more dead letters than one page shows.
+CURATOR_DLQ_TOTAL = 7
 CURATOR_FUNNEL = [
     {"chapter_number": 1, "chapter_title": "Surat Pertama", "readers_reached": 10, "drop_off_pct": 0.0},
     {"chapter_number": 2, "chapter_title": "Balasan", "readers_reached": 6, "drop_off_pct": 40.0},
@@ -93,17 +101,21 @@ CURATOR_FUNNEL = [
 
 
 def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
-    """The desk renders every status with counts, archives through the API,
-    replays a dead letter, and draws the funnel, all against mocked admin
-    endpoints."""
+    """The desk renders every status with counts, archives and restores
+    through the API, lists dead letters by book with the stream total,
+    replays and dismisses them, and draws the funnel, all against mocked
+    admin endpoints."""
     page = clean_page
     archived = []
     replayed = []
+    dismissed = []
 
     def books(route):
         if route.request.method == "PATCH":
-            archived.append(json.loads(route.request.post_data)["status"])
-            row = dict(CURATOR_BOOKS[0], status="archived")
+            status = json.loads(route.request.post_data)["status"]
+            archived.append(status)
+            book_id = route.request.url.rsplit("/", 1)[1]
+            row = dict(next(b for b in CURATOR_BOOKS if b["id"] == book_id), status=status)
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"success": True, "data": row}))
             return
         route.fulfill(status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS}))
@@ -114,7 +126,13 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps({"success": True, "data": {"job_id": CURATOR_DLQ[0]["job_id"], "replayed": True}}))
             return
-        route.fulfill(status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_DLQ}))
+        if route.request.method == "DELETE":
+            dismissed.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"success": True, "data": {"dismissed": True}}))
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"success": True, "data": {"total": CURATOR_DLQ_TOTAL, "entries": CURATOR_DLQ}}))
 
     page.route("**/api/**/admin/books**", books)
     page.route("**/api/**/admin/dlq**", dlq)
@@ -123,7 +141,7 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
     _story(page, "curator-desk")
 
     rows = page.query_selector_all(".manuscript-row")
-    assert len(rows) == 2, "both statuses listed"
+    assert len(rows) == 3, "every status listed"
     body = page.inner_text(".manuscript-list")
     assert "Naskah Terbit" in body and "3 chapters" in body and "12 chunks" in body
     page.click('.manuscript-row:has-text("Naskah Terbit") button:has-text("Archive")')
@@ -131,14 +149,26 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
     page.wait_for_timeout(600)
     assert archived == ["archived"], "archive goes through PATCH after the second tap"
     assert "Archived" in page.inner_text('.manuscript-row:has-text("Naskah Terbit")')
+    page.click('.manuscript-row:has-text("Naskah Arsip") button:has-text("Publish again")')
+    page.wait_for_timeout(600)
+    assert archived == ["archived", "published"], "restore publishes in one tap"
+    assert "Published" in page.inner_text('.manuscript-row:has-text("Naskah Arsip")')
 
     page.click('.desk-tabs button:has-text("Queue")')
     page.wait_for_timeout(800)
-    assert "Gemini API unavailable" in page.inner_text(".manuscript-list")
-    page.click('.dlq-row button:has-text("Replay")')
+    queue = page.inner_text(".manuscript-list")
+    assert "Gemini API unavailable" in queue
+    assert "Naskah Draf" in queue and "The book is gone" in queue, "each dead letter names its book"
+    counter = '#dlq-title + .form-hint'
+    assert page.inner_text(counter) == "7", "the counter is the stream total, not the page"
+    page.click('.dlq-row:has-text("Naskah Draf") button:has-text("Replay")')
     page.wait_for_timeout(600)
     assert len(replayed) == 1 and replayed[0].endswith("/replay")
-    assert page.query_selector(".dlq-row") is None, "replayed entry leaves the list"
+    page.click('.dlq-row:has-text("The book is gone") button:has-text("Dismiss")')
+    page.wait_for_timeout(600)
+    assert len(dismissed) == 1 and dismissed[0].endswith("/admin/dlq/1700000000001-0")
+    assert page.query_selector(".dlq-row") is None, "replayed and dismissed entries leave the list"
+    assert page.inner_text(counter) == "5"
 
     page.click('.desk-tabs button:has-text("Retention")')
     page.wait_for_timeout(800)
@@ -156,8 +186,13 @@ def test_curator_desk_shows_why_a_job_failed(clean_page: Page, tmp_path):
     page = clean_page
     job_id = "33333333-3333-4333-8333-333333333333"
     reason = "EPUB holds more than 5000 files"
-    page.route("**/api/**/admin/books**", lambda r: r.fulfill(
-        status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS})))
+    listings = []
+
+    def books(route):
+        listings.append(route.request.url)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS}))
+
+    page.route("**/api/**/admin/books**", books)
     page.route("**/api/**/admin/books/upload", lambda r: r.fulfill(
         status=202, content_type="application/json", body=json.dumps({"success": True, "data": {
             "job_id": job_id, "book_id": CURATOR_BOOKS[1]["id"], "status": "queued"}})))
@@ -173,4 +208,7 @@ def test_curator_desk_shows_why_a_job_failed(clean_page: Page, tmp_path):
     card = page.locator(".job-card")
     expect(card.locator(".form-error")).to_be_visible()
     expect(card.locator(".job-error")).to_have_text(reason)
+    assert page.input_value(".upload-card input[type=file]") == "", "the form is cleared after a queued upload"
+    assert len(listings) >= 2, "the manuscript list reloads after a queued upload"
     assert_no_page_errors(page)
+

@@ -887,7 +887,11 @@ async fn test_admin_catalog_listing_and_lifecycle_guard() {
     let (resp, _) = harness
         .send_json_request(admin_patch(draft_id, "draft", &ctx.admin_token))
         .await;
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "archived is final");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "an archived book never goes back to draft"
+    );
     let (resp, _) = harness
         .send_json_request(admin_patch(Uuid::new_v4(), "archived", &ctx.admin_token))
         .await;
@@ -943,7 +947,8 @@ async fn test_admin_dlq_replay_is_idempotent() {
         ))
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let listed = json["data"]
+    assert!(json["data"]["total"].as_u64().unwrap() >= 1, "{json}");
+    let listed = json["data"]["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -999,9 +1004,131 @@ async fn test_admin_dlq_replay_is_idempotent() {
     harness.cleanup().await;
 }
 
-/// `processing` is an ingestion job phase, never a book status the database
-/// accepts, so a curator asking for it gets the lifecycle's 409 instead of
-/// a constraint violation, and the row is untouched.
+/// A restore publishes an archived book again only when its ingestion had
+/// finished; one archived midway answers 409 and stays archived.
+#[tokio::test]
+async fn test_archived_book_restores_only_after_full_ingestion() {
+    use sea_orm::{ColumnTrait, QueryFilter};
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let finished = seed_status_book(&harness, "archived").await;
+    let midway = seed_status_book(&harness, "archived").await;
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::TotalWords,
+            sea_orm::sea_query::Expr::value(0),
+        )
+        .filter(books::Column::Id.eq(midway))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(finished, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "published");
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(midway, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("before its ingestion finished"),
+        "{json}"
+    );
+    let (resp, json) = harness
+        .send_json_request(admin_patch(midway, "draft", &ctx.admin_token))
+        .await;
+    assert_eq!(
+        json["error"]["message"], "A book that is archived cannot become draft",
+        "{resp:?}"
+    );
+    harness.cleanup().await;
+}
+
+/// A dismissed dead letter leaves the stream for good: it is gone from the
+/// listing and the total, and a second dismissal answers 404.
+#[tokio::test]
+async fn test_dismissed_dead_letter_does_not_come_back() {
+    use redis::AsyncCommands;
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
+    let ctx = seed_users(&harness).await;
+    let book_id = seed_status_book(&harness, "draft").await;
+    let entry_id: String = redis
+        .xadd(
+            infra::INGESTION_DLQ_STREAM,
+            "*",
+            &[
+                ("job_id", Uuid::new_v4().to_string().as_str()),
+                ("book_id", book_id.to_string().as_str()),
+                ("error", "EPUB missing META-INF/container.xml"),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let page = || admin_get("/api/v1/admin/dlq?limit=200", Some(&ctx.admin_token));
+    // Other tests write the shared stream too: the total must sit between
+    // the lengths read just before and just after the listing.
+    let len_before: u64 = redis.xlen(infra::INGESTION_DLQ_STREAM).await.unwrap();
+    let (_, before) = harness.send_json_request(page()).await;
+    let len_after: u64 = redis.xlen(infra::INGESTION_DLQ_STREAM).await.unwrap();
+    let total = before["data"]["total"].as_u64().unwrap();
+    assert!((len_before.min(len_after)..=len_before.max(len_after)).contains(&total));
+    let listed = before["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entry_id)
+        .expect("entry listed")
+        .clone();
+    assert_eq!(listed["book_title"], "Lifecycle draft");
+
+    let dismiss = |token: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/admin/dlq/{entry_id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = harness.send_request(dismiss(&ctx.reader_token)).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (resp, json) = harness.send_json_request(dismiss(&ctx.admin_token)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json["data"]["dismissed"], true);
+    let (_, after) = harness.send_json_request(page()).await;
+    assert!(after["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["id"] != entry_id));
+    let resp = harness.send_request(dismiss(&ctx.admin_token)).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = harness
+        .send_request(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/admin/dlq/not-an-id")
+                .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
+}
+
+/// Only the worker moves a book into `processing`; a curator asking for it
+/// gets the lifecycle's 409 and the row is untouched.
 #[tokio::test]
 async fn test_admin_patch_refuses_processing_status() {
     let harness = TestHarness::new().await;

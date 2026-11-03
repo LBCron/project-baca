@@ -641,6 +641,37 @@ pub async fn get_book_for_admin(
         .map_err(|e| AppError::Database(format!("Failed to load book for admin: {e}")))
 }
 
+/// Titles of the books that still exist among `ids`.
+pub async fn book_titles(
+    db: &DatabaseConnection,
+    ids: Vec<Uuid>,
+) -> Result<std::collections::HashMap<Uuid, String>, AppError> {
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let rows: Vec<(Uuid, String)> = books::Entity::find()
+        .select_only()
+        .column(books::Column::Id)
+        .column(books::Column::Title)
+        .filter(books::Column::Id.is_in(ids))
+        .into_tuple()
+        .all(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to load book titles: {e}")))?;
+    Ok(rows.into_iter().collect())
+}
+
+/// True once ingestion finished at least once: the worker writes the word
+/// count only in the step that publishes.
+pub async fn is_fully_ingested(db: &DatabaseConnection, book_id: Uuid) -> Result<bool, AppError> {
+    books::Entity::find_by_id(book_id)
+        .one(db)
+        .await
+        .map_err(|e| AppError::Database(format!("Failed to load book: {e}")))?
+        .map(|b| b.total_words > 0)
+        .ok_or_else(book_not_found)
+}
+
 /// Current lifecycle status of any book, published or not.
 pub async fn get_book_status(db: &DatabaseConnection, book_id: Uuid) -> Result<String, AppError> {
     books::Entity::find_by_id(book_id)

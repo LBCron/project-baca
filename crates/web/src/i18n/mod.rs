@@ -361,6 +361,16 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "No failed jobs. The queue is clear.",
     ),
     ("replay", "Ulangi", "Replay"),
+    ("dismiss", "Tutup", "Dismiss"),
+    ("dismissed", "Entri ditutup dan tidak akan diulang.", "Entry dismissed; it will not run again."),
+    ("dlq_book_gone", "Bukunya sudah tidak ada", "The book is gone"),
+    ("restore", "Terbitkan lagi", "Publish again"),
+    ("restored", "Naskah terbit lagi.", "Manuscript published again."),
+    (
+        "restore_unfinished",
+        "Naskah ini diarsipkan sebelum selesai diproses; unggah ulang EPUB-nya.",
+        "This manuscript was archived before ingestion finished; upload the EPUB again.",
+    ),
     ("replayed", "Pekerjaan diantrekan ulang.", "Job queued again."),
     (
         "replay_expired",
