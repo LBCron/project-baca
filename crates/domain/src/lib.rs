@@ -109,10 +109,10 @@ impl BookStatus {
         }
         matches!(
             (self, next),
-            (Processing, Published)
-                | (Draft, Archived)
+            (Draft, Archived)
                 | (Processing, Archived)
                 | (Published, Archived)
+                | (Archived, Published)
         )
     }
 }
@@ -322,15 +322,21 @@ mod tests {
         use BookStatus::{Archived, Draft, Processing, Published};
         assert!(
             !Draft.can_transition_to(Processing),
-            "processing is a job phase, never set on a book"
+            "only the worker moves a book into processing"
         );
-        assert!(Processing.can_transition_to(Published));
+        assert!(
+            !Processing.can_transition_to(Published),
+            "only the worker publishes a book it is ingesting"
+        );
         assert!(Draft.can_transition_to(Archived));
         assert!(Published.can_transition_to(Archived));
         assert!(Published.can_transition_to(Published));
         assert!(!Draft.can_transition_to(Published));
         assert!(!Published.can_transition_to(Draft));
-        assert!(!Archived.can_transition_to(Published));
+        assert!(
+            Archived.can_transition_to(Published),
+            "a curator may restore an archived book"
+        );
     }
 
     #[test]

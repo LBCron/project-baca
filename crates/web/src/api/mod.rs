@@ -526,6 +526,41 @@ pub async fn my_streak() -> Result<shared::ReadingStreakDto, String> {
     get("/me/streak").await
 }
 
+/// Uploads an EPUB. The form is rebuilt for each send, so an expired
+/// session refreshes and the upload goes out again instead of failing.
+pub async fn admin_upload(
+    file: &web_sys::File,
+    title: &str,
+    author: &str,
+) -> Result<shared::UploadBookResponseDto, String> {
+    let url = format!("{}/admin/books/upload", api_base());
+    let resp = authed_send(&|| {
+        let (url, file, title, author) = (
+            url.clone(),
+            file.clone(),
+            title.to_string(),
+            author.to_string(),
+        );
+        Box::pin(async move {
+            let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+            form.append_with_blob_and_filename("file", &file, &file.name())
+                .map_err(|e| format!("{e:?}"))?;
+            form.append_with_str("title", &title)
+                .map_err(|e| format!("{e:?}"))?;
+            form.append_with_str("author", &author)
+                .map_err(|e| format!("{e:?}"))?;
+            authed(Request::post(&url))
+                .body(wasm_bindgen::JsValue::from(form))
+                .map_err(|e| e.to_string())?
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
+}
+
 pub async fn admin_job(job_id: &str) -> Result<shared::JobStatusDto, String> {
     get(&format!("/admin/jobs/{job_id}")).await
 }
@@ -559,8 +594,23 @@ pub async fn admin_set_status(
     .await
 }
 
-pub async fn admin_dlq() -> Result<Vec<shared::DlqEntryDto>, String> {
+pub async fn admin_dlq() -> Result<shared::DlqPageDto, String> {
     get("/admin/dlq?limit=100").await
+}
+
+pub async fn admin_dismiss(entry_id: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/admin/dlq/{entry_id}", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::delete(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
 }
 
 pub async fn admin_replay(entry_id: &str) -> Result<shared::DlqReplayResponseDto, String> {

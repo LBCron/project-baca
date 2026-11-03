@@ -81,6 +81,10 @@ pub enum AppError {
     #[error("Quota exceeded: {0}")]
     QuotaExceeded(String),
 
+    /// The body is larger than the route accepts (413).
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Rate limit exceeded. Try again in {retry_after} seconds")]
     RateLimited { retry_after: u64 },
 
@@ -699,10 +703,18 @@ pub struct JobStatusDto {
     pub status: String,
     /// Completion percentage 0-100.
     pub progress: i32,
-    /// Why a failed job failed, in the worker's words.
+    /// Why the job failed, or why its last attempt did while it waits for
+    /// a retry, in the worker's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Runs the worker has started for this job, crashes included.
+    #[serde(default)]
+    pub attempts: i32,
 }
+
+/// Largest EPUB a curator may upload; the server enforces it while
+/// streaming and the web checks it before sending.
+pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 
 /// Accepted EPUB upload response (HTTP 202).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -747,7 +759,18 @@ pub struct DlqEntryDto {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub book_id: Option<Uuid>,
+    /// Title of the book, while its row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_title: Option<String>,
     pub failed_at: DateTime<Utc>,
+}
+
+/// One page of dead letters, newest first, and how many the stream holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DlqPageDto {
+    pub total: u64,
+    pub entries: Vec<DlqEntryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

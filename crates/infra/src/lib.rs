@@ -22,16 +22,16 @@ pub use pool::{
     init_db_pool, init_redis_client, init_redis_conn, RedisConn, REDIS_RETRY_AFTER_SECS,
 };
 pub use queue::{
-    get_job_status, list_dlq_entries, publish_ingestion_job, replay_dlq_entry,
-    INGESTION_DLQ_STREAM, INGESTION_GROUP, INGESTION_STREAM,
+    dismiss_dlq_entry, dlq_length, get_job_status, list_dlq_entries, publish_ingestion_job,
+    replay_dlq_entry, INGESTION_DLQ_STREAM, INGESTION_GROUP, INGESTION_STREAM,
 };
 pub use repositories::{
     badge_repository::{list_badges, list_user_badges, seed_default_badges_if_empty},
     book_repository::{
-        chapter_dropoff, ensure_book_published, get_book_by_id, get_book_for_admin,
+        book_titles, chapter_dropoff, ensure_book_published, get_book_by_id, get_book_for_admin,
         get_book_status, get_chapter_book_id, get_chapter_by_number, get_chapter_number,
-        get_offline_bundle, list_books, list_books_for_admin, search_book_text, search_books,
-        set_book_status,
+        get_offline_bundle, is_fully_ingested, list_books, list_books_for_admin, search_book_text,
+        search_books, set_book_status,
     },
     progress_repository::{get_active_progress, get_streak, record_heartbeat, update_progress},
     quote_repository::{

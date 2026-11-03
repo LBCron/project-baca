@@ -268,13 +268,39 @@ async fn test_upload_rejects_oversize_payload() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;
 
-    // 51 MB exceeds the 50 MB cap and must fail closed.
+    // 51 MB exceeds the 50 MB cap and must fail closed, as 413 in the envelope.
     let big = vec![0u8; 51 * 1024 * 1024];
     let (ctype, body) = multipart_body("huge.epub", "application/epub+zip", &big, &[]);
-    let resp = harness
-        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{json}");
+    assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
+    assert!(json["error"]["message"].as_str().unwrap().contains("50 MB"));
+    harness.cleanup().await;
+}
+
+/// A body cut off by the route's limit outside the file part is a 413 too,
+/// not the "Error parsing multipart/form-data request" axum reports.
+#[tokio::test]
+async fn test_body_past_the_route_limit_is_413_not_a_parse_error() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+
+    let mut file = vec![0u8; shared::MAX_EPUB_BYTES - 1024];
+    file[..2].copy_from_slice(b"PK");
+    let (ctype, mut body) = multipart_body("edge.epub", "application/epub+zip", &file, &[]);
+    let tail = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"author\"\r\n\r\n{}\r\n--{BOUNDARY}--\r\n",
+        "a".repeat(200 * 1024)
+    );
+    body.truncate(body.len() - format!("--{BOUNDARY}--\r\n").len());
+    body.extend_from_slice(tail.as_bytes());
+    let (resp, json) = harness
+        .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{json}");
+    assert_eq!(json["error"]["code"], "PAYLOAD_TOO_LARGE");
     harness.cleanup().await;
 }
 
@@ -295,12 +321,20 @@ async fn test_upload_accepts_epub_filename_with_generic_mime() {
         .send_json_request(upload_request(Some(&ctx.admin_token), ctype, body))
         .await;
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    harness.track_book(
+    let book_id = harness.track_book(
         json["data"]["book_id"]
             .as_str()
             .and_then(|s| Uuid::parse_str(s).ok())
             .expect("book_id uuid"),
     );
+    // Blank fields stay blank for the worker to fill from the EPUB, instead
+    // of a title made from the file name and a guessed language.
+    let stored = books::Entity::find_by_id(book_id)
+        .one(&harness.state.db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((stored.title.as_str(), stored.language.as_str()), ("", ""));
     harness.cleanup().await;
 }
 
@@ -730,9 +764,7 @@ async fn test_upload_accepts_multi_megabyte_epub() {
             .delete_epub(&format!("raw-epubs/{book_id}.epub"))
             .await;
     }
-    let _ = books::Entity::delete_by_id(book_id)
-        .exec(&harness.state.db)
-        .await;
+    harness.track_book(book_id);
     harness.cleanup().await;
 }
 
@@ -889,7 +921,11 @@ async fn test_admin_catalog_listing_and_lifecycle_guard() {
     let (resp, _) = harness
         .send_json_request(admin_patch(draft_id, "draft", &ctx.admin_token))
         .await;
-    assert_eq!(resp.status(), StatusCode::CONFLICT, "archived is final");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "an archived book never goes back to draft"
+    );
     let (resp, _) = harness
         .send_json_request(admin_patch(Uuid::new_v4(), "archived", &ctx.admin_token))
         .await;
@@ -945,7 +981,8 @@ async fn test_admin_dlq_replay_is_idempotent() {
         ))
         .await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let listed = json["data"]
+    assert!(json["data"]["total"].as_u64().unwrap() >= 1, "{json}");
+    let listed = json["data"]["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -1001,9 +1038,131 @@ async fn test_admin_dlq_replay_is_idempotent() {
     harness.cleanup().await;
 }
 
-/// `processing` is an ingestion job phase, never a book status the database
-/// accepts, so a curator asking for it gets the lifecycle's 409 instead of
-/// a constraint violation, and the row is untouched.
+/// A restore publishes an archived book again only when its ingestion had
+/// finished; one archived midway answers 409 and stays archived.
+#[tokio::test]
+async fn test_archived_book_restores_only_after_full_ingestion() {
+    use sea_orm::{ColumnTrait, QueryFilter};
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let finished = seed_status_book(&harness, "archived").await;
+    let midway = seed_status_book(&harness, "archived").await;
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::TotalWords,
+            sea_orm::sea_query::Expr::value(0),
+        )
+        .filter(books::Column::Id.eq(midway))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(finished, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "published");
+
+    let (resp, json) = harness
+        .send_json_request(admin_patch(midway, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("before its ingestion finished"),
+        "{json}"
+    );
+    let (resp, json) = harness
+        .send_json_request(admin_patch(midway, "draft", &ctx.admin_token))
+        .await;
+    assert_eq!(
+        json["error"]["message"], "A book that is archived cannot become draft",
+        "{resp:?}"
+    );
+    harness.cleanup().await;
+}
+
+/// A dismissed dead letter leaves the stream for good: it is gone from the
+/// listing and the total, and a second dismissal answers 404.
+#[tokio::test]
+async fn test_dismissed_dead_letter_does_not_come_back() {
+    use redis::AsyncCommands;
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
+    let ctx = seed_users(&harness).await;
+    let book_id = seed_status_book(&harness, "draft").await;
+    let entry_id: String = redis
+        .xadd(
+            infra::INGESTION_DLQ_STREAM,
+            "*",
+            &[
+                ("job_id", Uuid::new_v4().to_string().as_str()),
+                ("book_id", book_id.to_string().as_str()),
+                ("error", "EPUB missing META-INF/container.xml"),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let page = || admin_get("/api/v1/admin/dlq?limit=200", Some(&ctx.admin_token));
+    // Other tests write the shared stream too: the total must sit between
+    // the lengths read just before and just after the listing.
+    let len_before: u64 = redis.xlen(infra::INGESTION_DLQ_STREAM).await.unwrap();
+    let (_, before) = harness.send_json_request(page()).await;
+    let len_after: u64 = redis.xlen(infra::INGESTION_DLQ_STREAM).await.unwrap();
+    let total = before["data"]["total"].as_u64().unwrap();
+    assert!((len_before.min(len_after)..=len_before.max(len_after)).contains(&total));
+    let listed = before["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == entry_id)
+        .expect("entry listed")
+        .clone();
+    assert_eq!(listed["book_title"], "Lifecycle draft");
+
+    let dismiss = |token: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/admin/dlq/{entry_id}"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = harness.send_request(dismiss(&ctx.reader_token)).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (resp, json) = harness.send_json_request(dismiss(&ctx.admin_token)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json["data"]["dismissed"], true);
+    let (_, after) = harness.send_json_request(page()).await;
+    assert!(after["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["id"] != entry_id));
+    let resp = harness.send_request(dismiss(&ctx.admin_token)).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let resp = harness
+        .send_request(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/admin/dlq/not-an-id")
+                .header(header::AUTHORIZATION, format!("Bearer {}", ctx.admin_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    harness.cleanup().await;
+}
+
+/// Only the worker moves a book into `processing`; a curator asking for it
+/// gets the lifecycle's 409 and the row is untouched.
 #[tokio::test]
 async fn test_admin_patch_refuses_processing_status() {
     let harness = TestHarness::new().await;
@@ -1020,6 +1179,14 @@ async fn test_admin_patch_refuses_processing_status() {
         .send_json_request(admin_patch(draft_id, "banana", &ctx.admin_token))
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{json}");
+
+    // A book the worker is ingesting has no committed chapters or word
+    // count yet; publishing it by hand would show readers a broken book.
+    let ingesting = seed_status_book(&harness, "processing").await;
+    let (resp, json) = harness
+        .send_json_request(admin_patch(ingesting, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
 
     let still_draft = books::Entity::find_by_id(draft_id)
         .one(&harness.state.db)

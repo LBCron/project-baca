@@ -151,6 +151,7 @@ impl TestHarness {
         }
         let db = &self.state.db;
         if !seeded.books.is_empty() {
+            self.drop_queued_jobs(&seeded.books).await;
             let _ = books::Entity::delete_many()
                 .filter(books::Column::Id.is_in(seeded.books))
                 .exec(db)
@@ -173,6 +174,38 @@ impl TestHarness {
                 .filter(users::Column::Email.is_in(seeded.emails))
                 .exec(db)
                 .await;
+        }
+    }
+
+    /// Removes the ingestion entries and job hashes that uploads in this test
+    /// queued. Their book rows go with cleanup, so a worker would otherwise
+    /// fail each of them later on the shared dev stream.
+    async fn drop_queued_jobs(&self, books: &[Uuid]) {
+        let Ok(mut redis) = self.state.get_redis_conn().await else {
+            return;
+        };
+        let Ok(reply) = redis
+            .xrevrange_count::<_, _, _, _, redis::streams::StreamRangeReply>(
+                infra::INGESTION_STREAM,
+                "+",
+                "-",
+                1000,
+            )
+            .await
+        else {
+            return;
+        };
+        for entry in reply.ids {
+            let book = entry
+                .get::<String>("book_id")
+                .and_then(|b| Uuid::parse_str(&b).ok());
+            if !book.is_some_and(|b| books.contains(&b)) {
+                continue;
+            }
+            let _: Result<i64, _> = redis.xdel(infra::INGESTION_STREAM, &[&entry.id]).await;
+            if let Some(job) = entry.get::<String>("job_id") {
+                let _: Result<i64, _> = redis.del(format!("job:{job}")).await;
+            }
         }
     }
 

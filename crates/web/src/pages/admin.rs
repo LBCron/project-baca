@@ -45,39 +45,22 @@ fn status_key(status: &str) -> &'static str {
         .unwrap_or("status_draft")
 }
 
-async fn upload_epub(file: web_sys::File, title: String, author: String) -> Result<String, String> {
-    let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
-    form.append_with_blob_and_filename("file", &file, &file.name())
-        .map_err(|e| format!("{e:?}"))?;
-    form.append_with_str("title", &title)
-        .map_err(|e| format!("{e:?}"))?;
-    form.append_with_str("author", &author)
-        .map_err(|e| format!("{e:?}"))?;
-    let resp = gloo_net::http::Request::post(&format!("{}/admin/books/upload", api::api_base()))
-        .header(
-            "Authorization",
-            &format!("Bearer {}", api::token().unwrap_or_default()),
-        )
-        .body(wasm_bindgen::JsValue::from(form))
-        .map_err(|e| e.to_string())?
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    let envelope = resp
-        .json::<shared::ApiResponse<shared::UploadBookResponseDto>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    envelope
-        .data
-        .map(|d| d.job_id)
-        .ok_or_else(|| envelope.error.map(|e| e.message).unwrap_or_default())
+/// API errors arrive as "CODE: message"; the curator reads the message,
+/// or the size limit in their own language.
+fn upload_error(error: &str, lang: &crate::i18n::Lang) -> String {
+    match error.split_once(": ") {
+        Some(("PAYLOAD_TOO_LARGE", _)) => lang.text("admin_too_large"),
+        Some((_, message)) if !message.is_empty() => message.to_string(),
+        _ => lang.text("upload_rejected"),
+    }
 }
 
-fn upload_error(message: &str, lang: &crate::i18n::Lang) -> String {
-    if message.is_empty() {
-        lang.text("upload_rejected")
+/// A manuscript waiting for its title from the EPUB has none yet.
+fn shown_title(title: &str, lang: &crate::i18n::Lang) -> String {
+    if title.trim().is_empty() {
+        lang.text("untitled_pending")
     } else {
-        message.to_string()
+        title.to_string()
     }
 }
 
@@ -114,13 +97,17 @@ fn JobCard(job: JobStatusDto) -> impl IntoView {
                 }).collect::<Vec<_>>()}
             </ol>
             {failed.then(|| view! { <p class="form-error" role="alert">{move || lang.get().text("job_failed")}</p> })}
-            {failed.then(|| job.error.clone()).flatten().map(|reason| view! { <p class="form-hint job-error">{reason}</p> })}
+            {(!failed && job.error.is_some()).then(|| {
+                let attempts = job.attempts.to_string();
+                view! { <p class="form-hint job-retry">{move || lang.get().text_with("job_retrying", "n", &attempts)}</p> }
+            })}
+            {job.error.clone().map(|reason| view! { <p class="form-hint job-error">{reason}</p> })}
         </article>
     }
 }
 
 #[component]
-fn UploadCard(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
+fn UploadCard(job: RwSignal<Option<JobStatusDto>>, on_queued: Callback<()>) -> impl IntoView {
     let (lang, _) = use_lang();
     let toasts = use_toasts();
     let (title, set_title) = signal(String::new());
@@ -169,11 +156,24 @@ fn UploadCard(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
             toasts.error(lang.get_untracked().text("admin_choose_first"));
             return;
         };
+        if file.size() > shared::MAX_EPUB_BYTES as f64 {
+            toasts.error(lang.get_untracked().text("admin_too_large"));
+            return;
+        }
         set_busy.set(true);
         let (t, a) = (title.get_untracked(), author.get_untracked());
         spawn_local(async move {
-            match upload_epub(file, t, a).await {
-                Ok(job_id) => {
+            match api::admin_upload(&file, &t, &a).await {
+                Ok(queued) => {
+                    let job_id = queued.job_id;
+                    // A cleared form cannot queue the same file twice.
+                    set_title.set(String::new());
+                    set_author.set(String::new());
+                    set_file_name.set(None);
+                    if let Some(input) = file_ref.get_untracked() {
+                        input.set_value("");
+                    }
+                    on_queued.run(());
                     match api::admin_job(&job_id).await {
                         Ok(status) => job.set(Some(status)),
                         Err(e) => toasts.error(upload_error(&e, &lang.get_untracked())),
@@ -220,8 +220,15 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
     let status = row.status.clone();
     let status_for_tag = row.status.clone();
     let archivable = status != "archived";
+    // Without passages it never finished ingesting; the server would refuse.
+    let restorable = !archivable && row.chunk_count > 0;
     let published = status == "published";
     let (chapters, chunks) = (row.chapter_count, row.chunk_count);
+    let byline = if row.language.is_empty() {
+        row.author.clone()
+    } else {
+        format!("{} \u{00B7} {}", row.author, row.language.to_uppercase())
+    };
     let archive = move |_| {
         if !armed.get_untracked() {
             set_armed.set(true);
@@ -240,15 +247,32 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
             set_armed.set(false);
         });
     };
+    let restore = move |_| {
+        set_busy.set(true);
+        spawn_local(async move {
+            match api::admin_set_status(id, "published").await {
+                Ok(updated) => {
+                    toasts.info(lang.get_untracked().text("restored"));
+                    on_updated.run(updated);
+                }
+                Err(e) if e.contains("CONFLICT") => {
+                    toasts.error(lang.get_untracked().text("restore_unfinished"))
+                }
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+            }
+            set_busy.set(false);
+        });
+    };
     view! {
         <li class="manuscript-row">
             <div class="manuscript-main">
                 {if published {
                     view! { <a href=format!("/book/{id}") class="manuscript-title">{row.title.clone()}</a> }.into_any()
                 } else {
-                    view! { <span class="manuscript-title">{row.title.clone()}</span> }.into_any()
+                    let title = row.title.clone();
+                    view! { <span class="manuscript-title">{move || shown_title(&title, &lang.get())}</span> }.into_any()
                 }}
-                <span class="manuscript-meta">{format!("{} \u{00B7} {}", row.author, row.language.to_uppercase())}</span>
+                <span class="manuscript-meta">{byline}</span>
                 <span class="manuscript-meta">
                     {move || format!(
                         "{} \u{00B7} {}",
@@ -261,6 +285,11 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
             {archivable.then(|| view! {
                 <button class="btn btn-ghost" disabled=move || busy.get() on:click=archive>
                     {move || if armed.get() { lang.get().text("confirm_again") } else { lang.get().text("archive") }}
+                </button>
+            })}
+            {restorable.then(|| view! {
+                <button class="btn btn-ghost" disabled=move || busy.get() on:click=restore>
+                    {move || lang.get().text("restore")}
                 </button>
             })}
         </li>
@@ -322,7 +351,7 @@ fn ManuscriptsPanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
     };
 
     view! {
-        <UploadCard job=job/>
+        <UploadCard job=job on_queued=Callback::new(move |_| load(true))/>
         {move || job.get().map(|j| view! { <JobCard job=j/> })}
         <section aria-labelledby="manuscripts-title">
             <div class="section-head">
@@ -357,23 +386,41 @@ fn QueuePanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
     let (lang, _) = use_lang();
     let toasts = use_toasts();
     let (entries, set_entries) = signal(Vec::<DlqEntryDto>::new());
+    let (total, set_total) = signal(0u64);
     let (loaded, set_loaded) = signal(false);
     spawn_local(async move {
-        if let Ok(list) = api::admin_dlq().await {
-            set_entries.set(list);
+        if let Ok(page) = api::admin_dlq().await {
+            set_total.set(page.total);
+            set_entries.set(page.entries);
         }
         set_loaded.set(true);
     });
+    let forget = move |entry_id: &str| {
+        set_entries.update(|all| all.retain(|e| e.id != entry_id));
+        set_total.update(|n| *n = n.saturating_sub(1));
+    };
+    let dismiss = move |entry_id: String| {
+        spawn_local(async move {
+            match api::admin_dismiss(&entry_id).await {
+                Ok(_) => {
+                    toasts.info(lang.get_untracked().text("dismissed"));
+                    forget(&entry_id);
+                }
+                Err(e) if e.contains("NOT_FOUND") => forget(&entry_id),
+                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+            }
+        });
+    };
     let replay = move |entry_id: String| {
         spawn_local(async move {
             match api::admin_replay(&entry_id).await {
                 Ok(_) => {
                     toasts.info(lang.get_untracked().text("replayed"));
-                    set_entries.update(|all| all.retain(|e| e.id != entry_id));
+                    forget(&entry_id);
                 }
+                // The entry stays listed so the curator can dismiss it.
                 Err(e) if e.contains("CONFLICT") => {
-                    toasts.error(lang.get_untracked().text("replay_expired"));
-                    set_entries.update(|all| all.retain(|x| x.id != entry_id));
+                    toasts.error(lang.get_untracked().text("replay_expired"))
                 }
                 Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
             }
@@ -384,7 +431,7 @@ fn QueuePanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
         <section aria-labelledby="dlq-title">
             <div class="section-head">
                 <h2 id="dlq-title" class="section-title">{move || lang.get().text("dlq_title")}</h2>
-                <span class="form-hint">{move || entries.get().len()}</span>
+                <span class="form-hint">{move || total.get()}</span>
             </div>
             {move || (loaded.get() && entries.get().is_empty()).then(|| view! {
                 <div class="empty-state compact">
@@ -395,15 +442,20 @@ fn QueuePanel(job: RwSignal<Option<JobStatusDto>>) -> impl IntoView {
             <ul class="manuscript-list">
                 {move || entries.get().into_iter().map(|entry| {
                     let short_id = entry.job_id.chars().take(8).collect::<String>();
-                    let id = entry.id.clone();
+                    let (replay_id, dismiss_id) = (entry.id.clone(), entry.id.clone());
+                    let title = entry.book_title.clone();
                     view! {
                         <li class="dlq-row">
                             <div>
+                                <span class="manuscript-title">{move || title.as_deref().map(|t| shown_title(t, &lang.get())).unwrap_or_else(|| lang.get().text("dlq_book_gone"))}</span>
                                 <span class="kicker">{move || format!("{} {short_id}", lang.get().text("admin_job"))}</span>
                                 <p class="dlq-error">{entry.error.clone()}</p>
                                 <small class="manuscript-meta">{move || lang.get().date_short(entry.failed_at)}</small>
                             </div>
-                            <button class="btn btn-ghost" on:click=move |_| replay(id.clone())>{icons::recap()}<span>{move || lang.get().text("replay")}</span></button>
+                            <div class="dlq-actions">
+                                <button class="btn btn-ghost" on:click=move |_| replay(replay_id.clone())>{icons::recap()}<span>{move || lang.get().text("replay")}</span></button>
+                                <button class="btn btn-ghost" on:click=move |_| dismiss(dismiss_id.clone())>{move || lang.get().text("dismiss")}</button>
+                            </div>
                         </li>
                     }
                 }).collect::<Vec<_>>()}
