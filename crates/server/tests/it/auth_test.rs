@@ -1932,6 +1932,93 @@ async fn test_concurrent_verifications_never_fail_with_5xx() {
         [StatusCode::OK, StatusCode::CONFLICT],
         "{statuses:?}"
     );
+
+    let other = harness.track_email_owned(format!("twice_{}@example.com", Uuid::new_v4()));
+    let once = signup_with_code(
+        &harness,
+        &mut redis,
+        &ip,
+        &other,
+        "TwinSignup123!",
+        "424242",
+    )
+    .await;
+    let (first, second) = tokio::join!(
+        harness.send_request(verify_req(&other, once, "424242", &ip)),
+        harness.send_request(verify_req(&other, once, "424242", &ip)),
+    );
+    let mut statuses = [first.status(), second.status()];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::BAD_REQUEST],
+        "one registration is consumed once: {statuses:?}"
+    );
+    harness.cleanup().await;
+}
+
+/// Guesses at a locked code are refused without touching the address's
+/// daily budget, so one registration cannot be used to spend it.
+#[tokio::test]
+async fn test_guesses_at_a_locked_code_spend_no_daily_budget() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let email = harness.track_email_owned(format!("lockburn_{}@example.com", Uuid::new_v4()));
+    let squatter =
+        signup_with_code(&harness, &mut redis, &ip, &email, "Squatter123!", "424242").await;
+    for _ in 0..12 {
+        harness
+            .send_request(verify_req(&email, squatter, "000000", &ip))
+            .await;
+    }
+    let spent: i64 = redis.get(format!("otp:guesses:{email}")).await.unwrap();
+    assert_eq!(spent, 3, "only the three compared guesses count");
+    signup_with_code(&harness, &mut redis, &ip, &email, "RealOwner123!", "135791").await;
+    harness.cleanup().await;
+}
+
+/// A refresh token that outlived a device sign-out (a rotation racing the
+/// sign-out) is refused: the session revocation covers refreshes too.
+#[tokio::test]
+async fn test_refresh_of_a_revoked_session_is_refused() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (access, refresh) = provision_verified_user(&harness, &mut redis, "zombie", &ip).await;
+    let sid = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sid
+        .expect("session id");
+    infra::revoke_session_tokens(&mut redis, sid, 3600)
+        .await
+        .unwrap();
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{body}");
+    harness.cleanup().await;
+}
+
+/// Two tabs refreshing with the same token at once both get access tokens
+/// of the same session, so signing the device out reaches both.
+#[tokio::test]
+async fn test_concurrent_refreshes_stay_in_one_session() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (access, refresh) = provision_verified_user(&harness, &mut redis, "twotabs", &ip).await;
+    let sid = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sid;
+    let (a, b) = tokio::join!(
+        harness.send_json_request(refresh_req(&refresh, &ip)),
+        harness.send_json_request(refresh_req(&refresh, &ip)),
+    );
+    for (resp, body) in [a, b] {
+        assert_eq!(resp.status(), StatusCode::OK, "{body}");
+        let token = body["data"]["access_token"].as_str().unwrap();
+        let claims = infra::verify_access_token(token, harness.state.config.jwt_secret()).unwrap();
+        assert_eq!(claims.sid, sid, "both tabs stay in the session");
+    }
     harness.cleanup().await;
 }
 
@@ -2083,9 +2170,9 @@ async fn test_login_time_does_not_tell_pending_from_unknown() {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         started.elapsed().as_secs_f64() * 1000.0
     };
-    timed(unknown.clone()).await;
+    timed(format!("warmup_{}@example.com", Uuid::new_v4())).await;
     let (mut pending_times, mut unknown_times) = (Vec::new(), Vec::new());
-    for _ in 0..15 {
+    for _ in 0..20 {
         pending_times.push(timed(pending.clone()).await);
         unknown_times.push(timed(unknown.clone()).await);
     }

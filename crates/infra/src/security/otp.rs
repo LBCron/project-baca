@@ -126,9 +126,10 @@ pub async fn start_registration(
 /// once, deleting it. `None` for a wrong code or an unknown registration.
 ///
 /// Both counters are taken with an atomic `INCR` before the hash is
-/// compared, so parallel guesses each take their own slot: anything past the
-/// third on one code, or past the daily budget of the address, is refused
-/// unseen.
+/// compared, so parallel guesses each take their own slot. The lock of the
+/// code is checked first: guesses at a locked code are refused without
+/// spending the address's daily budget. Of two right answers at once only
+/// the one that deletes the record wins.
 pub async fn verify_registration(
     redis: &mut crate::RedisConn,
     email: &str,
@@ -148,14 +149,6 @@ pub async fn verify_registration(
         return Ok(None);
     };
 
-    let (guesses, guesses_ttl) = crate::hit_window(redis, &guesses_key(email), DAY_SECONDS)
-        .await
-        .map_err(|e| redis_error("Redis guess count failed for OTP", e))?;
-    if guesses > MAX_DAILY_GUESSES {
-        return Err(AppError::RateLimited {
-            retry_after: guesses_ttl.max(1) as u64,
-        });
-    }
     let (attempt, ttl) = crate::hit_window(redis, &attempts_key(email, id), OTP_TTL_SECONDS)
         .await
         .map_err(|e| redis_error("Redis attempt count failed for OTP", e))?;
@@ -164,10 +157,22 @@ pub async fn verify_registration(
             retry_after: ttl.max(1) as u64,
         });
     }
+    let (guesses, guesses_ttl) = crate::hit_window(redis, &guesses_key(email), DAY_SECONDS)
+        .await
+        .map_err(|e| redis_error("Redis guess count failed for OTP", e))?;
+    if guesses > MAX_DAILY_GUESSES {
+        return Err(AppError::RateLimited {
+            retry_after: guesses_ttl.max(1) as u64,
+        });
+    }
 
     if registration.code_hash == hash_otp(otp) {
-        let _: Result<(), _> = redis.del(&[key, attempts_key(email, id)]).await;
-        return Ok(Some(registration));
+        let removed: i64 = redis
+            .del(&key)
+            .await
+            .map_err(|e| redis_error("Redis delete failed for registration", e))?;
+        let _: Result<(), _> = redis.del(attempts_key(email, id)).await;
+        return Ok((removed == 1).then_some(registration));
     }
 
     if attempt == MAX_OTP_ATTEMPTS {

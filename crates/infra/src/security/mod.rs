@@ -14,7 +14,7 @@ pub use jwt::{
 };
 pub use jwt::{
     is_session_revoked, issue_access_token, list_sessions, revoke_other_sessions_keeping,
-    revoke_session, touch_session, SessionMeta, SessionRecord,
+    revoke_session, revoke_session_tokens, touch_session, SessionMeta, SessionRecord,
 };
 pub use otp::{
     claim_code_quota, ensure_guesses_left, hash_otp, registration_key, start_registration,

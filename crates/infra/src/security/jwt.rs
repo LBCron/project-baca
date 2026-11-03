@@ -140,8 +140,9 @@ fn revoked_session_key(sid: Uuid) -> String {
     format!("revoked_sid:{sid}")
 }
 
-/// Revokes every access token of session `sid` for as long as one can live.
-async fn revoke_session_tokens(
+/// Revokes every access token of session `sid`, and any refresh of it, for
+/// `ttl_seconds`; callers pass at least the access token lifetime.
+pub async fn revoke_session_tokens(
     redis: &mut crate::RedisConn,
     sid: Uuid,
     ttl_seconds: u64,
@@ -335,6 +336,14 @@ pub async fn list_sessions(
     sessions
 }
 
+/// How long a session revocation must hold: as long as any access token of
+/// the session, and as long as the refresh token could still be presented,
+/// so a successor that slipped past the deletion is refused on refresh.
+async fn revocation_ttl(redis: &mut crate::RedisConn, token_hash: &str, access_ttl: u64) -> u64 {
+    let remaining: i64 = redis.ttl(session_key(token_hash)).await.unwrap_or(0);
+    access_ttl.max(remaining.max(0) as u64)
+}
+
 /// Revokes one session of the user: its refresh token dies and the access
 /// token last issued with it is blacklisted. False when the id is not theirs.
 pub async fn revoke_session(
@@ -353,7 +362,8 @@ pub async fn revoke_session(
     }
     if let Some(record) = read_session_record(redis, session_id).await {
         blacklist_access_token(redis, record.jti, access_ttl_seconds).await?;
-        revoke_session_tokens(redis, record.sid, access_ttl_seconds).await?;
+        let ttl = revocation_ttl(redis, session_id, access_ttl_seconds).await;
+        revoke_session_tokens(redis, record.sid, ttl).await?;
     }
     let _: Result<(), _> = redis.del(format!("refresh_token:{session_id}")).await;
     let _: Result<(), _> = redis.del(session_key(session_id)).await;
@@ -427,9 +437,10 @@ pub enum RefreshOutcome {
     Replayed { user_id: Uuid },
 }
 
-/// Consumes the old token and stores its successor in one step, so a family
-/// revocation running at the same moment either sees the old token or the
-/// successor, never neither.
+/// Consumes the old token and stores its successor, with the successor's
+/// session record, in one step: a family revocation running at the same
+/// moment either sees the old token or the successor, never neither, and a
+/// second tab taking the grace path always finds the session it belongs to.
 const ROTATE_SCRIPT: &str = r"
 local owner = redis.call('GETDEL', KEYS[1])
 if not owner then return false end
@@ -440,6 +451,10 @@ redis.call('SET', 'rotation_grace:' .. ARGV[1], ARGV[2], 'EX', ARGV[5])
 redis.call('SET', 'refresh_token:' .. ARGV[3], owner, 'EX', ARGV[4])
 redis.call('SADD', family, ARGV[3])
 redis.call('EXPIRE', family, ARGV[4])
+if ARGV[6] ~= '' then
+  redis.call('SET', 'session:' .. ARGV[3], ARGV[6], 'EX', ARGV[4])
+end
+redis.call('DEL', 'session:' .. ARGV[1])
 return owner
 ";
 
@@ -466,6 +481,23 @@ pub async fn validate_and_rotate_refresh_token(
     let new_token = generate_refresh_token();
     let new_hash = token_hash(&new_token);
     let ttl_seconds = expiry_days * 86400;
+    // The device and its session stay the same across a rotation; only the
+    // token changes.
+    let successor = read_session_record(redis, &old_hash)
+        .await
+        .map(|previous| SessionRecord {
+            last_seen_at: Utc::now().timestamp(),
+            sid: if previous.sid.is_nil() {
+                Uuid::new_v4()
+            } else {
+                previous.sid
+            },
+            ..previous
+        });
+    let successor_json = successor
+        .as_ref()
+        .and_then(|record| serde_json::to_string(record).ok())
+        .unwrap_or_default();
     let owner: Option<String> = redis::Script::new(ROTATE_SCRIPT)
         .key(refresh_key(old_token))
         .arg(&old_hash)
@@ -473,6 +505,7 @@ pub async fn validate_and_rotate_refresh_token(
         .arg(&new_hash)
         .arg(ttl_seconds)
         .arg(ROTATION_GRACE_SECS)
+        .arg(successor_json)
         .invoke_async(redis)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to rotate refresh token in Redis: {e}")))?;
@@ -485,37 +518,30 @@ pub async fn validate_and_rotate_refresh_token(
         AppError::Unauthorized("Corrupted user ID in refresh token session".to_string())
     })?;
 
-    // The device and its session stay the same across a rotation; only the
-    // token changes.
-    let now = Utc::now().timestamp();
-    let previous = read_session_record(redis, &old_hash).await;
-    let record = match previous {
-        Some(previous) => SessionRecord {
-            last_seen_at: now,
-            sid: if previous.sid.is_nil() {
-                Uuid::new_v4()
-            } else {
-                previous.sid
-            },
-            ..previous
-        },
-        None => SessionRecord {
-            user_id,
-            device: String::new(),
-            ip_prefix: String::new(),
-            created_at: now,
-            last_seen_at: now,
-            jti: Uuid::nil(),
-            sid: Uuid::new_v4(),
-        },
+    // A token without a session record predates records; it starts a fresh
+    // session here.
+    let sid = match successor {
+        Some(record) => record.sid,
+        None => {
+            let now = Utc::now().timestamp();
+            let record = SessionRecord {
+                user_id,
+                device: String::new(),
+                ip_prefix: String::new(),
+                created_at: now,
+                last_seen_at: now,
+                jti: Uuid::nil(),
+                sid: Uuid::new_v4(),
+            };
+            write_session_record(redis, &new_hash, &record, ttl_seconds).await;
+            record.sid
+        }
     };
-    write_session_record(redis, &new_hash, &record, ttl_seconds).await;
-    let _: Result<(), _> = redis.del(session_key(&old_hash)).await;
 
     Ok(RefreshOutcome::Rotated {
         user_id,
         refresh_token: new_token,
-        sid: record.sid,
+        sid,
     })
 }
 
@@ -573,7 +599,8 @@ pub async fn revoke_refresh_token(
     let user_id_str: Option<String> = redis.get(&redis_key).await.unwrap_or(None);
     if let Some(record) = read_session_record(redis, &hash).await {
         blacklist_access_token(redis, record.jti, access_ttl_seconds).await?;
-        revoke_session_tokens(redis, record.sid, access_ttl_seconds).await?;
+        let ttl = revocation_ttl(redis, &hash, access_ttl_seconds).await;
+        revoke_session_tokens(redis, record.sid, ttl).await?;
     }
     let _: () = redis
         .del(&redis_key)

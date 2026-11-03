@@ -2,8 +2,8 @@
 
 use chrono::Utc;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    SqlErr,
+    ActiveModelTrait, ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    EntityTrait, QueryFilter, SqlErr, Statement,
 };
 use shared::AppError;
 use uuid::Uuid;
@@ -63,37 +63,43 @@ pub async fn create_inactive_user(
 }
 
 /// Creates the account a verified registration asked for, with that
-/// registration's name and password. A row left inactive by an older signup
-/// takes them over; an address already active is a conflict.
+/// registration's name and password, in one statement: a row left inactive
+/// by an older signup takes them over, and an address already active (or
+/// activated by a registration verified at the same moment) is a conflict.
 pub async fn activate_registration(
     db: &DatabaseConnection,
     email: &str,
     display_name: &str,
     password_hash: &str,
 ) -> Result<users::Model, AppError> {
-    let existing = users::Entity::find()
-        .filter(users::Column::Email.eq(email))
+    let now = Utc::now();
+    let statement = Statement::from_sql_and_values(
+        db.get_database_backend(),
+        r#"INSERT INTO users (id, email, display_name, password_hash, role, avatar_url, is_active, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'reader', NULL, TRUE, $5, $5)
+           ON CONFLICT (email) DO UPDATE
+               SET display_name = EXCLUDED.display_name,
+                   password_hash = EXCLUDED.password_hash,
+                   is_active = TRUE,
+                   updated_at = EXCLUDED.updated_at
+               WHERE NOT users.is_active
+           RETURNING *"#,
+        [
+            Uuid::new_v4().into(),
+            email.into(),
+            display_name.into(),
+            password_hash.into(),
+            now.into(),
+        ],
+    );
+    users::Entity::find()
+        .from_raw_sql(statement)
         .one(db)
         .await
-        .map_err(|e| AppError::Database(format!("Failed to query user for activation: {e}")))?;
-    let mut user: users::ActiveModel = match existing {
-        Some(user) if user.is_active => {
-            return Err(AppError::Conflict(
-                "An account with this email is already registered".to_string(),
-            ))
-        }
-        Some(user) => user.into(),
-        None => create_inactive_user(db, email, display_name, password_hash)
-            .await?
-            .into(),
-    };
-    user.display_name = Set(display_name.to_string());
-    user.password_hash = Set(Some(password_hash.to_string()));
-    user.is_active = Set(true);
-    user.updated_at = Set(Utc::now().into());
-    user.update(db)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to activate user: {e}")))
+        .map_err(|e| AppError::Database(format!("Failed to activate user: {e}")))?
+        .ok_or_else(|| {
+            AppError::Conflict("An account with this email is already registered".to_string())
+        })
 }
 
 /// Updates user display name and/or avatar URL.

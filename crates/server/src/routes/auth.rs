@@ -16,12 +16,13 @@ use chrono::Utc;
 use infra::{
     activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
     ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
-    generate_refresh_token, hash_password_async, hit_window, issue_access_token, list_sessions,
-    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
-    revoke_refresh_token, revoke_session, send_account_exists_email, send_otp_email,
-    start_registration, store_refresh_token, touch_session, update_user_password,
-    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
-    verify_password_async, verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
+    generate_refresh_token, hash_password_async, hit_window, is_session_revoked,
+    issue_access_token, list_sessions, revoke_all_user_sessions, revoke_family_on_reuse,
+    revoke_other_sessions_keeping, revoke_refresh_token, revoke_session, revoke_session_tokens,
+    send_account_exists_email, send_otp_email, start_registration, store_refresh_token,
+    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
+    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
+    DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -395,6 +396,19 @@ pub async fn refresh(
         }
     };
 
+    // A device signed out while its refresh raced the sign-out may still hold
+    // a live successor; the session revocation outlives it and refuses it.
+    if is_session_revoked(&mut redis_conn, sid)
+        .await
+        .map_err(HttpError::from)?
+    {
+        let access_ttl = state.config.auth.access_expiry_minutes * 60;
+        let _ = revoke_refresh_token(&mut redis_conn, &new_refresh_token, access_ttl).await;
+        return Err(HttpError(AppError::Unauthorized(
+            "Invalid or expired refresh token".to_string(),
+        )));
+    }
+
     let user = find_user_by_id(&state.db, user_id)
         .await
         .map_err(HttpError::from)?
@@ -475,6 +489,10 @@ pub async fn logout(
                     0
                 };
                 let _ = blacklist_access_token(&mut redis_conn, claims.jti, remaining).await;
+                if let Some(sid) = claims.sid {
+                    let lifetime = state.config.auth.refresh_expiry_days * 86400;
+                    let _ = revoke_session_tokens(&mut redis_conn, sid, lifetime).await;
+                }
             }
         }
     }
@@ -573,13 +591,17 @@ pub async fn change_password(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    // Throttling: Lockout after 5 failed password change attempts
-    let lockout_key = format!("auth:pwd_change:lockout:{}", auth.id);
-    let is_locked: bool = redis_conn.exists(&lockout_key).await.unwrap_or(false);
-    if is_locked {
-        let ttl: i64 = redis_conn.ttl(&lockout_key).await.unwrap_or(900);
-        let retry_after = if ttl > 0 { ttl as u64 } else { 900 };
-        return Err(HttpError(AppError::RateLimited { retry_after }));
+    // Five attempts per 15 minutes, counted before Argon2 so parallel tries
+    // each take their own slot; a failure that spends them locks the change
+    // for 15 minutes from then.
+    let attempts_key = format!("auth:pwd_change:fail:{}", auth.id);
+    let (attempts, ttl) = hit_window(&mut redis_conn, &attempts_key, 900)
+        .await
+        .map_err(redis_unavailable)?;
+    if attempts > 5 {
+        return Err(HttpError(AppError::RateLimited {
+            retry_after: ttl.max(1) as u64,
+        }));
     }
 
     let user = find_user_by_id(&state.db, auth.id)
@@ -595,11 +617,8 @@ pub async fn change_password(
     };
 
     if !is_valid {
-        let fail_key = format!("auth:pwd_change:fail:{}", auth.id);
-        if let Ok((c, _)) = hit_window(&mut redis_conn, &fail_key, 900).await {
-            if c >= 5 {
-                let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
-            }
+        if attempts >= 5 {
+            let _: Result<(), _> = redis_conn.expire(&attempts_key, 900).await;
         }
         // 403, not 401: the session is fine, the answer was wrong. A 401
         // would send the client through a refresh and a second attempt.
@@ -607,10 +626,7 @@ pub async fn change_password(
             "Current password is incorrect".to_string(),
         )));
     }
-
-    // Reset password change failure counter on success
-    let fail_key = format!("auth:pwd_change:fail:{}", auth.id);
-    let _: Result<(), _> = redis_conn.del(&[&fail_key, &lockout_key]).await;
+    let _: Result<(), _> = redis_conn.del(&attempts_key).await;
 
     let new_hash = hash_password_async(req.new_password.clone())
         .await
@@ -774,7 +790,7 @@ pub async fn list_my_sessions(
                 created_at: chrono::DateTime::from_timestamp(r.created_at, 0).unwrap_or_default(),
                 last_seen_at: chrono::DateTime::from_timestamp(r.last_seen_at, 0)
                     .unwrap_or_default(),
-                current: r.jti == auth.jti,
+                current: r.jti == auth.jti || Some(r.sid) == auth.sid,
             },
             None => SessionDto {
                 id,

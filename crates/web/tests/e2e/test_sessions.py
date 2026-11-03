@@ -2,6 +2,7 @@
 import base64
 import json
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -372,3 +373,22 @@ def test_refused_refresh_sends_no_more_bearer_requests(clean_page: Page):
     late = [url for url, bearer in events[answered[0] + 1:] if bearer]
     assert late == [], late
     assert_no_page_errors(page)
+
+
+def test_fourth_code_in_an_hour_is_refused_and_not_mailed():
+    email = f"e2e-cap-{int(time.time() * 1000)}@example.com"
+    body = {"display_name": "E2E", "email": email, "password": "E2EPassword123!"}
+    for _ in range(3):
+        _post("/auth/signup", body)
+
+    def mailed() -> int:
+        with urllib.request.urlopen(f"http://localhost:8025/api/v1/search?query=to:{email}") as r:
+            return json.load(r)["messages_count"]
+
+    before = mailed()
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        _post("/auth/signup", body)
+    assert refused.value.code == 429
+    assert refused.value.headers.get("Retry-After")
+    time.sleep(1)
+    assert mailed() == before == 3
