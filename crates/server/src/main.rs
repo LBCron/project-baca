@@ -5,7 +5,6 @@ use infra::{
 };
 use sea_orm::DatabaseConnection;
 use server::{create_app, AppState};
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -129,13 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let app = create_app(state);
 
-    let host: IpAddr = config.server.host.parse().map_err(|e| {
-        format!(
-            "APP_HOST '{}' is not an IP address: {e}",
-            config.server.host
-        )
-    })?;
-    let addr = SocketAddr::from((host, config.port()));
+    let addr = config.bind_addr()?;
     info!("Server listening on http://{}", addr);
     if !config.is_production() {
         info!("OpenAPI Swagger UI available on http://{}/swagger-ui", addr);
