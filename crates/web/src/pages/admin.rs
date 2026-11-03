@@ -578,6 +578,7 @@ pub fn CuratorDesk() -> impl IntoView {
 #[component]
 pub fn AdminPage() -> impl IntoView {
     let (lang, _) = use_lang();
+    crate::i18n::use_page_title(|lang| Some(lang.text("admin_title")));
     let session = use_session();
     view! {
         <div class="container">

@@ -211,6 +211,7 @@ fn RailCard(book: BookSummaryDto) -> impl IntoView {
 #[component]
 pub fn HomePage() -> impl IntoView {
     let (lang, _) = use_lang();
+    crate::i18n::use_page_title(|_| None);
     let session = use_session();
     let query_map = use_query_map();
     let wants_search = move || query_map.read().get("search").is_some();

@@ -87,7 +87,14 @@ fn share_quote(toasts: crate::components::toast::Toasts, text: String, source: S
 }
 
 #[component]
-pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
+pub fn QuoteFinder(
+    book_id: String,
+    show: RwSignal<bool>,
+    /// The book's language, so its passages are read and hyphenated in it.
+    #[prop(optional, into)]
+    text_lang: Option<String>,
+) -> impl IntoView {
+    let text_lang = StoredValue::new(text_lang);
     let (lang, _) = use_lang();
     let toasts = use_toasts();
     let (query, set_query) = signal(String::new());
@@ -183,7 +190,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     view! {
                         <li class="quote-row">
                             <div class="quote-meta"><span>{label}</span><span>"\u{2756}"</span></div>
-                            <blockquote>{r.content.clone()}</blockquote>
+                            <blockquote lang=text_lang.get_value()>{r.content.clone()}</blockquote>
                             <div class="quote-actions">
                                 <a href=jump class="btn btn-primary">{move || lang.get().text("quote_jump")}</a>
                                 <button class="btn btn-ghost" disabled=is_saved on:click=move |_| save(row_for_save.clone())>

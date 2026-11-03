@@ -299,6 +299,7 @@ fn badge_description(badge: &UserBadgeDto, lang: Lang) -> String {
 #[component]
 pub fn ProfilePage() -> impl IntoView {
     let (lang, _) = use_lang();
+    crate::i18n::use_page_title(|lang| Some(lang.text("nav_profile")));
     let session = use_session();
     let toasts = use_toasts();
     let (streak, set_streak) = signal(None::<ReadingStreakDto>);

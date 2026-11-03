@@ -29,6 +29,7 @@ use theme::ShellTheme;
 #[component]
 fn NotFound() -> impl IntoView {
     let (lang, _) = i18n::use_lang();
+    i18n::use_page_title(|lang| Some(lang.text("doc_title_missing")));
     view! {
         <div class="container empty-state" style="padding-top: 64px">
             <img src="/assets/retro-rocket-discovery.webp" alt="" width="768" height="512"/>
@@ -58,14 +59,19 @@ pub fn App() -> impl IntoView {
     view! {
         <Router>
             <Routes fallback=NotFound>
+                // First: routes match in order, and the shell's catch-all
+                // below would take the reader's paths too.
+                <Route path=path!("read/:id") view=ReaderPage/>
                 <ParentRoute path=path!("") view=ShellLayout>
                     <Route path=path!("") view=HomePage/>
                     <Route path=path!("book/:id") view=BookPage/>
                     <Route path=path!("me") view=ProfilePage/>
                     <Route path=path!("admin") view=AdminPage/>
                     <Route path=path!("__gallery") view=GalleryPage/>
+                    // Inside the shell, so a missing page keeps the header,
+                    // `main`, and the way back.
+                    <Route path=path!("*any") view=NotFound/>
                 </ParentRoute>
-                <Route path=path!("read/:id") view=ReaderPage/>
             </Routes>
         </Router>
     }

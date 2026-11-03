@@ -45,7 +45,13 @@
 	# shares the domain.
 	handle /* {
 		root * /srv/web
-		try_files {path} /index.html
+		# Only routes fall back to the shell; a path with an extension is a
+		# file (robots.txt, a hashed asset), and a missing one must be 404.
+		@route {
+			not file
+			not path_regexp \.[A-Za-z0-9]+$
+		}
+		rewrite @route /index.html
 		file_server
 		header {
 			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
