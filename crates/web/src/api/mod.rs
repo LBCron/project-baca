@@ -742,6 +742,10 @@ pub async fn drain_pending() -> usize {
     }
     let mut done = Vec::new();
     for (key, op) in pending_ops().await {
+        // A session that ends mid-drain takes its remaining writes with it.
+        if token_owner() != Some(owner) {
+            break;
+        }
         if op.user_id != Some(owner) || save_progress(&op.book_id, &op.update).await.is_ok() {
             done.push(key);
         }
