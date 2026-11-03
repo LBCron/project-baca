@@ -650,11 +650,16 @@ pub async fn copy_text(text: &str) -> bool {
         .is_ok()
 }
 
-/// Shares text through the Web Share API when the platform offers it.
+/// Shares text through the Web Share API when the platform offers it, and
+/// answers false when it does not (desktop Chromium on Linux, Firefox), so
+/// the caller copies instead. The binding would throw on a missing method.
 pub async fn share_text(title: &str, text: &str) -> bool {
     let Some(navigator) = window().map(|w| w.navigator()) else {
         return false;
     };
+    if !js_sys::Reflect::has(&navigator, &"share".into()).unwrap_or(false) {
+        return false;
+    }
     let data = web_sys::ShareData::new();
     data.set_title(title);
     data.set_text(text);

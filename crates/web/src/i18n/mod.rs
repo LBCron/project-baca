@@ -106,6 +106,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("recap_last", "Rekap bab lalu", "Recap so far"),
     ("share_book", "Bagikan buku", "Share this book"),
     ("share_copied", "Tautan disalin.", "Link copied."),
+    ("quote_copied", "Kutipan disalin.", "Quote copied."),
     ("font_smaller", "Perkecil huruf", "Smaller type"),
     ("font_larger", "Perbesar huruf", "Larger type"),
     ("leading_tight", "Rapat", "Tight"),
@@ -156,6 +157,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("continue_chapter", "Lanjutkan Bab", "Continue Chapter"),
     ("save_offline", "Simpan untuk dibaca luring", "Save for offline reading"),
     ("saved_offline", "Tersimpan di perangkat", "Saved on this device"),
+    ("saved_books_device", "Tersimpan di perangkat ini", "Saved on this device"),
     ("saving", "Menyimpan…", "Saving…"),
     ("quote_finder", "Cari kutipan", "Find a quote"),
     ("atomic_cards", "Kartu insight", "Insight cards"),
@@ -558,6 +560,12 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "The author name is too long. Keep it to 255 characters.",
     ),
     ("unit_hours", "jam", "hours"),
+    (
+        "doc_title_home",
+        "Rotaria \u{2014} Sirkulasi Buku-Buku Hebat",
+        "Rotaria \u{2014} The Circulation of Great Books",
+    ),
+    ("doc_title_missing", "Halaman tidak ditemukan", "Page not found"),
     ("unit_minutes", "menit", "minutes"),
     ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
@@ -767,4 +775,30 @@ pub fn apply_lang(set: leptos::prelude::WriteSignal<Lang>, lang: Lang) {
     set.set(lang);
     lang.save();
     lang.document_lang();
+}
+
+/// Keeps `document.title` on the page shown, in the interface language:
+/// "<part> \u{2014} Rotaria", or the home title when `part` gives none, so
+/// tabs, history, and screen readers tell routes apart.
+pub fn use_page_title(part: impl Fn(Lang) -> Option<String> + 'static) {
+    use leptos::prelude::*;
+    let (lang, _) = use_lang();
+    Effect::new(move || {
+        let lang = lang.get();
+        let title = match part(lang) {
+            Some(part) if !part.trim().is_empty() => format!("{part} \u{2014} Rotaria"),
+            _ => lang.text("doc_title_home"),
+        };
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            document.set_title(&title);
+        }
+    });
+}
+
+/// A book's language for a `lang` attribute, or none while the worker has
+/// not filled it: `lang=""` would mark the text as of no language and turn
+/// hyphenation off.
+pub fn text_lang(language: &str) -> Option<String> {
+    let language = language.trim();
+    (!language.is_empty()).then(|| language.to_string())
 }

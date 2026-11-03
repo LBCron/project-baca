@@ -208,9 +208,22 @@ fn RailCard(book: BookSummaryDto) -> impl IntoView {
     }
 }
 
+/// A rail card's footprint while the books load.
+#[component]
+fn RailSkeleton() -> impl IntoView {
+    view! {
+        <div class="rail-card" aria-hidden="true">
+            <div class="cover skeleton"></div>
+            <span class="rail-title skeleton">"\u{00A0}"</span>
+            <span class="rail-meta skeleton">"\u{00A0}"</span>
+        </div>
+    }
+}
+
 #[component]
 pub fn HomePage() -> impl IntoView {
     let (lang, _) = use_lang();
+    crate::i18n::use_page_title(|_| None);
     let session = use_session();
     let query_map = use_query_map();
     let wants_search = move || query_map.read().get("search").is_some();
@@ -219,6 +232,9 @@ pub fn HomePage() -> impl IntoView {
     let (cursor, set_cursor) = signal(None::<String>);
     let (exhausted, set_exhausted) = signal(false);
     let (loading, set_loading) = signal(true);
+    // A Memo, so later loads ("load more", a filter) leave the rail and its
+    // scroll position in place instead of rebuilding it.
+    let show_picks = Memo::new(move |_| loading.get() || !books.get().is_empty());
     let (load_error, set_load_error) = signal(false);
     let (show_all, set_show_all) = signal(false);
     let (viewport_width, set_viewport_width) = signal(window_width());
@@ -501,21 +517,31 @@ pub fn HomePage() -> impl IntoView {
                             {move || lang.get().text("chip_short")}
                         </button>
                     </div>
-                    {move || (!books.get().is_empty()).then(|| view! {
-                        <section class="picks narrow-only" aria-labelledby="picks-title">
+                    // Held open while the first page loads, with cards of the
+                    // same size, so the catalog below does not jump when the
+                    // books arrive.
+                    {move || show_picks.get().then(|| view! {
+                        <section class="picks narrow-only" aria-labelledby="picks-title" aria-busy=move || loading.get()>
                             <div class="section-head">
                                 <h2 id="picks-title" class="section-title">{move || lang.get().text("picks")}</h2>
                                 <a href="#katalog" class="section-link">{move || lang.get().text("see_all")}</a>
                             </div>
                             <div class="book-rail">
-                                {books.get().into_iter().take(RAIL_SIZE).map(|b| view! { <RailCard book=b/> }).collect::<Vec<_>>()}
+                                {move || {
+                                    let shown = books.get();
+                                    if shown.is_empty() {
+                                        (0..RAIL_SIZE).map(|_| view! { <RailSkeleton/> }.into_any()).collect::<Vec<_>>()
+                                    } else {
+                                        shown.into_iter().take(RAIL_SIZE).map(|b| view! { <RailCard book=b/> }.into_any()).collect::<Vec<_>>()
+                                    }
+                                }}
                             </div>
                         </section>
                     })}
                 </div>
                 <div class="hero-art wide-only">
                     <figure class="plate">
-                        <img src=PLATE_SRC alt=move || lang.get().text("plate_alt") class="hero-slide" width="640" height="640"/>
+                        <img src=PLATE_SRC alt=move || lang.get().text("plate_alt") class="hero-slide" width="640" height="640" loading="lazy" decoding="async"/>
                         <figcaption class="plate-caption">
                             <span>{move || lang.get().text("plate_caption")}</span>
                             <span aria-hidden="true">"\u{2756}"</span>
@@ -552,6 +578,8 @@ pub fn HomePage() -> impl IntoView {
                         <p>{move || lang.get().text(if api::is_online() { "load_failed" } else { "offline_notice" })}</p>
                         <button class="btn btn-primary" on:click=move |_| load_page(true)>{move || lang.get().text("retry")}</button>
                     </div>
+                    // The notice promises saved books stay readable; here they are.
+                    <crate::components::saved_shelf::SavedOnDevice/>
                 })}
                 {move || (!loading.get() && !load_error.get() && visible().is_empty()).then(|| view! {
                     <div class="empty-state">

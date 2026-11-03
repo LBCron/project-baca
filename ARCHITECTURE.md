@@ -123,7 +123,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 ## 8. Deployment
 
 - `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio, server, worker, and edge (Caddy on 80 and 443 TCP and UDP), all on the default compose network; least-privilege roles, keys, and networks are issue #47. Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
-- `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. The edge image runs the same target.
+- `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. Release builds minify HTML, CSS, and the glue. The edge image runs `make build-web-edge`, the same build plus brotli 11 and gzip copies (`scripts/precompress.py`) that Caddy sends as they are (`file_server { precompressed br gzip }`); the Tauri bundle leaves them out.
 - Server and worker images run as uid 10001; the dev compose binds every port to `127.0.0.1`, and `Caddyfile.prod` drops the `Server` banner on every response, errors included.
 - With `APP_ENV=production` the server exits non-zero when Postgres or Redis is unreachable at boot, and `restart: always` retries; development keeps running without them.
 - The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
@@ -150,6 +150,16 @@ Memory, measured 2026-11-03 (release builds, dev data):
 | API server | 24 MB RSS | 61 MB at 256 concurrent mixed reads (`MALLOC_ARENA_MAX=2`, set in the image; 72 MB without); 189 MB at 100 concurrent logins with 8 Argon2 slots (`MALLOC_MMAP_THRESHOLD_=131072`, set in the image; 814 MB without it at 18 slots, 1.3 GB with no gate) |
 | Ingestion worker | 35 MB RSS | 53 MB RSS, 19.5 MB Python heap, parsing a 300-chapter EPUB (6.3 MB of text) |
 | Web app | 1.3 MB JS heap, 1.3 MB WASM memory on the catalog | 2.8 MB JS heap in the reader; DOM nodes and listeners stay flat over 60 page turns, 45 sheet cycles, and 36 chapter jumps |
+
+Web first load, Lighthouse 12.6 mobile (simulated slow 4G, 4x CPU), release bundle behind Caddy with compression, dev data, median of 5 runs on the home page and 3 elsewhere, 2026-11-03:
+
+| Route | Before (on-the-fly gzip, no minify) | After (precompressed brotli 11, minified HTML, CSS, and glue) |
+|---|---|---|
+| Home | score 52, LCP 5.73 s, FCP 5.28 s, CLS 0.291 | score 71, LCP 4.89 s, FCP 4.43 s, CLS 0.072 (every run) |
+| Book | score 67, LCP 5.88 s | score 73, LCP 4.96 s |
+| Reader | score 65, LCP 5.81 s | score 71, LCP 4.89 s |
+
+The largest paint on every route is text the WASM app draws (the hero heading, the synopsis, a paragraph), so first paint waits on the 1.6 MB WASM: 473 KB with brotli, about 2.5 s of the simulated link. CLS came from the phone picks rail appearing above the catalog; it now holds its size while the books load. A further cut needs a static first paint before the WASM, which is a prerender.
 
 ## 10. Tests
 

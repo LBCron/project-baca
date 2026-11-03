@@ -54,6 +54,7 @@ pub fn BookPage() -> impl IntoView {
     let params = use_params_map();
     let book_id = move || params.get().get("id").unwrap_or_default();
     let (book, set_book) = signal(None::<BookDetailDto>);
+    crate::i18n::use_page_title(move |_| book.get().map(|b| b.title));
     let (error, set_error) = signal(None::<String>);
     let (saving, set_saving) = signal(false);
     let (saved, set_saved) = signal(false);
@@ -218,7 +219,7 @@ pub fn BookPage() -> impl IntoView {
                                     </div>
                                 </div>
                             </div>
-                            {(!b.description.trim().is_empty()).then(|| view! { <p class="prose">{b.description.clone()}</p> })}
+                            {(!b.description.trim().is_empty()).then(|| view! { <p class="prose" lang=crate::i18n::text_lang(&b.language)>{b.description.clone()}</p> })}
                             {(!b.tags.is_empty()).then(|| view! {
                                 <div class="chip-row">{b.tags.iter().map(|t| view! { <span class="tag">{format!("#{}", t.replace(' ', ""))}</span> }).collect::<Vec<_>>()}</div>
                             })}
@@ -235,7 +236,7 @@ pub fn BookPage() -> impl IntoView {
                                     <button class="btn btn-ghost" on:click=move |_| cards_open.set(true)>{icons::cards()}<span>{move || lang.get().text("atomic_cards")}</span></button>
                                 </div>
                             </div>
-                            <QuoteFinder book_id=b.id.to_string() show=quotes_open/>
+                            <QuoteFinder book_id=b.id.to_string() show=quotes_open text_lang=crate::i18n::text_lang(&b.language)/>
                             <AtomicCards book_id=b.id.to_string() chapter=target show=cards_open/>
                             <div class="chapters" id="daftar-bab">
                                 <div class="section-head">

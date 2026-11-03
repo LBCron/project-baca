@@ -47,6 +47,7 @@ fn GuestShelf() -> impl IntoView {
                     <a href="/" class="btn btn-ghost">{move || lang.get().text("back_to_catalog")}</a>
                 </div>
             </div>
+            <crate::components::saved_shelf::SavedOnDevice/>
             {move || (!local.get().is_empty()).then(|| view! {
                 <section aria-labelledby="local-quotes-title">
                     <div class="section-head">
@@ -299,6 +300,7 @@ fn badge_description(badge: &UserBadgeDto, lang: Lang) -> String {
 #[component]
 pub fn ProfilePage() -> impl IntoView {
     let (lang, _) = use_lang();
+    crate::i18n::use_page_title(|lang| Some(lang.text("nav_profile")));
     let session = use_session();
     let toasts = use_toasts();
     let (streak, set_streak) = signal(None::<ReadingStreakDto>);

@@ -213,6 +213,12 @@ build-web:
 	@cd crates/web && API_BASE_URL=$(API_BASE_URL) trunk build --release --cargo-profile wasm-release --public-url / --dist $(WEB_DIST)
 	@python3 scripts/check_bundle_budget.py $(WEB_DIST)
 
+# The bundle the edge image serves: the release build plus `.br` and `.gz`
+# copies Caddy sends as they are. Kept apart from build-web, whose output the
+# Tauri app embeds whole and would carry the copies unused.
+build-web-edge: build-web
+	@python3 scripts/precompress.py $(WEB_DIST)
+
 # Tauri shell (apps/tauri, `cargo install tauri-cli --version "^2" --locked`).
 # The app injects APP_API_BASE as window.__ROTARIA_API__; desktop needs
 # webkit2gtk-4.1, Android needs ANDROID_HOME, NDK_HOME, and JAVA_HOME, and an
@@ -275,5 +281,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

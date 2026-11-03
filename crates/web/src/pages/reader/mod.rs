@@ -238,6 +238,13 @@ pub fn ReaderPage() -> impl IntoView {
 
     let (book, set_book) = signal(None::<BookDetailDto>);
     let (chapter, set_chapter) = signal(None::<ChapterDetailDto>);
+    crate::i18n::use_page_title(move |_| {
+        let book = book.get()?.title;
+        Some(match chapter.get() {
+            Some(c) if !c.title.trim().is_empty() => format!("{} \u{00B7} {book}", c.title),
+            _ => book,
+        })
+    });
     let (chapter_no, set_chapter_no) = signal(start_chapter);
     let (error, set_error) = signal(None::<String>);
     let (offline, set_offline) = signal(false);
@@ -1095,6 +1102,35 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let toggle_menu = move |_| set_menu_open.update(|m| *m = !*m);
+    // The type panel is not modal, but a keyboard reader lands in it when it
+    // opens and back on "Aa" when it closes and focus would fall to the page.
+    let type_button = NodeRef::<leptos::html::Button>::new();
+    Effect::new(move |was_open: Option<bool>| {
+        let open = menu_open.get();
+        if open {
+            request_animation_frame(|| {
+                // The chosen theme first; a selector list would match in
+                // document order and always take the first swatch.
+                let first = [".type-sheet .swatch.active", ".type-sheet button"]
+                    .iter()
+                    .find_map(|s| document().query_selector(s).ok().flatten())
+                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok());
+                if let Some(first) = first {
+                    let _ = first.focus();
+                }
+            });
+        } else if was_open == Some(true) {
+            let lost = document()
+                .active_element()
+                .is_none_or(|el| el.tag_name().eq_ignore_ascii_case("body"));
+            if lost {
+                if let Some(button) = type_button.get_untracked() {
+                    let _ = button.focus();
+                }
+            }
+        }
+        open
+    });
     let chapter_end_title = move || {
         lang.get()
             .text_with("chapter_end_title", "n", &roman(chapter_no.get()))
@@ -1141,7 +1177,12 @@ pub fn ReaderPage() -> impl IntoView {
         <div class="reader" data-reading=move || prefs.get().theme.attr() class:spread=move || spread.get() class:dim=move || dim.get()>
             <header class="reader-bar">
                 <a href=format!("/book/{}", book_id.get_value()) class="btn-icon" aria-label=move || lang.get().text("reader_back")>{icons::back()}</a>
-                <button class="reader-title" aria-label=move || lang.get().text("open_chapters") aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
+                // The name starts with what the button shows, so a voice
+                // command naming the visible chapter reaches it.
+                <button class="reader-title" aria-label=move || {
+                    let shown = format!("{} {} {}", lang.get().text("chapter"), roman(chapter_no.get()), chapter.get().map(|c| c.title).unwrap_or_default());
+                    format!("{}, {}", shown.trim_end(), lang.get().text("open_chapters"))
+                } aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
                     <span class="kicker">{move || format!("{} {}", lang.get().text("chapter"), roman(chapter_no.get()))}</span>
                     <span class="label">{move || chapter.get().map(|c| c.title).unwrap_or_default()}{icons::arrow_down()}</span>
                 </button>
@@ -1158,7 +1199,7 @@ pub fn ReaderPage() -> impl IntoView {
                         }
                     })}
                     <button class="btn-icon btn-search" aria-label=move || lang.get().text("book_search") on:click=move |_| search_open.set(true)>{icons::search()}</button>
-                    <button class="btn-icon btn-type" aria-label=move || lang.get().text("reader_settings") aria-expanded=move || menu_open.get() on:click=toggle_menu>"Aa"</button>
+                    <button class="btn-icon btn-type" node_ref=type_button aria-label=move || lang.get().text("reader_settings") aria-expanded=move || menu_open.get() on:click=toggle_menu>"Aa"</button>
                 </div>
             </header>
 
@@ -1203,7 +1244,7 @@ pub fn ReaderPage() -> impl IntoView {
                                     }.into_any()
                                 }
                             },
-                            Some(c) => view! { <div class="chapter-body" inner_html=c.html_content></div> }.into_any(),
+                            Some(c) => view! { <div class="chapter-body" lang=move || book.get().and_then(|b| crate::i18n::text_lang(&b.language)) inner_html=c.html_content></div> }.into_any(),
                         }}
                     </div>
                     <span class="spine" aria-hidden="true"></span>

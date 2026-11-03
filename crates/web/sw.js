@@ -11,6 +11,8 @@
  *   all of them.
  * - /api/* : never cached, always network (stale API data and cross-user
  *   leaks are worse than offline errors).
+ * - Install precaches the shell, every static file it names, the house fonts,
+ *   and the reader-facing illustrations, so one visit is enough to go offline.
  */
 const SHELL_CACHE = "rotaria-shell-v3";
 const ASSET_CACHE = "rotaria-assets-v3";
@@ -18,14 +20,56 @@ const SHELL_URL = "/";
 const STATIC_RE = /\.(?:wasm|js|css|png|svg|jpg|jpeg|webp|woff2?|webmanifest)$/;
 const IMMUTABLE_RE = /^\/(?:[a-z0-9_-]+-[0-9a-f]{8,}(?:_bg)?\.(?:wasm|js|css)|fonts\/[^/]+\.woff2)$/i;
 const HASHED_BUILD_RE = /^\/[a-z0-9_-]+-[0-9a-f]{8,}(?:_bg)?\.(?:wasm|js|css)$/i;
+/* Fetched at install, so a first visit that goes offline still has the house
+ * type and the illustrations the reader-facing pages draw. The latin subsets
+ * cover Indonesian and English; latin-ext and admin artwork are cached when
+ * first used. */
+const PRECACHE_ASSETS = [
+  "/fonts/eb-garamond-normal-latin.woff2",
+  "/fonts/eb-garamond-italic-latin.woff2",
+  "/fonts/newsreader-normal-latin.woff2",
+  "/fonts/newsreader-italic-latin.woff2",
+  "/fonts/plus-jakarta-sans-normal-latin.woff2",
+  "/assets/library-bookshelf-ladder.webp",
+  "/assets/cozy-reader-armchair-owl.webp",
+  "/assets/retro-rocket-discovery.webp",
+  "/assets/rotaria-mark.svg",
+];
+
+/* Only the app document may become the offline shell: a file opened
+ * directly in a tab (robots.txt, an image) is a navigation too, and as the
+ * shell it would name no assets and prune them all. */
+function isShell(response) {
+  return response.ok && (response.headers.get("content-type") || "").startsWith("text/html");
+}
+
+/* Paths the shell document references (href/src), quoted or not: release
+ * builds minify it and drop the quotes. */
+function referencedPaths(html) {
+  const paths = new Set();
+  for (const match of html.matchAll(/(?:href|src)=["']?([^"'\s>]+)/g)) {
+    paths.add(new URL(match[1], self.location.origin).pathname);
+  }
+  return paths;
+}
+
+/* The first visit fetches the app before this worker controls the page, so
+ * nothing it loaded is cached yet: take the static files the shell names,
+ * the house fonts, and the illustrations now. One by one, so a missing file
+ * does not drop the rest as addAll would. */
+async function precache() {
+  const shell = await caches.open(SHELL_CACHE);
+  await shell.add(SHELL_URL);
+  const response = await shell.match(SHELL_URL);
+  const build = response
+    ? [...referencedPaths(await response.text())].filter((p) => STATIC_RE.test(p))
+    : [];
+  const assets = await caches.open(ASSET_CACHE);
+  await Promise.allSettled([...build, ...PRECACHE_ASSETS].map((url) => assets.add(url)));
+}
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches
-      .open(SHELL_CACHE)
-      .then((cache) => cache.add(SHELL_URL))
-      .catch(() => {})
-  );
+  event.waitUntil(precache().catch(() => {}));
   self.skipWaiting();
 });
 
@@ -47,11 +91,7 @@ self.addEventListener("activate", (event) => {
  * references; fonts and unhashed files keep their entries. */
 async function pruneStaleAssets(shellResponse) {
   try {
-    const html = await shellResponse.text();
-    const live = new Set();
-    for (const match of html.matchAll(/(?:href|src)="([^"]+)"/g)) {
-      live.add(new URL(match[1], self.location.origin).pathname);
-    }
+    const live = referencedPaths(await shellResponse.text());
     const cache = await caches.open(ASSET_CACHE);
     for (const request of await cache.keys()) {
       const pathname = new URL(request.url).pathname;
@@ -73,12 +113,13 @@ async function cacheFirst(request) {
   return fresh;
 }
 
-/* Network answer stored under `key`; offline, the stored copy. */
-async function networkFirst(request, cacheName, key) {
+/* Network answer stored under `key`; offline, the stored copy. `keep`
+ * decides whether a fresh answer may replace it. */
+async function networkFirst(request, cacheName, key, keep = (response) => response.ok) {
   const cache = await caches.open(cacheName);
   try {
     const fresh = await fetch(request);
-    if (fresh && fresh.ok) cache.put(key, fresh.clone());
+    if (fresh && keep(fresh)) cache.put(key, fresh.clone());
     return fresh;
   } catch (e) {
     const cached = await cache.match(key);
@@ -96,8 +137,8 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       (async () => {
-        const response = await networkFirst(request, SHELL_CACHE, SHELL_URL);
-        if (response.ok) pruneStaleAssets(response.clone());
+        const response = await networkFirst(request, SHELL_CACHE, SHELL_URL, isShell);
+        if (isShell(response)) pruneStaleAssets(response.clone());
         return response;
       })()
     );

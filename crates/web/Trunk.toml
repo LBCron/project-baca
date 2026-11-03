@@ -2,6 +2,8 @@
 target = "index.html"
 release = false
 dist = "dist"
+# Release builds ship minified HTML, CSS, and wasm-bindgen glue.
+minify = "on_release"
 
 [watch]
 watch = ["src", "style", "index.html", "sw.js", "boot.js", "manifest.webmanifest", "icons", "fonts"]
@@ -18,3 +20,8 @@ open = false
 stage = "post_build"
 command = "python3"
 command_arguments = ["../../scripts/externalize_inline_scripts.py"]
+
+[[hooks]]
+stage = "post_build"
+command = "python3"
+command_arguments = ["../../scripts/preconnect_api.py"]
