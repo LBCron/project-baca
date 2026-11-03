@@ -29,6 +29,9 @@ pub struct RateLimitPolicy {
     pub error_code: &'static str,
     pub subject_label: &'static str,
     pub window_label: &'static str,
+    /// Logged once per window when the limit is first spent; set on spend
+    /// ceilings, where running out takes a feature away from everyone.
+    pub exhausted_event: Option<&'static str>,
 }
 
 /// Public auth endpoints: 20 req/min per IP.
@@ -39,6 +42,7 @@ pub const AUTH_POLICY: RateLimitPolicy = RateLimitPolicy {
     error_code: "RATE_LIMITED",
     subject_label: "requests",
     window_label: "minute",
+    exhausted_event: None,
 };
 
 /// Embedding-backed search: 10 req/min per user, or per IP for guests.
@@ -49,6 +53,7 @@ pub const AI_POLICY: RateLimitPolicy = RateLimitPolicy {
     error_code: "AI_RATE_LIMITED",
     subject_label: "semantic search requests",
     window_label: "minute",
+    exhausted_event: None,
 };
 
 /// Writes of one signed-in account per minute: room for page turns saved
@@ -60,6 +65,7 @@ pub const USER_WRITE_POLICY: RateLimitPolicy = RateLimitPolicy {
     error_code: "RATE_LIMITED",
     subject_label: "writes",
     window_label: "minute",
+    exhausted_event: None,
 };
 
 /// Embedding-backed requests of every reader together per day, so abuse
@@ -72,7 +78,24 @@ fn ai_budget_policy(max_requests: u32) -> RateLimitPolicy {
         error_code: "AI_RATE_LIMITED",
         subject_label: "semantic search requests",
         window_label: "day",
+        exhausted_event: Some("ai_budget_exhausted"),
     }
+}
+
+/// Guests together may spend a fifth of the daily ceiling: a few anonymous
+/// clients cannot take search away from signed-in readers.
+fn ai_guest_budget_policy(budget: u32) -> RateLimitPolicy {
+    RateLimitPolicy {
+        max_requests: i64::from((budget / 5).max(1)),
+        exhausted_event: Some("ai_guest_budget_exhausted"),
+        ..ai_budget_policy(budget)
+    }
+}
+
+/// True only for the first count past the ceiling, so the operator sees one
+/// event per window however long the refusals go on.
+pub(crate) fn first_refusal(count: i64, ceiling: i64) -> bool {
+    count == ceiling + 1
 }
 
 /// Unauthenticated catalog and insight reads; the cap comes from config.
@@ -84,6 +107,7 @@ pub fn public_policy(max_requests: u32) -> RateLimitPolicy {
         error_code: "RATE_LIMITED",
         subject_label: "requests",
         window_label: "minute",
+        exhausted_event: None,
     }
 }
 
@@ -177,6 +201,12 @@ async fn count_hit(
     if count <= policy.max_requests {
         return Ok((count, ttl));
     }
+    if let Some(event) = policy
+        .exhausted_event
+        .filter(|_| first_refusal(count, policy.max_requests))
+    {
+        tracing::warn!(target: "server::rate_limit", event, limit = policy.max_requests, "Spend ceiling reached; requests answer 429 until the window turns");
+    }
     let mut resp = (
         StatusCode::TOO_MANY_REQUESTS,
         Json(ApiResponse::<()>::error(
@@ -238,7 +268,8 @@ pub async fn ai_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let subject = match bearer_user(&state, req.headers()).await {
+    let reader = bearer_user(&state, req.headers()).await;
+    let subject = match reader {
         Some(id) => format!("user:{id}"),
         None => format!(
             "guest:{}",
@@ -248,6 +279,9 @@ pub async fn ai_rate_limit_middleware(
     let mut limits = vec![(AI_POLICY, subject)];
     let budget = state.config.ai.daily_budget;
     if budget > 0 {
+        if reader.is_none() {
+            limits.push((ai_guest_budget_policy(budget), "guest".to_string()));
+        }
         limits.push((ai_budget_policy(budget), "all".to_string()));
     }
     enforce(&state, &limits, req, next).await
@@ -324,6 +358,20 @@ mod tests {
             trusted_ip_header: header.to_string(),
             ..ServerConfig::default()
         }
+    }
+
+    #[test]
+    fn a_spent_ceiling_is_reported_once_per_window() {
+        let reported = (1..=200).filter(|&n| first_refusal(n, 100)).count();
+        assert_eq!(reported, 1);
+        assert!(first_refusal(101, 100));
+    }
+
+    #[test]
+    fn guests_get_a_fifth_of_the_ai_ceiling() {
+        assert_eq!(ai_guest_budget_policy(5000).max_requests, 1000);
+        assert_eq!(ai_guest_budget_policy(3).max_requests, 1);
+        assert_eq!(ai_guest_budget_policy(5000).key_prefix, "budget:ai");
     }
 
     #[test]

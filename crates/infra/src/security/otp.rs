@@ -84,11 +84,30 @@ pub async fn ensure_guesses_left(
     })
 }
 
+fn code_quota_keys(email: &str) -> [(String, u64, i64); 2] {
+    [
+        (format!("otp:sent:3600:{email}"), 3600, MAX_CODES_PER_HOUR),
+        (
+            format!("otp:sent:{DAY_SECONDS}:{email}"),
+            DAY_SECONDS,
+            MAX_CODES_PER_DAY,
+        ),
+    ]
+}
+
+/// Gives back the code counted for `email` when no mail went out after all.
+pub async fn release_code_quota(redis: &mut crate::RedisConn, email: &str) {
+    let keys = code_quota_keys(email).map(|(key, _, _)| key);
+    if let Err(e) = crate::release_hits(redis, &keys).await {
+        tracing::warn!(target: "infra::otp", error = %e, "Could not give back an unsent code");
+    }
+}
+
 /// Counts one code mailed to `email` against its hourly and daily caps,
 /// refusing before anything is sent once either is spent.
 pub async fn claim_code_quota(redis: &mut crate::RedisConn, email: &str) -> Result<(), AppError> {
-    for (window, cap) in [(3600, MAX_CODES_PER_HOUR), (DAY_SECONDS, MAX_CODES_PER_DAY)] {
-        let (sent, ttl) = crate::hit_window(redis, &format!("otp:sent:{window}:{email}"), window)
+    for (key, window, cap) in code_quota_keys(email) {
+        let (sent, ttl) = crate::hit_window(redis, &key, window)
             .await
             .map_err(|e| redis_error("Redis count failed for OTP mail", e))?;
         if sent > cap {

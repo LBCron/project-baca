@@ -26,3 +26,19 @@ pub async fn hit_window(
         .query_async(redis)
         .await
 }
+
+/// Takes back one hit from each key that still exists, for work refused
+/// before it happened. A key that already expired stays gone: `DECR` would
+/// recreate it without a TTL.
+pub async fn release_hits(redis: &mut RedisConn, keys: &[String]) -> Result<(), redis::RedisError> {
+    redis::Script::new(
+        "for _, key in ipairs(KEYS) do \
+           if redis.call('EXISTS', key) == 1 then redis.call('DECR', key) end \
+         end \
+         return 0",
+    )
+    .key(keys)
+    .invoke_async::<i64>(redis)
+    .await
+    .map(|_| ())
+}

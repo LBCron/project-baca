@@ -943,28 +943,34 @@ fn signup_from(harness: &TestHarness, ip: &str, tag: &str) -> Request<Body> {
 #[tokio::test]
 async fn test_login_without_an_argon2_slot_answers_503() {
     let harness = TestHarness::with_config(|c| c.server.argon2_max_concurrency = 1).await;
-    harness
+    let mut redis = harness
         .live_only()
         .await
         .expect("live Postgres + Redis required (db-up)");
     let _held = harness.state.argon2.permit().await.expect("slot is free");
+    let email = format!("noslot_{}@example.com", Uuid::new_v4());
+    let ip = common::unique_ip("198.19");
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/login")
-        .header(common::CLIENT_IP_HEADER, common::unique_ip("198.19"))
+        .header(common::CLIENT_IP_HEADER, &ip)
         .header("content-type", "application/json")
         .body(Body::from(
-            serde_json::json!({
-                "email": format!("noslot_{}@example.com", Uuid::new_v4()),
-                "password": "NoSlot12345!"
-            })
-            .to_string(),
+            serde_json::json!({ "email": email, "password": "NoSlot12345!" }).to_string(),
         ))
         .unwrap();
     let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(resp.headers()["retry-after"], "1");
     assert_eq!(body["error"]["code"], "SERVICE_UNAVAILABLE");
+    // The password was never checked, so the attempt is given back.
+    for key in [
+        format!("auth:login:fail:{email}:{ip}"),
+        format!("auth:login:fail:{email}"),
+    ] {
+        let left: Option<i64> = redis.get(&key).await.unwrap();
+        assert_eq!(left.unwrap_or(0), 0, "{key}");
+    }
     harness.cleanup().await;
 }
 
@@ -998,6 +1004,44 @@ async fn test_auth_signup_cap_counts_the_ipv6_block() {
             StatusCode::TOO_MANY_REQUESTS
         };
         assert_eq!(resp.status(), expected, "signup {i} from {ip}");
+    }
+    harness.cleanup().await;
+}
+
+/// Rotating IPv6 addresses inside one /64 does not reset the login lockout
+/// of an (email, client) pair: the sixth wrong password is refused.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_login_lockout_counts_the_ipv6_block() {
+    let harness = TestHarness::new().await;
+    harness
+        .live_only()
+        .await
+        .expect("live services required (BACA_LIVE_TEST=1 with db-up)");
+    let n = Uuid::new_v4().as_u128();
+    let block = format!(
+        "2001:db8:{:x}:{:x}",
+        (n & 0xffff) as u16,
+        ((n >> 16) & 0xffff) as u16
+    );
+    let email = format!("v6lock_{}@example.com", Uuid::new_v4());
+    for i in 1..=6u32 {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(common::CLIENT_IP_HEADER, format!("{block}:{i:x}::1"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "email": email, "password": "WrongGuess123!" }).to_string(),
+            ))
+            .unwrap();
+        let status = harness.send_request(req).await.status();
+        let expected = if i <= 5 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(status, expected, "attempt {i}");
     }
     harness.cleanup().await;
 }

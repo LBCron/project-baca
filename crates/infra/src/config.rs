@@ -225,6 +225,17 @@ pub struct AppConfig {
     pub ai: AiConfig,
 }
 
+/// A whole-number setting: unset takes `default`, a value that does not
+/// parse stops the boot instead of quietly becoming the default.
+fn env_number<T: std::str::FromStr>(name: &str, default: T) -> Result<T, AppError> {
+    match env::var(name) {
+        Ok(v) => v.trim().parse().map_err(|_| {
+            AppError::ValidationError(format!("{name} must be a whole number, got {v:?}"))
+        }),
+        Err(_) => Ok(default),
+    }
+}
+
 impl AppConfig {
     /// Loads config from env with `.env` support.
     pub fn from_env() -> Result<Self, AppError> {
@@ -266,14 +277,10 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_server.public_rate_limit_per_minute);
-        let argon2_max_concurrency = match env::var("ARGON2_MAX_CONCURRENCY") {
-            Ok(v) => v.trim().parse().map_err(|_| {
-                AppError::ValidationError(format!(
-                    "ARGON2_MAX_CONCURRENCY must be a whole number, got {v:?}"
-                ))
-            })?,
-            Err(_) => default_server.argon2_max_concurrency,
-        };
+        let argon2_max_concurrency = env_number(
+            "ARGON2_MAX_CONCURRENCY",
+            default_server.argon2_max_concurrency,
+        )?;
 
         let server = ServerConfig {
             host,
@@ -373,10 +380,7 @@ impl AppConfig {
             Err(_) => default_email.smtp_security,
         };
 
-        let otp_hourly_budget = env::var("OTP_HOURLY_BUDGET")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_email.otp_hourly_budget);
+        let otp_hourly_budget = env_number("OTP_HOURLY_BUDGET", default_email.otp_hourly_budget)?;
 
         let email = EmailConfig {
             smtp_host,
@@ -404,10 +408,7 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_ai.dimension);
 
-        let ai_daily_budget = env::var("AI_DAILY_BUDGET")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_ai.daily_budget);
+        let ai_daily_budget = env_number("AI_DAILY_BUDGET", default_ai.daily_budget)?;
         let ai = AiConfig {
             provider: ai_provider,
             api_key: ai_api_key,

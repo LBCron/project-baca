@@ -179,7 +179,8 @@ fn quota_exceeded() -> AppError {
 
 /// Opens a transaction holding the user's row lock and returns it with the
 /// number of quotes the user keeps. The lock serialises one user's saves,
-/// so two parallel saves cannot both pass the quota check.
+/// so two parallel saves cannot both pass the quota check; `NO KEY` leaves
+/// the row free for inserts elsewhere that only reference it.
 async fn lock_user_quotes(
     db: &DatabaseConnection,
     user_id: Uuid,
@@ -197,7 +198,7 @@ async fn lock_user_quotes(
         .map_err(|e| AppError::Internal(format!("Failed to open quote transaction: {e}")))?;
     let lock = Statement::from_sql_and_values(
         sea_orm::DatabaseBackend::Postgres,
-        "SELECT id FROM users WHERE id = $1 FOR UPDATE",
+        "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE",
         [sea_orm::Value::from(user_id)],
     );
     txn.execute(lock)

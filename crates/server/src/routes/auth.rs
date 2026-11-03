@@ -4,7 +4,7 @@ use crate::{
     error::HttpError,
     middleware::{
         auth::AuthUser,
-        rate_limit::{client_ip_from_headers, client_subject_from_headers},
+        rate_limit::{client_ip_from_headers, client_subject_from_headers, first_refusal},
     },
     AppState,
 };
@@ -20,11 +20,11 @@ use infra::{
     activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
     ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
     generate_refresh_token, hit_window, is_session_revoked, issue_access_token, list_sessions,
-    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
-    revoke_refresh_token, revoke_session, revoke_session_tokens, send_account_exists_email,
-    send_otp_email, start_registration, store_refresh_token, touch_session, update_user_password,
-    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
-    verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
+    release_code_quota, release_hits, revoke_all_user_sessions, revoke_family_on_reuse,
+    revoke_other_sessions_keeping, revoke_refresh_token, revoke_session, revoke_session_tokens,
+    send_account_exists_email, send_otp_email, start_registration, store_refresh_token,
+    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
+    verify_access_token, verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -142,6 +142,25 @@ async fn claim_login_attempt(
     Ok(())
 }
 
+/// Gives the attempt back when the password was never checked (no Argon2
+/// slot): under a flood a reader's retries must not lock them out.
+async fn release_login_attempt(redis: &mut infra::RedisConn, email: &str, ip: &str) {
+    let keys = login_attempt_keys(email, ip).map(|(key, _)| key);
+    if let Err(e) = release_hits(redis, &keys).await {
+        tracing::warn!(target: "server::auth", error = %e, "Could not give back an unchecked login attempt");
+    }
+}
+
+/// Gives back the mail counted for this signup when none went out.
+async fn release_signup_mail(redis: &mut infra::RedisConn, email: &str, budget: u32) {
+    release_code_quota(redis, email).await;
+    if budget > 0 {
+        if let Err(e) = release_hits(redis, &[MAIL_BUDGET_KEY.to_string()]).await {
+            tracing::warn!(target: "server::auth", error = %e, "Could not give back unsent signup mail");
+        }
+    }
+}
+
 /// A failed attempt that spent a budget locks it for a full window from now.
 async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
     for (key, limit) in login_attempt_keys(email, ip) {
@@ -165,11 +184,7 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     }
 }
 
-/// True only for the first count past the ceiling, so the operator sees one
-/// event per window however long the refusals go on.
-fn first_refusal(count: i64, ceiling: i64) -> bool {
-    count == ceiling + 1
-}
+const MAIL_BUDGET_KEY: &str = "budget:otp:hour";
 
 /// Counts one signup mail against the hourly ceiling of every address
 /// together; past it signup answers 503 and the first refusal of the hour
@@ -178,7 +193,7 @@ async fn claim_mail_budget(redis: &mut infra::RedisConn, budget: u32) -> Result<
     if budget == 0 {
         return Ok(());
     }
-    let (sent, ttl) = hit_window(redis, "budget:otp:hour", 3600)
+    let (sent, ttl) = hit_window(redis, MAIL_BUDGET_KEY, 3600)
         .await
         .map_err(redis_unavailable)?;
     let budget = i64::from(budget);
@@ -242,11 +257,14 @@ pub async fn signup(
         .map_err(HttpError::from)?;
     claim_mail_budget(&mut redis_conn, state.config.email.otp_hourly_budget).await?;
 
-    let password_hash = state
-        .argon2
-        .hash(req.password.clone())
-        .await
-        .map_err(HttpError::from)?;
+    let mail_budget = state.config.email.otp_hourly_budget;
+    let password_hash = match state.argon2.hash(req.password.clone()).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            release_signup_mail(&mut redis_conn, &req.email, mail_budget).await;
+            return Err(HttpError(e));
+        }
+    };
     let (registration_id, otp) = start_registration(
         &mut redis_conn,
         &req.email,
@@ -267,6 +285,7 @@ pub async fn signup(
     };
     if let Err(e) = delivered {
         tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
+        release_signup_mail(&mut redis_conn, &req.email, mail_budget).await;
         return Err(HttpError(e));
     }
 
@@ -357,7 +376,7 @@ pub async fn login(
     // usable one, before anything branches on the account: unknown, pending
     // and wrong-password answers take the same time and say the same thing.
     let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
-    let matches = state
+    let checked = state
         .argon2
         .verify(
             req.password.clone(),
@@ -365,8 +384,16 @@ pub async fn login(
                 .clone()
                 .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
         )
-        .await
-        .map_err(HttpError::from)?;
+        .await;
+    let matches = match checked {
+        Ok(matches) => matches,
+        Err(e) => {
+            if matches!(e, AppError::ServiceUnavailable { .. }) {
+                release_login_attempt(&mut redis_conn, &req.email, &client_ip).await;
+            }
+            return Err(HttpError(e));
+        }
+    };
     let user = match user {
         Some(user) if matches && stored_hash.is_some() && user.is_active => user,
         _ => {
@@ -911,16 +938,4 @@ pub fn user_routes() -> Router<Arc<AppState>> {
         .route("/sessions/{session_id}", delete(revoke_my_session))
         .route("/badges", get(crate::routes::list_user_badges))
         .route("/streak", get(crate::routes::get_my_streak))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::first_refusal;
-
-    #[test]
-    fn a_spent_ceiling_is_reported_once_per_window() {
-        let reported = (1..=200).filter(|&n| first_refusal(n, 100)).count();
-        assert_eq!(reported, 1);
-        assert!(first_refusal(101, 100));
-    }
 }

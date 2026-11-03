@@ -174,6 +174,13 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     let (resp, body) = harness.send_json_request(signup()).await;
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
+
+    // No mail went out, so none counts against the address.
+    let mut redis = harness.live_only().await.expect("live Redis");
+    let sent: Option<i64> = redis::AsyncCommands::get(&mut redis, format!("otp:sent:3600:{email}"))
+        .await
+        .unwrap();
+    assert_eq!(sent.unwrap_or(0), 0);
     harness.cleanup().await;
 }
 
