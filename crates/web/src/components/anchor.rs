@@ -2,7 +2,28 @@
 //! view mounts, before async content has laid out; pages call back in here
 //! after loading so the target ends up where the reader expects it.
 
+use leptos::prelude::request_animation_frame;
+use leptos::task::spawn_local;
+use wasm_bindgen::JsCast;
 use web_sys::{ScrollBehavior, ScrollIntoViewOptions, ScrollLogicalPosition};
+
+/// Runs `f` in the first frame after the house fonts have loaded. Text set
+/// in a fallback font wraps differently (the Indonesian greeting by a whole
+/// line), so a scroll aimed earlier lands off target once the page reflows,
+/// and scroll anchoring does not correct a smooth scroll in flight.
+pub fn after_fonts(f: impl FnOnce() + 'static) {
+    spawn_local(async move {
+        let ready = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| js_sys::Reflect::get(&d, &"fonts".into()).ok())
+            .and_then(|fonts| js_sys::Reflect::get(&fonts, &"ready".into()).ok())
+            .and_then(|ready| ready.dyn_into::<js_sys::Promise>().ok());
+        if let Some(ready) = ready {
+            let _ = wasm_bindgen_futures::JsFuture::from(ready).await;
+        }
+        request_animation_frame(f);
+    });
+}
 
 pub fn prefers_reduced_motion() -> bool {
     web_sys::window()

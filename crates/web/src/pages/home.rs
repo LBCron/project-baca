@@ -3,7 +3,7 @@
 //! "how it works" band.
 
 use crate::api;
-use crate::components::anchor::{reveal, scroll_to_location_hash};
+use crate::components::anchor::{after_fonts, reveal, scroll_to_location_hash};
 use crate::components::book_card::{BookCard, Cover, SkeletonCard};
 use crate::components::icons;
 use crate::components::progress::{ProgressBar, ProgressRing};
@@ -233,8 +233,8 @@ pub fn HomePage() -> impl IntoView {
 
     // The search tab lands here with `?search=1`; `autofocus` only works
     // once per document, so the field takes focus as soon as it exists. The
-    // scroll to it waits for the first catalog page (below): a scroll aimed
-    // before the page settles overshot and left the field under the header.
+    // scroll to it waits for the first catalog page and the fonts (below): a
+    // scroll aimed before the page settles left the field under the header.
     Effect::new(move || {
         if !wants_search() {
             return;
@@ -296,7 +296,7 @@ pub fn HomePage() -> impl IntoView {
             set_loading.set(false);
             if first_load.try_get_value() == Some(true) {
                 first_load.set_value(false);
-                request_animation_frame(move || {
+                after_fonts(move || {
                     scroll_to_location_hash();
                     reveal_search();
                 });

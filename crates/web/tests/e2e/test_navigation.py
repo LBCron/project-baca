@@ -2,6 +2,8 @@
 catalog loads, exactly one item carries the active marker, the search tab
 really focuses the field, sheets keep keyboard focus, and the shell follows
 the system scheme until the reader picks one."""
+import time
+
 import pytest
 from playwright.sync_api import Browser, Page, expect
 
@@ -87,14 +89,23 @@ def test_tab_stays_inside_an_open_sheet(clean_page: Page):
     assert_no_page_errors(page)
 
 
+def _slow_font(route) -> None:
+    time.sleep(1.5)
+    route.continue_()
+
+
+@pytest.mark.parametrize("fonts", ["prompt", "late"])
 @pytest.mark.parametrize("locale", ["en-US", "id-ID"])
-def test_focused_search_field_clears_the_sticky_header(browser: Browser, locale: str):
+def test_focused_search_field_clears_the_sticky_header(browser: Browser, locale: str, fonts: str):
     # A real phone context: the overshoot only showed with mobile emulation,
-    # after the catalog had loaded.
+    # after the catalog had loaded. Late fonts reflow the greeting (by a line
+    # in Indonesian) after the catalog arrives, as on a slow CI runner.
     context = browser.new_context(
         viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, locale=locale
     )
     page = context.new_page()
+    if fonts == "late":
+        page.route("**/*.woff2", _slow_font)
     page.goto(f"{WEB}/?search=1", wait_until="networkidle")
     page.wait_for_timeout(2500)
     geometry = page.evaluate(
