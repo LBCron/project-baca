@@ -601,7 +601,9 @@ pub async fn change_password(
                 let _: Result<(), _> = redis_conn.set_ex(&lockout_key, "1", 900).await;
             }
         }
-        return Err(HttpError(AppError::Unauthorized(
+        // 403, not 401: the session is fine, the answer was wrong. A 401
+        // would send the client through a refresh and a second attempt.
+        return Err(HttpError(AppError::Forbidden(
             "Current password is incorrect".to_string(),
         )));
     }

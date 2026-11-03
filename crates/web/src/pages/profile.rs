@@ -1,6 +1,7 @@
 //! Shelf and profile: streak, saved books, badges, quotes, sessions.
 
 use crate::api;
+use crate::components::auth::friendly_error;
 use crate::components::book_card::Cover;
 use crate::components::icons;
 use crate::components::progress::ProgressBar;
@@ -195,10 +196,12 @@ fn SessionsPanel() -> impl IntoView {
     let (revoke_others, set_revoke_others) = signal(true);
     let (busy, set_busy) = signal(false);
     let (revoke_armed, set_revoke_armed) = signal(false);
+    let (password_error, set_password_error) = signal(None::<String>);
 
     let change_password = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         set_busy.set(true);
+        set_password_error.set(None);
         spawn_local(async move {
             let req = shared::ChangePasswordRequest {
                 current_password: current_pw.get_untracked(),
@@ -211,11 +214,14 @@ fn SessionsPanel() -> impl IntoView {
                     set_current_pw.set(String::new());
                     set_new_pw.set(String::new());
                 }
-                Err(e) => toasts.error(
-                    e.split_once(": ")
-                        .map(|(_, m)| m.to_string())
-                        .unwrap_or_else(|| lang.get_untracked().text("error_generic")),
-                ),
+                Err(e) => {
+                    let lang = lang.get_untracked();
+                    set_password_error.set(Some(if e.starts_with("FORBIDDEN") {
+                        lang.text("current_password_wrong")
+                    } else {
+                        friendly_error(&e, lang)
+                    }));
+                }
             }
             set_busy.set(false);
         });
@@ -259,6 +265,7 @@ fn SessionsPanel() -> impl IntoView {
                     <input type="checkbox" prop:checked=move || revoke_others.get() on:change=move |ev| set_revoke_others.set(event_target_checked(&ev))/>
                     <span>{move || lang.get().text("revoke_others")}</span>
                 </label>
+                {move || password_error.get().map(|e| view! { <p class="form-error" role="alert">{e}</p> })}
                 <div class="sheet-actions">
                     <button type="submit" class="btn btn-primary" disabled=move || busy.get()>{move || lang.get().text("change_password")}</button>
                 </div>

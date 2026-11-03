@@ -2100,3 +2100,37 @@ async fn test_login_time_does_not_tell_pending_from_unknown() {
     );
     harness.cleanup().await;
 }
+
+/// A wrong current password is the form's problem, not the session's: 403,
+/// counted once toward the change lockout, and the session keeps working.
+#[tokio::test]
+async fn test_wrong_current_password_is_403_and_keeps_the_session() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "pwdwrong", &ip).await;
+    let user_id = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sub;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "current_password": "NotMyPassword123!", "new_password": "BrandNewPass123!" })
+                .to_string(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+    let counted: i64 = redis
+        .get(format!("auth:pwd_change:fail:{user_id}"))
+        .await
+        .unwrap();
+    assert_eq!(counted, 1);
+    let resp = harness.send_request(me_req(&access)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "the session is untouched");
+    harness.cleanup().await;
+}

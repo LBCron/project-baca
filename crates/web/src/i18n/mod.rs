@@ -289,6 +289,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("offline_books", "Tersimpan di perangkat", "Saved on this device"),
     ("sessions", "Sesi dan keamanan", "Sessions and security"),
     ("current_password", "Kata sandi saat ini", "Current password"),
+    ("current_password_wrong", "Kata sandi lamamu tidak cocok.", "Your current password does not match."),
     ("new_password", "Kata sandi baru", "New password"),
     ("revoke_others", "Keluarkan sesi di perangkat lain", "Sign out other devices"),
     ("change_password", "Ganti kata sandi", "Change password"),
