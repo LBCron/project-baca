@@ -358,18 +358,74 @@ class LimitsTest(unittest.TestCase):
         embed.assert_not_called()
 
     def test_a_rejected_upload_fails_at_once_without_retries(self):
-        client = mock.MagicMock()
-        client.pipeline.return_value.execute.return_value = [1, True]
-        client.xreadgroup.return_value = [("s", [("9-0", {"job_id": "j", "book_id": "b", "storage_path": "p"})])]
-        with mock.patch.object(worker, "make_redis", return_value=client), \
-             mock.patch.object(worker, "keep_claimed"), \
-             mock.patch.object(worker, "process_message", side_effect=worker.RejectedEpub("EPUB has more than 2000 chapters")), \
-             mock.patch.object(worker, "dead_letter") as dead:
-            worker.run(once=True, settings=worker.Settings())
-        dead.assert_not_called()
+        client, dead, _ = run_once_with(side_effect=worker.RejectedEpub("EPUB has more than 2000 chapters"))
+        dead.assert_called_once()
+        self.assertEqual(dead.call_args.args[3:], ("b", "EPUB has more than 2000 chapters"))
         client.xack.assert_called_once()
         status = client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual((status["status"], status["error"]), ("failed", "EPUB has more than 2000 chapters"))
+
+
+def run_once_with(attempts: int = 1, **process):
+    """One worker turn over one new entry, with the job's attempt counter at
+    ``attempts`` after this delivery; returns the Redis mock and the
+    dead_letter and process_message mocks."""
+    client = mock.MagicMock()
+    client.pipeline.return_value.execute.return_value = [attempts, True]
+    client.xreadgroup.return_value = [("s", [("9-0", {"job_id": "j", "book_id": "b", "storage_path": "p"})])]
+    with mock.patch.object(worker, "make_redis", return_value=client), \
+         mock.patch.object(worker, "keep_claimed"), \
+         mock.patch.object(worker, "process_message", **process) as run_job, \
+         mock.patch.object(worker, "dead_letter") as dead:
+        worker.run(once=True, settings=worker.Settings())
+    return client, dead, run_job
+
+
+class FailureHandlingTest(unittest.TestCase):
+    def test_a_missing_object_is_permanent(self):
+        from minio.error import S3Error
+
+        minio = mock.Mock()
+        minio.get_object.side_effect = S3Error(None, "NoSuchKey", "gone", "r", "rid", "hid")
+        with self.assertRaisesRegex(worker.PermanentJobError, "gone from storage"):
+            worker.read_upload(minio, "bucket", "raw-epubs/x.epub")
+
+    def test_a_job_past_its_attempts_is_dead_lettered_without_running(self):
+        client, dead, run_job = run_once_with(attempts=worker.MAX_ATTEMPTS + 1)
+        run_job.assert_not_called()
+        dead.assert_called_once()
+        self.assertIn("stopped 3 times", dead.call_args.args[4])
+        client.xack.assert_called_once()
+
+    def test_a_transient_failure_stays_pending_and_says_so(self):
+        client, dead, _ = run_once_with(attempts=1, side_effect=ConnectionResetError("peer reset at 10.0.0.7:9000"))
+        dead.assert_not_called()
+        client.xack.assert_not_called()
+        status = client.pipeline.return_value.hset.call_args.kwargs["mapping"]
+        self.assertEqual(status["status"], "queued")
+        self.assertIn("Unexpected ConnectionResetError", status["error"])
+        self.assertNotIn("10.0.0.7", status["error"], "internal detail stays in the log")
+
+    def test_the_last_transient_failure_is_dead_lettered(self):
+        client, dead, _ = run_once_with(attempts=3, side_effect=RuntimeError("Gemini API unavailable (HTTP 503)"))
+        self.assertEqual(dead.call_args.args[4], "Gemini API unavailable (HTTP 503)")
+        client.xack.assert_called_once()
+
+    def test_a_deleted_pending_entry_is_acknowledged_and_skipped(self):
+        client = mock.MagicMock()
+        client.xautoclaim.return_value = ["0-0", [("5-0", None)], []]
+        with mock.patch.object(worker, "make_redis", return_value=client), \
+             mock.patch.object(worker, "process_message") as process:
+            worker.run(once=True, settings=worker.Settings())
+        process.assert_not_called()
+        client.xack.assert_called_once_with(worker.Settings().stream, worker.Settings().group, "5-0")
+
+    def test_reclaim_carries_its_cursor(self):
+        client = mock.MagicMock()
+        client.xautoclaim.return_value = ["7-0", [("3-0", {"job_id": "j"})], []]
+        entries, cursor = worker.reclaim_idle(client, worker.Settings(), "c", "2-0")
+        self.assertEqual((entries, cursor), ([("3-0", {"job_id": "j"})], "7-0"))
+        self.assertEqual(client.xautoclaim.call_args.kwargs["start_id"], "2-0")
 
 
 class ArchivedBeforeEmbeddingTest(unittest.TestCase):
@@ -600,10 +656,10 @@ class RetryAndRecapTests(unittest.TestCase):
 class StreamCapTest(unittest.TestCase):
     def test_dead_letters_are_capped_like_the_ingestion_stream(self):
         client = mock.Mock()
-        worker.dead_letter(client, worker.Settings(), "job-1", RuntimeError("boom"))
+        worker.dead_letter(client, worker.Settings(), "job-1", "book-1", "boom")
         args, kwargs = client.xadd.call_args
         self.assertEqual(args[0], "stream:epub_ingestion:dlq")
-        self.assertEqual(args[1], {"job_id": "job-1", "error": "boom"})
+        self.assertEqual(args[1], {"job_id": "job-1", "book_id": "book-1", "error": "boom"})
         self.assertEqual(kwargs, {"maxlen": 10_000, "approximate": True})
 
 
@@ -748,9 +804,9 @@ class ReclaimTest(unittest.TestCase):
         for reply in (["0-0", [entry], []], ["0-0", [entry]]):
             client = mock.Mock()
             client.xautoclaim.return_value = reply
-            self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), [entry])
+            self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), ([entry], "0-0"))
 
     def test_reclaim_failure_is_not_fatal(self):
         client = mock.Mock()
         client.xautoclaim.side_effect = RuntimeError("NOGROUP")
-        self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), [])
+        self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), ([], "0-0"))

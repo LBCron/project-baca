@@ -730,9 +730,7 @@ async fn test_upload_accepts_multi_megabyte_epub() {
             .delete_epub(&format!("raw-epubs/{book_id}.epub"))
             .await;
     }
-    let _ = books::Entity::delete_by_id(book_id)
-        .exec(&harness.state.db)
-        .await;
+    harness.track_book(book_id);
     harness.cleanup().await;
 }
 

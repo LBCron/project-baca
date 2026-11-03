@@ -699,9 +699,13 @@ pub struct JobStatusDto {
     pub status: String,
     /// Completion percentage 0-100.
     pub progress: i32,
-    /// Why a failed job failed, in the worker's words.
+    /// Why the job failed, or why its last attempt did while it waits for
+    /// a retry, in the worker's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Runs the worker has started for this job, crashes included.
+    #[serde(default)]
+    pub attempts: i32,
 }
 
 /// Accepted EPUB upload response (HTTP 202).

@@ -133,7 +133,7 @@ class ClaimAndShutdownLiveTest(unittest.TestCase):
                 )
             self.assertEqual(stolen, [], "a live job must stay with its worker")
             time.sleep(1.8)
-            reclaimed = worker.reclaim_idle(self.client, settings, "replica-b")
+            reclaimed, _ = worker.reclaim_idle(self.client, settings, "replica-b")
             self.assertEqual([entry[0] for entry in reclaimed], [msg_id], "a dead worker's job is reclaimed")
         finally:
             self.cleanup(settings)
@@ -252,6 +252,59 @@ class JobTtlLiveTest(unittest.TestCase):
                 self.assertGreater(client.ttl(key), worker.JOB_TTL_SECONDS - 60)
         finally:
             client.delete(key)
+
+
+@unittest.skipUnless(services_up() and database_up(), "live Redis and Postgres required")
+class FailureRecoveryLiveTest(unittest.TestCase):
+    def setUp(self):
+        self.client = redis.Redis.from_url(
+            os.environ.get("REDIS_URL", "redis://localhost:6380/0"), decode_responses=True
+        )
+        self.settings = probe_settings(reclaim_idle_ms=500)
+        worker.ensure_group(self.client, self.settings)
+        self.jobs: list[str] = []
+
+    def tearDown(self):
+        self.client.delete(
+            self.settings.stream, self.settings.dlq_stream, *[f"job:{j}" for j in self.jobs]
+        )
+
+    def pending_under_a_dead_replica(self, count: int) -> list[str]:
+        """Entries delivered to a consumer that then died, as after a crash."""
+        jobs = [f"probe-{uuid.uuid4()}" for _ in range(count)]
+        for job_id in jobs:
+            self.client.xadd(
+                self.settings.stream,
+                {"book_id": str(uuid.uuid4()), "storage_path": f"raw-epubs/{job_id}.epub", "job_id": job_id},
+            )
+        self.client.xreadgroup(self.settings.group, "dead-replica", {self.settings.stream: ">"}, count=count)
+        self.jobs += jobs
+        return jobs
+
+    def test_a_released_job_is_not_starved_by_an_old_backlog(self):
+        self.pending_under_a_dead_replica(100)
+        (released,) = self.pending_under_a_dead_replica(1)
+        time.sleep(self.settings.reclaim_idle_ms / 1000)
+        started = time.monotonic()
+        while self.client.hget(f"job:{released}", "status") != "failed" and time.monotonic() - started < 15:
+            worker.run(once=True, settings=self.settings)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn("gone from storage", self.client.hget(f"job:{released}", "error"))
+        self.assertEqual(self.client.xlen(self.settings.dlq_stream), 101, "each missing upload fails at once")
+        self.assertEqual(self.client.xpending(self.settings.stream, self.settings.group)["pending"], 0)
+
+    def test_a_job_that_killed_the_worker_three_times_is_not_run_again(self):
+        (job_id,) = self.pending_under_a_dead_replica(1)
+        self.client.hset(f"job:{job_id}", mapping={"attempts": str(worker.MAX_ATTEMPTS)})
+        time.sleep(self.settings.reclaim_idle_ms / 1000)
+        with mock.patch.object(worker, "process_message") as run_job:
+            worker.run(once=True, settings=self.settings)
+        run_job.assert_not_called()
+        (_, letter), = self.client.xrange(self.settings.dlq_stream)
+        self.assertEqual(letter["job_id"], job_id)
+        self.assertIn("stopped 3 times", letter["error"])
+        self.assertEqual(self.client.hget(f"job:{job_id}", "status"), "failed")
+        self.assertEqual(self.client.xpending(self.settings.stream, self.settings.group)["pending"], 0)
 
 
 if __name__ == "__main__":

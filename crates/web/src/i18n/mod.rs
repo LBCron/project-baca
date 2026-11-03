@@ -335,6 +335,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("job_summarizing", "Merangkum", "Summarizing"),
     ("job_published", "Terbit", "Published"),
     ("job_failed", "Gagal", "Failed"),
+    ("job_retrying", "Percobaan {n} gagal, akan dicoba lagi otomatis.", "Attempt {n} failed; it will be retried."),
     ("admin_forbidden", "Halaman ini untuk kurator.", "This page is for curators."),
     ("admin_desk", "Meja kurator", "Curator desk"),
     ("tab_manuscripts", "Naskah", "Manuscripts"),

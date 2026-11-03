@@ -58,9 +58,14 @@ class EpubLimits:
     chunks: int = 8_000
 
 
-class RejectedEpub(ValueError):
-    """An upload that can never ingest: malformed or past a limit. It fails
-    its job at once with this message instead of being retried."""
+class PermanentJobError(Exception):
+    """A job no retry can fix: a broken upload, a missing object or row. It
+    goes to the dead-letter queue at once, its message shown to the curator,
+    so it must name the problem without internal detail."""
+
+
+class RejectedEpub(PermanentJobError, ValueError):
+    """An upload that can never ingest: malformed or past a limit."""
 
 
 @dataclass
@@ -674,8 +679,7 @@ def set_job(redis_client, job_id: str, status: str, progress: int, error: str = 
         "progress": str(progress),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if error:
-        fields["error"] = error[:2000]
+    fields["error"] = error[:2000]
     write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, mapping=fields))
 
 
@@ -708,6 +712,33 @@ def convert_cover_to_webp(cover_bytes: bytes) -> bytes:
 
 
 ARCHIVED_ERROR = "Book is archived; it was not republished"
+MISSING_OBJECT_CODES = {"NoSuchKey", "NoSuchBucket"}
+
+
+def read_upload(minio_client, bucket: str, path: str) -> bytes:
+    from minio.error import S3Error
+
+    try:
+        response = minio_client.get_object(bucket, path)
+    except S3Error as exc:
+        if exc.code in MISSING_OBJECT_CODES:
+            raise PermanentJobError("The uploaded EPUB is gone from storage; upload it again") from exc
+        raise
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def curator_reason(exc: BaseException) -> str:
+    """What the curator desk shows. Only permanent errors are worded for it;
+    anything else names its kind, and the worker log keeps the detail."""
+    if isinstance(exc, PermanentJobError):
+        return str(exc)
+    if isinstance(exc, RuntimeError) and str(exc).startswith("Gemini API"):
+        return str(exc)
+    return f"Unexpected {type(exc).__name__}; the worker log has the details"
 
 
 def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
@@ -725,10 +756,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
     try:
         set_job(redis_client, job_id, "parsing", 5)
-        response = minio_client.get_object(settings.bucket_epubs, storage_path)
-        epub_bytes = response.read()
-        response.close()
-        response.release_conn()
+        epub_bytes = read_upload(minio_client, settings.bucket_epubs, storage_path)
         parsed = parse_epub(epub_bytes, settings.limits)
 
         # Metadata backfill: fill only blank admin-provided fields.
@@ -738,7 +766,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         )
         row = cur.fetchone()
         if row is None:
-            raise RuntimeError(f"Book row missing: {book_id}")
+            raise PermanentJobError("The book was deleted before ingestion")
         if row[3] == "archived":
             # A curator archived it; a replay must neither republish it nor
             # spend embeddings on it.
@@ -816,7 +844,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             for index, piece in enumerate(chapter.chunks):
                 pending.append((chapter_id, index, piece))
         if not pending:
-            raise RuntimeError("No embeddable chunks produced")
+            raise PermanentJobError("EPUB yields no passages to embed")
         # The book row is free since the first commit, so a curator may have
         # archived it already; stop before the embeddings and summaries are paid.
         cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
@@ -930,6 +958,9 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
 # Consumer loop
 
+# Runs of one job before it is dead-lettered, crashes included.
+MAX_ATTEMPTS = 3
+
 
 class WorkerShutdown(BaseException):
     """Raised from the SIGTERM/SIGINT handler. A BaseException so the
@@ -974,23 +1005,31 @@ def keep_claimed(redis_client, settings: Settings, consumer: str, msg_id: str):
         thread.join(timeout=5)
 
 
-def reclaim_idle(redis_client, settings: Settings, consumer: str) -> list:
-    """Takes over one entry idle past `RECLAIM_IDLE_MS` (dead-worker
-    recovery). Redis 7 answers XAUTOCLAIM with three values (next cursor,
-    entries, deleted ids) and Redis 6.2 with two; only the entries matter."""
+def reclaim_idle(
+    redis_client, settings: Settings, consumer: str, cursor: str = "0-0"
+) -> tuple[list, str]:
+    """Takes over the next entry idle past `RECLAIM_IDLE_MS` (dead-worker
+    recovery), scanning the pending list from ``cursor``; returns the entries
+    and the cursor for the next call, which wraps to ``0-0`` after a pass.
+
+    One entry at a time on purpose: a batch would leave the rest idle behind
+    the first job, and another replica would take and ingest them twice.
+    Redis 7 answers with three values (cursor, entries, deleted ids)."""
     try:
         reply = redis_client.xautoclaim(
             settings.stream,
             settings.group,
             consumer,
             min_idle_time=settings.reclaim_idle_ms,
-            start_id="0-0",
+            start_id=cursor,
             count=1,
         )
     except Exception as exc:  # noqa: BLE001 - reclaim is best-effort
         LOG.warning("xautoclaim failed: %s", exc)
-        return []
-    return list(reply[1]) if reply and len(reply) > 1 else []
+        return [], "0-0"
+    if not reply or len(reply) < 2:
+        return [], "0-0"
+    return list(reply[1]), str(reply[0])
 
 
 def release_job(redis_client, job_id: str) -> None:
@@ -1023,63 +1062,95 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
     signal.signal(signal.SIGTERM, _raise_shutdown)
     signal.signal(signal.SIGINT, _raise_shutdown)
 
+    # Reclaim runs every turn, before new work, and its cursor walks the
+    # pending list: one entry failing for good cannot hold the rest back.
+    cursor = "0-0"
     while True:
-        try:
-            messages = redis_client.xreadgroup(
-                settings.group, consumer, {settings.stream: ">"}, count=1, block=5000
-            )
-        except Exception as exc:  # noqa: BLE001 - stalled/blocked read: retry loop
-            LOG.warning("stream read stalled (%s); retrying", exc)
-            if once:
-                break
-            continue
-        entries = [entry for _, batch in (messages or []) for entry in batch]
+        entries, cursor = reclaim_idle(redis_client, settings, consumer, cursor)
         if not entries:
-            entries = reclaim_idle(redis_client, settings, consumer)
+            try:
+                messages = redis_client.xreadgroup(
+                    settings.group, consumer, {settings.stream: ">"}, count=1, block=5000
+                )
+            except Exception as exc:  # noqa: BLE001 - stalled/blocked read: retry loop
+                LOG.warning("stream read stalled (%s); retrying", exc)
+                if once:
+                    break
+                continue
+            entries = [entry for _, batch in (messages or []) for entry in batch]
         if not entries:
             if once:
                 break
             continue
         for msg_id, fields in entries:
-                job_id = fields.get("job_id", msg_id)
-                try:
-                    attempts = int(
-                        write_job(
-                            redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", 1)
-                        )
-                    )
-                except (TypeError, ValueError):
-                    attempts = 0
-                try:
-                    with keep_claimed(redis_client, settings, consumer, msg_id):
-                        process_message(msg_id, fields, settings)
-                    redis_client.xack(settings.stream, settings.group, msg_id)
-                    processed += 1
-                except WorkerShutdown:
-                    release_job(redis_client, job_id)
-                    LOG.info("shutdown: job %s released unacknowledged", job_id)
-                    raise
-                except RejectedEpub as exc:
-                    # Retrying cannot change the file: fail it now, say why.
-                    LOG.warning("job %s rejected: %s", job_id, exc)
-                    set_job(redis_client, job_id, "failed", 100, error=str(exc))
-                    redis_client.xack(settings.stream, settings.group, msg_id)
-                except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
-                    LOG.exception("job %s failed: %s", job_id, exc)
-                    if attempts >= 3:
-                        dead_letter(redis_client, settings, job_id, exc)
-                        set_job(redis_client, job_id, "failed", 100, error=str(exc))
-                        redis_client.xack(settings.stream, settings.group, msg_id)
-                    # Otherwise leave unacknowledged for XPENDING reclaim.
-                if once:
-                    return 0
+            if handle_entry(redis_client, settings, consumer, msg_id, fields):
+                processed += 1
+            if once:
+                return 0
     return processed
 
 
-def dead_letter(redis_client, settings: Settings, job_id: str, exc: Exception) -> None:
+def handle_entry(redis_client, settings: Settings, consumer: str, msg_id: str, fields) -> bool:
+    """Runs one stream entry to an end: published, retried later, or failed
+    for good. Returns whether it published."""
+    if not fields:
+        # The entry's payload was deleted (XDEL) while it sat pending.
+        redis_client.xack(settings.stream, settings.group, msg_id)
+        return False
+    job_id = fields.get("job_id", msg_id)
+    try:
+        attempts = int(
+            write_job(redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", 1))
+        )
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts > MAX_ATTEMPTS:
+        # Earlier attempts never reached an except clause: the process was
+        # killed (OOM, SIGKILL) mid-job. A fourth run would only die again.
+        fail_job(
+            redis_client, settings, msg_id, fields,
+            f"The worker stopped {MAX_ATTEMPTS} times while ingesting this book",
+        )
+        return False
+    try:
+        with keep_claimed(redis_client, settings, consumer, msg_id):
+            process_message(msg_id, fields, settings)
+    except WorkerShutdown:
+        release_job(redis_client, job_id)
+        LOG.info("shutdown: job %s released unacknowledged", job_id)
+        raise
+    except PermanentJobError as exc:
+        LOG.warning("job %s failed for good: %s", job_id, exc)
+        fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
+        LOG.exception("job %s failed: %s", job_id, exc)
+        if attempts >= MAX_ATTEMPTS:
+            fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
+        else:
+            # Left unacknowledged: reclaim retries it once it is idle.
+            set_job(
+                redis_client, job_id, "queued", 0,
+                error=curator_reason(exc),
+            )
+        return False
+    redis_client.xack(settings.stream, settings.group, msg_id)
+    return True
+
+
+def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason: str) -> None:
+    """Ends a job for good: dead letter first, so a crash before the ack
+    leaves it pending rather than lost."""
+    job_id = fields.get("job_id", msg_id)
+    dead_letter(redis_client, settings, job_id, fields.get("book_id", ""), reason)
+    set_job(redis_client, job_id, "failed", 100, error=reason)
+    redis_client.xack(settings.stream, settings.group, msg_id)
+
+
+def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, reason: str) -> None:
     redis_client.xadd(
         settings.dlq_stream,
-        {"job_id": job_id, "error": str(exc)[:2000]},
+        {"job_id": job_id, "book_id": book_id, "error": reason[:2000]},
         maxlen=settings.stream_maxlen,
         approximate=True,
     )
