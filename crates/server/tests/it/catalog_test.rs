@@ -783,18 +783,22 @@ async fn test_book_text_search_finds_paragraphs() {
     if harness.live_only().await.is_none() {
         panic!("live DB required (db-up)");
     }
-    let (book_id, chapter_id) = seed_book_with_chapter(&harness, "published").await;
-    chapters::Entity::update_many()
-        .col_expr(
-            chapters::Column::HtmlContent,
-            sea_orm::sea_query::Expr::value(
-                "<h2>Pembuka</h2><p>Kabut turun di pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100% penuh.</p><p>Kapal tiba.</p>",
-            ),
-        )
-        .filter(chapters::Column::Id.eq(chapter_id))
-        .exec(&harness.state.db)
-        .await
-        .unwrap();
+    let (book_id, _) = seed_book_with_chapter(&harness, "published").await;
+    // The rows the worker writes for "<h2>Pembuka</h2><p>Kabut turun di
+    // pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100%
+    // penuh.</p><p>Kapal tiba.</p><p>the secure\n   ancestral hall</p>":
+    // entities decoded, whitespace collapsed, numbered like the reader's p-N.
+    seed_paragraphs(
+        &harness,
+        book_id,
+        &[
+            "Kabut turun di pelabuhan.",
+            "Laras menulis surat & menunggu kapal 100% penuh.",
+            "Kapal tiba.",
+            "the secure ancestral hall",
+        ],
+    )
+    .await;
     let search = |q: &str| {
         Request::builder()
             .uri(format!("/api/v1/books/{book_id}/search?q={}", urlencode(q)))
@@ -830,6 +834,14 @@ async fn test_book_text_search_finds_paragraphs() {
         "wildcards stay literal"
     );
 
+    let (_, body) = harness.send_json_request(search("secure ancestral")).await;
+    assert_eq!(
+        body["data"][0]["paragraph"], 4,
+        "a phrase broken across source lines: {body}"
+    );
+    let (_, body) = harness.send_json_request(search("surat & menunggu")).await;
+    assert_eq!(body["data"][0]["paragraph"], 2, "a decoded entity: {body}");
+
     let (resp, _) = harness.send_json_request(search("k")).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let (draft_id, _) = seed_book_with_chapter(&harness, "draft").await;
@@ -842,6 +854,23 @@ async fn test_book_text_search_finds_paragraphs() {
         StatusCode::NOT_FOUND
     );
     harness.cleanup().await;
+}
+
+/// Writes chapter 1's paragraph index the way the worker does.
+async fn seed_paragraphs(harness: &TestHarness, book_id: Uuid, texts: &[&str]) {
+    use sea_orm::ConnectionTrait;
+    for (n, text) in texts.iter().enumerate() {
+        harness
+            .state
+            .db
+            .execute(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Postgres,
+                "INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES ($1, 1, $2, $3, lower($3))",
+                [book_id.into(), (n as i32 + 1).into(), (*text).into()],
+            ))
+            .await
+            .expect("paragraph seed must succeed");
+    }
 }
 
 fn urlencode(text: &str) -> String {

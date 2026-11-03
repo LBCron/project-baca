@@ -418,11 +418,33 @@ pub const BOOK_TEXT_HITS_MAX: usize = 50;
 /// Characters of context kept on each side of a match in a snippet.
 const SNIPPET_CONTEXT: usize = 70;
 
+/// Case folding for matching, one character at a time on both sides: a
+/// whole-string lowercase turns a final capital sigma into `ς` and `İ` into
+/// two characters, so a needle and the text it came from stopped matching.
+fn fold(c: char) -> char {
+    match c.to_lowercase().next().unwrap_or(c) {
+        '\u{03C2}' => '\u{03C3}',
+        lower => lower,
+    }
+}
+
+/// A query as in-book search matches it: whitespace collapsed, then folded
+/// like the `chapter_paragraphs.folded` column the worker writes.
+pub fn fold_for_search(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .map(fold)
+        .collect()
+}
+
 /// The match of `query` in `text` (case-insensitive) with some context on
 /// either side, or `None` when it is absent. Server and offline search share
 /// it, so a hit reads the same either way.
 pub fn text_hit_snippet(text: &str, query: &str) -> Option<String> {
-    let needle: Vec<char> = query.trim().to_lowercase().chars().collect();
+    let needle: Vec<char> = fold_for_search(query).chars().collect();
     if needle.is_empty() {
         return None;
     }
@@ -432,10 +454,7 @@ pub fn text_hit_snippet(text: &str, query: &str) -> Option<String> {
         .join(" ")
         .chars()
         .collect();
-    let folded: Vec<char> = words
-        .iter()
-        .map(|c| c.to_lowercase().next().unwrap_or(*c))
-        .collect();
+    let folded: Vec<char> = words.iter().map(|c| fold(*c)).collect();
     let at = folded
         .windows(needle.len())
         .position(|window| window == needle.as_slice())?;
@@ -814,6 +833,27 @@ mod tests {
         assert!(snippet.starts_with('\u{2026}') && snippet.ends_with('\u{2026}'));
         assert!(snippet.contains("harbour"));
         assert!(snippet.chars().count() <= 2 * 70 + "harbour".len() + 2);
+    }
+
+    #[test]
+    fn snippet_folds_both_sides_alike() {
+        assert!(text_hit_snippet("\u{0130}STANBUL by the sea", "istanbul").is_some());
+        assert!(text_hit_snippet(
+            "THE WANDERINGS OF \u{039F}\u{0394}\u{03A5}\u{03A3}\u{03A3}\u{0395}\u{03A5}\u{03A3}",
+            "\u{03BF}\u{03B4}\u{03C5}\u{03C3}\u{03C3}\u{03B5}\u{03C5}\u{03C2}"
+        )
+        .is_some());
+        assert!(text_hit_snippet("the secure ancestral hall", "secure   ancestral").is_some());
+        assert!(text_hit_snippet("Tom & Jerry", "tom & jerry").is_some());
+    }
+
+    #[test]
+    fn folding_matches_the_worker() {
+        // The same literal is asserted for the worker's fold_for_search.
+        assert_eq!(
+            fold_for_search("\u{0130}STANBUL \u{039F}\u{0394}\u{03A5}\u{03A3}\u{03A3}\u{0395}\u{03A5}\u{03A3} \u{03C2}"),
+            "istanbul \u{03BF}\u{03B4}\u{03C5}\u{03C3}\u{03C3}\u{03B5}\u{03C5}\u{03C3} \u{03C3}"
+        );
     }
 
     #[test]

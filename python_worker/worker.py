@@ -212,6 +212,59 @@ def extract_text(html: str) -> str:
     return " ".join("".join(parser.parts).split())
 
 
+# Start tags that close an open <p> under the HTML parsing rules, among the
+# tags the sanitizer keeps; "</p>" with no <p> open creates an empty one.
+P_CLOSERS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+
+
+def fold_for_search(text: str) -> str:
+    """Case-folds one character at a time, final sigma as sigma; mirrors
+    ``shared::fold_for_search`` so the stored text and a query fold alike."""
+    return "".join((ch.lower()[:1] or ch) for ch in text).replace("\u03c2", "\u03c3")
+
+
+def paragraph_texts(html: str) -> list[str]:
+    """Plain text of each <p> element of sanitized chapter HTML, in the
+    order and count a browser parses them, so entry ``N-1`` is the reader's
+    ``p-N``. Entities are decoded, a ``<br>`` reads as a space (a verse line
+    must not run into the next), and whitespace is collapsed, exactly as
+    offline search reads the stored HTML."""
+
+    class _Paragraphs(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.found: list[list[str]] = []
+            self.open = False
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            tag = tag.lower()
+            if tag in P_CLOSERS:
+                self.open = False
+            if tag == "br" and self.open:
+                self.found[-1].append(" ")
+            if tag == "p":
+                self.found.append([])
+                self.open = True
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag.lower() != "p":
+                if tag.lower() in P_CLOSERS:
+                    self.open = False
+                return
+            if not self.open:
+                self.found.append([])
+            self.open = False
+
+        def handle_data(self, data: str) -> None:
+            if self.open:
+                self.found[-1].append(data)
+
+    parser = _Paragraphs()
+    parser.feed(html)
+    parser.close()
+    return [" ".join("".join(parts).split()) for parts in parser.found]
+
+
 def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     """Splits text into ~target-word chunks at whitespace boundaries.
 
@@ -254,6 +307,7 @@ class ParsedChapter:
     text: str
     word_count: int
     chunks: list[str]
+    paragraphs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -457,6 +511,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
                 text=text,
                 word_count=len(text.split()),
                 chunks=chunks,
+                paragraphs=paragraph_texts(cleaned),
             )
         )
 
@@ -861,6 +916,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 ),
             )
             chapter_ids.append(str(cur.fetchone()[0]))
+            write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
         # Scene chunking at ~400 words, then batched embeddings.
         pending: list[tuple[str, int, str]] = []
@@ -983,6 +1039,47 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             conn.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# Rows per INSERT when writing paragraphs: one statement per paragraph
+# would cost a round trip each for books of tens of thousands.
+PARAGRAPH_BATCH = 500
+
+
+def write_paragraphs(cur, book_id: str, chapter_number: int, paragraphs: list[str]) -> None:
+    """Replaces the indexed paragraphs of one chapter (re-ingestion and the
+    backfill both rewrite them whole)."""
+    cur.execute(
+        "DELETE FROM chapter_paragraphs WHERE book_id = %s AND chapter_number = %s",
+        (book_id, chapter_number),
+    )
+    rows = [(n, text) for n, text in enumerate(paragraphs, start=1)]
+    for offset in range(0, len(rows), PARAGRAPH_BATCH):
+        batch = rows[offset : offset + PARAGRAPH_BATCH]
+        values = ", ".join(["(%s, %s, %s, %s, %s)"] * len(batch))
+        params = [
+            v for n, text in batch for v in (book_id, chapter_number, n, text, fold_for_search(text))
+        ]
+        cur.execute(
+            f"INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES {values}",
+            params,
+        )
+
+
+def backfill_paragraphs(settings: Settings) -> int:
+    """Indexes the paragraphs of every chapter from its stored HTML, for
+    books ingested before the paragraph table existed. Returns chapters done."""
+    conn = make_db(settings)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT book_id, chapter_number, html_content FROM chapters ORDER BY book_id, chapter_number")
+        chapters = cur.fetchall()
+        for book_id, chapter_number, html_content in chapters:
+            write_paragraphs(cur, str(book_id), chapter_number, paragraph_texts(html_content or ""))
+        conn.commit()
+        return len(chapters)
+    finally:
+        conn.close()
 
 
 # Consumer loop
@@ -1210,6 +1307,10 @@ def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, rea
 
 
 def main() -> None:
+    if "--backfill-paragraphs" in sys.argv[1:]:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        LOG.info("indexed the paragraphs of %d chapters", backfill_paragraphs(Settings()))
+        return
     try:
         sys.exit(run(once="--once" in sys.argv[1:]))
     except WorkerShutdown as reason:

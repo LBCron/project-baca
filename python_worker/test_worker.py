@@ -470,6 +470,50 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
         )
 
 
+class ParagraphIndexTest(unittest.TestCase):
+    def test_paragraphs_are_numbered_as_a_browser_parses_them(self):
+        html = (
+            "<h2>Opening</h2><p>The secure\n   ancestral hall</p>"
+            "<p>Tom &amp; Jerry<br/>again</p>"
+            "<p>open<blockquote>quoted</blockquote></p>"
+            "<ul><li>item</li></ul><p><em>last</em> one</p>"
+        )
+        # A blockquote closes the open <p>; its stray </p> opens an empty one.
+        self.assertEqual(
+            worker.paragraph_texts(html),
+            ["The secure ancestral hall", "Tom & Jerry again", "open", "", "last one"],
+        )
+
+    def test_folding_matches_the_server(self):
+        # The same literal is asserted for shared::fold_for_search.
+        self.assertEqual(
+            worker.fold_for_search("\u0130STANBUL \u039f\u0394\u03a5\u03a3\u03a3\u0395\u03a5\u03a3 \u03c2"),
+            "istanbul \u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c3 \u03c3",
+        )
+
+    def test_ingestion_writes_the_paragraph_index(self):
+        cursor = FakeCursor("draft")
+        cursor.fetchone = lambda: ("chapter-id",) if cursor.statements[-1].lstrip().startswith("INSERT INTO chapters") else ("Title", "Author", "en", "draft")
+        params = []
+        record = cursor.execute
+        cursor.execute = lambda sql, p=(): (record(sql, p), params.append((sql, p)))
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        conn.commit.side_effect = [None, RuntimeError("stop at publish")]
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text worth reading.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
+             mock.patch.object(worker, "generate_json", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "stop at publish"):
+                worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
+        inserts = [p for sql, p in params if sql.startswith("INSERT INTO chapter_paragraphs")]
+        self.assertEqual(inserts, [["b", 1, 1, "Some text worth reading.", "some text worth reading."]])
+
+
 class CorruptMemberTest(unittest.TestCase):
     def test_a_corrupt_chapter_rejects_the_upload(self):
         data = bytearray(make_epub([("One", "word " * 2_000)]))

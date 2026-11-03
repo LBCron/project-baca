@@ -579,6 +579,43 @@ def test_book_search_field_takes_focus_and_keeps_it(new_context, book_with_chapt
         context.close()
 
 
+HITS_JS = """() => [...document.querySelectorAll('.search-hit')].map(b =>
+    `${b.dataset.chapter}:${b.dataset.paragraph}:${b.querySelector('.hit-text').textContent}`)"""
+
+
+def test_book_search_online_and_offline_agree(new_context, book_with_chapters: str):
+    """The server's paragraph index and the saved copy find the same
+    paragraphs with the same snippets: one normalization on both sides."""
+    book_id = book_with_chapters
+    queries = ["surat", "kapal", "di pelabuhan", "dan"]
+    context, page, errors = _context(new_context)
+    try:
+        page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
+        save = '[aria-label="Save for offline reading"]'
+        if page.query_selector(save):
+            page.click(save)
+            page.wait_for_selector('[aria-label="Saved on this device"]', timeout=10000)
+        _open(page, book_id, settle_ms=1500)
+        page.click(".btn-search")
+
+        def results(query: str) -> list[str]:
+            page.fill("#book-search", query)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1200)
+            return page.evaluate(HITS_JS)
+
+        online = {q: results(q) for q in queries}
+        context.set_offline(True)
+        offline = {q: results(q) for q in queries}
+        expect(page.locator(".sheet .form-hint")).to_have_text("Searched in the copy on your device.")
+        assert any(online.values()), "the queries must find something"
+        assert online == offline
+        assert errors == [], errors[:3]
+    finally:
+        context.set_offline(False)
+        context.close()
+
+
 def test_book_search_works_offline_from_the_saved_copy(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     context, page, errors = _context(new_context)

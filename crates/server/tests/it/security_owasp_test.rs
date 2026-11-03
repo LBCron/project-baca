@@ -713,6 +713,49 @@ async fn test_owasp_structured_validation_error_details() {
     harness.cleanup().await;
 }
 
+/// In-book search has its own per-client cap, apart from the general public
+/// limiter, because each request reads a book's text index.
+#[tokio::test]
+async fn test_book_search_is_capped_per_client() {
+    let harness =
+        TestHarness::with_config(|c| c.server.book_search_rate_limit_per_minute = 2).await;
+    if harness.live_only().await.is_none() {
+        panic!("live Redis required (db-up)");
+    }
+    let ip = unique_test_ip();
+    let search = || {
+        Request::builder()
+            .uri(format!(
+                "/api/v1/books/{}/search?q=kapal",
+                uuid::Uuid::new_v4()
+            ))
+            .header(common::CLIENT_IP_HEADER, &ip)
+            .body(Body::empty())
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let resp = harness.send_request(search()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "an unknown book, under the cap"
+        );
+    }
+    let (resp, body) = harness.send_json_request(search()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    let catalog = Request::builder()
+        .uri("/api/v1/books?limit=1")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        harness.send_request(catalog).await.status(),
+        StatusCode::OK,
+        "the cap is the search route's alone"
+    );
+    harness.cleanup().await;
+}
 /// The public read cap is off by default (shared fallback IP in dev) and,
 /// once configured, meters unauthenticated catalog reads per IP.
 #[tokio::test]

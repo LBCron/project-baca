@@ -72,7 +72,9 @@ async fn search_on_device(book: &str, query: &str) -> Vec<BookTextHitDto> {
         let Ok(holder) = document.create_element("div") else {
             continue;
         };
-        holder.set_inner_html(&chapter.html_content);
+        // A line break reads as a space, as the server's paragraph index
+        // reads it; textContent alone would run verse lines together.
+        holder.set_inner_html(&chapter.html_content.replace("<br/>", "<br/> "));
         let Ok(paragraphs) = holder.query_selector_all("p") else {
             continue;
         };
@@ -193,7 +195,7 @@ pub fn BookSearch(
                             let target = (hit.chapter_number, hit.paragraph);
                             view! {
                                 <li>
-                                    <button class="search-hit" on:click=move |_| on_pick.run(target)>
+                                    <button class="search-hit" data-chapter=hit.chapter_number data-paragraph=hit.paragraph on:click=move |_| on_pick.run(target)>
                                         <span class="hit-where">{format!("{} {} \u{00B7} {}", lang.get_untracked().text("chapter"), roman(hit.chapter_number), hit.chapter_title)}</span>
                                         <span class="hit-text">{marked(&hit.snippet, &q)}</span>
                                     </button>
