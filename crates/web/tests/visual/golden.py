@@ -14,6 +14,9 @@ SNAP_DIR.mkdir(exist_ok=True)
 
 # Max differing pixels before failing (font-smoothing tolerance).
 MAX_DIFF_PIXELS = 100
+# Channel steps no eye can see: the same text antialiased one step apart
+# between runs would otherwise count every glyph edge as a change.
+MAX_CHANNEL_STEP = 2
 
 
 def assert_golden(page: Page, name: str) -> None:
@@ -32,7 +35,7 @@ def assert_golden(page: Page, name: str) -> None:
     if a.size != b.size:
         raise AssertionError(f"viewport size changed: {a.size} vs {b.size}")
     diff = ImageChops.difference(a, b)
-    n = sum(1 for px in diff.getdata() if px != (0, 0, 0))
+    n = sum(1 for px in diff.getdata() if max(px) > MAX_CHANNEL_STEP)
     if n <= MAX_DIFF_PIXELS:
         actual.unlink(missing_ok=True)
         return
