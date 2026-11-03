@@ -39,6 +39,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         config: Arc::new(config),
         embedding,
         storage: storage.map(Arc::new),
+        argon2: infra::Argon2Gate::new(2),
     }))
 }
 
@@ -300,6 +301,7 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         config: Arc::new(config),
         embedding,
         storage: Some(Arc::new(storage)),
+        argon2: infra::Argon2Gate::new(2),
     }));
 
     let started = Instant::now();

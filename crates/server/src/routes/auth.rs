@@ -19,13 +19,12 @@ use chrono::Utc;
 use infra::{
     activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
     ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
-    generate_refresh_token, hash_password_async, hit_window, is_session_revoked,
-    issue_access_token, list_sessions, revoke_all_user_sessions, revoke_family_on_reuse,
-    revoke_other_sessions_keeping, revoke_refresh_token, revoke_session, revoke_session_tokens,
-    send_account_exists_email, send_otp_email, start_registration, store_refresh_token,
-    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
-    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
-    DUMMY_ARGON2_HASH,
+    generate_refresh_token, hit_window, is_session_revoked, issue_access_token, list_sessions,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
+    revoke_refresh_token, revoke_session, revoke_session_tokens, send_account_exists_email,
+    send_otp_email, start_registration, store_refresh_token, touch_session, update_user_password,
+    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
+    verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -243,7 +242,9 @@ pub async fn signup(
         .map_err(HttpError::from)?;
     claim_mail_budget(&mut redis_conn, state.config.email.otp_hourly_budget).await?;
 
-    let password_hash = hash_password_async(req.password.clone())
+    let password_hash = state
+        .argon2
+        .hash(req.password.clone())
         .await
         .map_err(HttpError::from)?;
     let (registration_id, otp) = start_registration(
@@ -356,14 +357,16 @@ pub async fn login(
     // usable one, before anything branches on the account: unknown, pending
     // and wrong-password answers take the same time and say the same thing.
     let stored_hash = user.as_ref().and_then(|u| u.password_hash.clone());
-    let matches = verify_password_async(
-        req.password.clone(),
-        stored_hash
-            .clone()
-            .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
-    )
-    .await
-    .map_err(HttpError::from)?;
+    let matches = state
+        .argon2
+        .verify(
+            req.password.clone(),
+            stored_hash
+                .clone()
+                .unwrap_or_else(|| DUMMY_ARGON2_HASH.to_string()),
+        )
+        .await
+        .map_err(HttpError::from)?;
     let user = match user {
         Some(user) if matches && stored_hash.is_some() && user.is_active => user,
         _ => {
@@ -642,7 +645,9 @@ pub async fn change_password(
         .ok_or_else(|| HttpError(AppError::NotFound("User not found".to_string())))?;
 
     let is_valid = match &user.password_hash {
-        Some(hash) => verify_password_async(req.current_password.clone(), hash.clone())
+        Some(hash) => state
+            .argon2
+            .verify(req.current_password.clone(), hash.clone())
             .await
             .map_err(HttpError::from)?,
         None => false,
@@ -660,7 +665,9 @@ pub async fn change_password(
     }
     let _: Result<(), _> = redis_conn.del(&attempts_key).await;
 
-    let new_hash = hash_password_async(req.new_password.clone())
+    let new_hash = state
+        .argon2
+        .hash(req.new_password.clone())
         .await
         .map_err(HttpError::from)?;
 

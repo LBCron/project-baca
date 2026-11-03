@@ -25,6 +25,9 @@ pub struct ServerConfig {
     /// the limiter (dev stack and in-memory tests share one fallback IP);
     /// production sets a positive value.
     pub public_rate_limit_per_minute: u32,
+    /// Argon2 operations allowed at once (19 MiB each); requests past it
+    /// wait briefly, then answer 503.
+    pub argon2_max_concurrency: usize,
 }
 
 impl Default for ServerConfig {
@@ -41,6 +44,12 @@ impl Default for ServerConfig {
             trust_proxy_headers: false,
             trusted_ip_header: "x-forwarded-for".to_string(),
             public_rate_limit_per_minute: 0,
+            // More slots than cores adds no throughput, and past 8 slots the
+            // 19 MiB each costs more memory than a small host can spare.
+            argon2_max_concurrency: std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(2)
+                .min(8),
         }
     }
 }
@@ -257,6 +266,14 @@ impl AppConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_server.public_rate_limit_per_minute);
+        let argon2_max_concurrency = match env::var("ARGON2_MAX_CONCURRENCY") {
+            Ok(v) => v.trim().parse().map_err(|_| {
+                AppError::ValidationError(format!(
+                    "ARGON2_MAX_CONCURRENCY must be a whole number, got {v:?}"
+                ))
+            })?,
+            Err(_) => default_server.argon2_max_concurrency,
+        };
 
         let server = ServerConfig {
             host,
@@ -267,6 +284,7 @@ impl AppConfig {
             trust_proxy_headers,
             trusted_ip_header,
             public_rate_limit_per_minute,
+            argon2_max_concurrency,
         };
 
         let db_url = env::var("DATABASE_URL").unwrap_or(default_db.url);
@@ -424,6 +442,11 @@ impl AppConfig {
                 "JWT_SECRET must be set to a unique value of at least 32 characters in production or whenever TRUST_PROXY_HEADERS=true".to_string(),
             ));
         }
+        if self.server.argon2_max_concurrency == 0 {
+            return Err(AppError::ValidationError(
+                "ARGON2_MAX_CONCURRENCY must be at least 1: with 0 no login or signup could ever run".to_string(),
+            ));
+        }
         if self.is_production() && self.email.smtp_security == SmtpSecurity::None {
             return Err(AppError::ValidationError(
                 "SMTP_SECURITY=none is refused in production: OTP codes and SMTP credentials would cross the network in cleartext".to_string(),
@@ -529,6 +552,14 @@ mod tests {
         config.email.otp_hourly_budget = 100;
         config.ai.daily_budget = 5000;
         config
+    }
+
+    #[test]
+    fn zero_argon2_slots_is_refused() {
+        let mut config = AppConfig::default();
+        config.server.argon2_max_concurrency = 0;
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("ARGON2_MAX_CONCURRENCY"), "{err}");
     }
 
     #[test]

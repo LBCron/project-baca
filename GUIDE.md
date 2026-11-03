@@ -43,6 +43,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
 | `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on unauthenticated reads; production compose sets 600 |
+| `ARGON2_MAX_CONCURRENCY` | cores, at most 8 | Argon2 hashes and verifies run at once (19 MiB each); a login or signup that waits 2 s for a slot answers 503; 0 is refused |
 | `OTP_HOURLY_BUDGET`, `AI_DAILY_BUDGET` | `0` (off) | ceilings across every client: signup mail per hour (past it signup answers 503 and logs `otp_budget_exhausted` once) and semantic searches per day (past it 429 `AI_RATE_LIMITED`); production compose sets 100 and 5000, and production refuses to boot with either at 0 or without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
 | `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |

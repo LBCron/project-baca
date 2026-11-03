@@ -47,11 +47,11 @@ pub use repositories::{
 pub use security::{
     blacklist_access_token, claim_code_quota, ensure_guesses_left, generate_access_token,
     generate_access_token_issued_at, generate_refresh_token, hash_otp, hash_password,
-    hash_password_async, invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked,
-    registration_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
+    invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked, registration_key,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
     revoke_refresh_token, rotation_grace_key, start_registration, store_refresh_token,
-    validate_and_rotate_refresh_token, verify_access_token, verify_password, verify_password_async,
-    verify_registration, Claims, PendingRegistration, RefreshOutcome, DUMMY_ARGON2_HASH,
+    validate_and_rotate_refresh_token, verify_access_token, verify_password, verify_registration,
+    Argon2Gate, Claims, PendingRegistration, RefreshOutcome, DUMMY_ARGON2_HASH,
     ROTATION_GRACE_SECS,
 };
 pub use security::{

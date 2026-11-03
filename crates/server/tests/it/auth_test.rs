@@ -372,7 +372,10 @@ async fn test_change_password_revokes_sessions_by_default() {
         .expect("live DB required (db-up)");
 
     let password = "OrigSecurePassword123!";
-    let stored = infra::hash_password_async(password.to_string())
+    let stored = harness
+        .state
+        .argon2
+        .hash(password.to_string())
         .await
         .unwrap();
     infra::update_user_password(&harness.state.db, user_id, &stored)
@@ -935,6 +938,36 @@ fn signup_from(harness: &TestHarness, ip: &str, tag: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// With every Argon2 slot taken, a login waits briefly and then answers
+/// 503 with Retry-After instead of queueing more 19 MiB hashes.
+#[tokio::test]
+async fn test_login_without_an_argon2_slot_answers_503() {
+    let harness = TestHarness::with_config(|c| c.server.argon2_max_concurrency = 1).await;
+    harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let _held = harness.state.argon2.permit().await.expect("slot is free");
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/login")
+        .header(common::CLIENT_IP_HEADER, common::unique_ip("198.19"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "email": format!("noslot_{}@example.com", Uuid::new_v4()),
+                "password": "NoSlot12345!"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(resp.headers()["retry-after"], "1");
+    assert_eq!(body["error"]["code"], "SERVICE_UNAVAILABLE");
+    harness.cleanup().await;
+}
+
 /// Rotating IPv6 addresses inside one /64 buys nothing: the signup cap
 /// counts the block, so the 11th signup from it is shed.
 #[tokio::test]
@@ -1406,7 +1439,10 @@ async fn test_login_inactive_account_is_indistinguishable_from_wrong_password() 
     let email = format!("dormant_{}@example.com", Uuid::new_v4());
     harness.track_email(&email);
     let password = "DormantSecret123!";
-    let hash = infra::hash_password_async(password.to_string())
+    let hash = harness
+        .state
+        .argon2
+        .hash(password.to_string())
         .await
         .unwrap();
     infra::create_inactive_user(&harness.state.db, &email, "Dormant", &hash)
@@ -2222,7 +2258,10 @@ async fn test_login_time_does_not_tell_pending_from_unknown() {
     let harness = TestHarness::new().await;
     harness.live_only().await.expect("live Redis required");
     let pending = harness.track_email_owned(format!("pendtime_{}@example.com", Uuid::new_v4()));
-    let hash = infra::hash_password_async("PendingTime123!".to_string())
+    let hash = harness
+        .state
+        .argon2
+        .hash("PendingTime123!".to_string())
         .await
         .unwrap();
     infra::create_inactive_user(&harness.state.db, &pending, "Pending", &hash)

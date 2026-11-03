@@ -13,7 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{init_redis_conn, AppConfig, EmbeddingProvider, RedisConn, StorageService};
+use infra::{init_redis_conn, AppConfig, Argon2Gate, EmbeddingProvider, RedisConn, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
@@ -38,6 +38,8 @@ pub struct AppState {
     /// S3-compatible object storage. `None` when MinIO/S3 is unreachable at
     /// startup; upload endpoints fail closed with a 500 in that case.
     pub storage: Option<Arc<StorageService>>,
+    /// Bounds the Argon2 work of logins, signups and password changes.
+    pub argon2: Argon2Gate,
 }
 
 impl AppState {

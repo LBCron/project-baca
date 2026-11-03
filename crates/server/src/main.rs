@@ -125,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::clone(&config),
         embedding,
         storage,
+        argon2: infra::Argon2Gate::new(config.server.argon2_max_concurrency),
     });
     let app = create_app(state);
 

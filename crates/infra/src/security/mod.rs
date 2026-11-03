@@ -20,6 +20,4 @@ pub use otp::{
     claim_code_quota, ensure_guesses_left, hash_otp, registration_key, start_registration,
     verify_registration, PendingRegistration,
 };
-pub use password::{
-    hash_password, hash_password_async, verify_password, verify_password_async, DUMMY_ARGON2_HASH,
-};
+pub use password::{hash_password, verify_password, Argon2Gate, DUMMY_ARGON2_HASH};
