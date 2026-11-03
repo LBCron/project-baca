@@ -322,7 +322,8 @@ pub fn ReaderPage() -> impl IntoView {
                 // The reader moves only onto text it can show: the chapter
                 // number, the URL and the position to save follow the text.
                 Ok((detail, from_device)) => {
-                    if number != chapter_no.get_untracked() {
+                    let moved = number != chapter_no.get_untracked();
+                    if moved {
                         set_chapter_no.set(number);
                         if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
                             let url = format!("/read/{id}?chapter={number}");
@@ -334,7 +335,11 @@ pub fn ReaderPage() -> impl IntoView {
                         }
                     }
                     spot.set_value(None);
-                    set_pending_anchor.set(anchor_hint);
+                    // On the chapter already open (first load, retry), a saved
+                    // position that answered first stays pending.
+                    if moved || anchor_hint.is_some() {
+                        set_pending_anchor.set(anchor_hint);
+                    }
                     set_page.set(0);
                     set_finished.set(false);
                     set_chapter_end.set(false);
@@ -345,7 +350,7 @@ pub fn ReaderPage() -> impl IntoView {
                 // A chapter already on screen stays there; the error view
                 // takes over only while none has loaded yet.
                 Err(e) => {
-                    if chapter.get_untracked().is_some() {
+                    if chapter.with_untracked(Option::is_some) {
                         toasts.error(lang.get_untracked().text(load_failure(&e)));
                     }
                     set_error.set(Some(e));
@@ -646,16 +651,23 @@ pub fn ReaderPage() -> impl IntoView {
         }
         match following_chapter() {
             Some(n) => advance(n),
-            None => {
+            // Without the book's chapter list the end of this chapter is
+            // not known to be the end of the book.
+            None if book.with_untracked(Option::is_some) => {
                 set_finished.set(true);
                 toasts.info(lang.get_untracked().text("book_end"));
             }
+            None => {}
         }
     };
 
     let prev = move || {
         if flip_active() {
             return;
+        }
+        // Stepping back abandons a next chapter still on its way.
+        if chapter_shown() {
+            load_generation.update_value(|g| *g += 1);
         }
         if finished.get_untracked() {
             set_finished.set(false);

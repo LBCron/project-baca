@@ -178,6 +178,16 @@ def test_account_reopens_saved_page_when_position_is_slow(new_context, book_with
         context.close()
 
 
+def test_guest_reopens_saved_page_when_chapter_is_slow(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context, delay=[f"/books/{book_id}/chapters/1"])
+    try:
+        _reopens_saved_page(page, book_id, lambda: (_guest_record(page, book_id) or {}).get("last_anchor_cfi"))
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     chapters = api_get(f"/books/{book_id}")["chapters"]
@@ -186,7 +196,7 @@ def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
         _open(page, book_id)
         page.keyboard.press("End")
         page.wait_for_timeout(250)
-        _turn(page, "ArrowRight")
+        _turn(page, "ArrowRight", 2)
         _turn(page, "ArrowLeft")
         page.wait_for_timeout(600)
         page.evaluate("() => window.__release()")
@@ -251,6 +261,20 @@ def test_resizing_keeps_the_paragraph_being_read(new_context, book_with_chapters
         first = page.evaluate(VISIBLE_PARAGRAPHS)[0]
         _resize(page, 844, 390)
         assert abs(_resize(page, 390, 844)[0] - first) <= 1, "one rotation and back keeps the paragraph"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_unknown_book_end_never_shows_the_finale(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context)
+    try:
+        page.route(f"{API}/books/{book_id}", lambda route: route.abort())
+        _open(page, book_id)
+        page.keyboard.press("End")
+        _turn(page, "ArrowRight", 2)
+        expect(page.locator(".finale")).to_have_count(0)
         assert errors == [], errors[:3]
     finally:
         context.close()
