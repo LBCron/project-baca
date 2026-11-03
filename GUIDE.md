@@ -82,9 +82,9 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 |---|---|---|
 | `make check` | `cargo check` native and wasm, clippy with `-D warnings`, `fmt --check` | nothing |
 | `make test-domain` | 16 pure domain tests | nothing |
-| `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (25 + 6) | nothing |
+| `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (31 + 6) | nothing |
 | `make test-<module>` | one module of `crates/server/tests/it`: smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability | `db-up` |
-| `cargo test -p server --test it` | all functional modules, 94 tests (9 live tests ignored) | `db-up` |
+| `cargo test -p server --test it` | all functional modules, 109 tests (9 live tests ignored) | `db-up` |
 | `make test-live` | the 9 ignored live tests, single-threaded | `db-up` |
 | `make test-performance`, `make test-performance-release` | 4 p95 latency benchmarks | `db-up`, idle machine |
 | `make test-load-stress` | 200 concurrent tasks and rate-limit saturation | `db-up` |

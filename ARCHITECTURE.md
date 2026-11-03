@@ -27,7 +27,7 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 | Method and path | Auth | Notes |
 |---|---|---|
 | `GET /health` (root) | none | 503 `degraded` when the process has no database connection |
-| `GET /health` | none | Postgres and Redis status |
+| `GET /health` | none | Postgres and Redis status; answers 200 even when `degraded` (issue #51) |
 | `POST /auth/signup`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh` | none | auth limiter; signup 502 when SMTP is down, 60 s cooldown per email, 10/h per IP; OTP: three wrong codes lock for 5 min (429, `Retry-After`) |
 | `POST /auth/logout`, `/auth/revoke-all?keep_current=` | bearer | logout blacklists the session's last access token; revoke-all drops other devices |
 | `GET`, `PATCH`, `DELETE /me` | bearer | profile; delete revokes first, then cascades |
@@ -43,10 +43,10 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 | `GET /progress/active`, `PUT /progress/{book_id}`, `POST /progress/merge` | bearer | published books only (404 otherwise; active skips books unpublished later); merge is transactional, capped at 100 records, `GREATEST` percentage |
 | `POST /activity/heartbeat` | bearer | one rewarded heartbeat per user per 60 s (atomic `SET NX EX`), credit clamped to 90 s |
 | `GET /badges` | none | badge catalog |
-| `GET /admin/books`, `POST /admin/books/upload`, `PATCH /admin/books/{id}`, `GET /admin/jobs/{id}`, `GET /admin/dlq`, `POST /admin/dlq/{id}/replay`, `GET /admin/analytics/drop-off` | bearer, role `admin` re-read from the user row | upload: `.epub`, 50 MB (the only route above axum's 2 MB body default), 202 with job id and a stream event; status changes follow `BookStatus::can_transition_to` (409 otherwise) |
+| `GET /admin/books`, `POST /admin/books/upload`, `PATCH /admin/books/{id}`, `GET /admin/jobs/{id}`, `GET /admin/dlq`, `POST /admin/dlq/{id}/replay`, `GET /admin/analytics/drop-off` | bearer, role `admin` in the token claim and in the current user row (demotion is immediate, promotion needs a fresh token) | upload: `.epub`, 50 MB (the only route above axum's 2 MB body default), 202 with job id and a stream event; status changes follow `BookStatus::can_transition_to` (409 otherwise) |
 | `/swagger-ui`, `/api-docs/openapi.json` (root) | none | not mounted when `APP_ENV=production`; no edge route |
 
-Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias no longer exists.
+Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias no longer exists. Rejections raised by axum extractors before a handler runs (malformed JSON, missing content type, unparsable path or query) still answer `text/plain` (issue #22).
 
 ## 4. Security model
 
@@ -56,8 +56,8 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - Lockouts: 5 failures per (email, IP) and 20 per email lock login for 15 min; unverified accounts behave like a wrong password.
 - Client address: with `TRUST_PROXY_HEADERS=true` only `TRUSTED_IP_HEADER` is read; `Caddyfile.prod` sets `X-Forwarded-For` and strips `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`. The default JWT secret is refused in production or whenever proxy headers are trusted, and production refuses to boot with `PUBLIC_RATE_LIMIT_PER_MINUTE` above 0 but proxy trust off (every reader would share one bucket) and with `SMTP_SECURITY=none`.
 - Headers: the API sets HSTS, `nosniff`, frame denial, referrer policy, COOP and CORP, a permissions policy, its own CSP, and `Cache-Control: no-store` on `/auth/*` and on every bearer response. Caddy sets the SPA headers, including a CSP with `script-src 'self' 'wasm-unsafe-eval'` and no inline scripts (a Trunk post-build hook moves the bootstrap into a hashed `boot-*.js`).
-- Data exposure: draft and archived books are invisible on every public route; validation errors name the field without echoing the value; logs mask connection strings, recipients, OTPs, and the Gemini key (sent in `x-goog-api-key`).
-- Open security work is tracked as tickets in `knowledge/tickets/` (private repo).
+- Data exposure: draft and archived books are invisible on every public route except `/covers`, which still serves an archived book's cover (issue #29); validation errors name the field without echoing the value; logs mask connection strings, recipients, OTPs, and the Gemini key (sent in `x-goog-api-key`).
+- Open work, security included, is tracked as GitHub issues on the Rotaria Roadmap project; vulnerabilities that are not yet public go to a private security advisory.
 
 ## 5. Web app (`crates/web`)
 
@@ -92,7 +92,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - Tauri 2 around the same release bundle (`make build-web` into `target/app-web`, so an app build never overwrites the `crates/web/dist` that `trunk serve` is serving); a Cargo workspace of its own, so the root workspace and CI need no WebView toolchain.
 - The window gets `window.__ROTARIA_API__` from `ROTARIA_API_BASE` at build time through an initialization script; `api_base()` prefers it, `boot.js` registers no service worker inside Tauri, and CORS allows `tauri://localhost` and `http://tauri.localhost`.
 - `rotaria://book/<uuid>` opens the book (the id must parse as a UUID); a link that arrives before the first page load waits for it. Android declares the scheme in its manifest, desktop registers it at run time.
-- Android (`gen/android`, identifier `io.github.aprxty3.rotaria`): `MainActivity` pads the page by the system bar insets, since Android 15 draws edge to edge and the WebView reports no safe-area insets; debug builds allow cleartext to the dev API at `10.0.2.2`. Sharing falls back to the clipboard where `navigator.share` is missing.
+- Android (`gen/android`, identifier `io.github.aprxty3.rotaria`): `MainActivity` pads the page by the system bar insets, since Android 15 draws edge to edge and the WebView reports no safe-area insets; debug builds allow cleartext to the dev API at `10.0.2.2`. Sharing calls `navigator.share`; where it is missing the call throws and the clipboard fallback never runs (issue #14).
 
 ## 6. Ingestion and AI
 
@@ -104,25 +104,25 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 1. Download; zip guard (per-file size, compression ratio, ZipSlip paths).
 2. Parse OPF and spine; cover to WebP with Pillow as `covers/<book_id>.<ext>` (original bytes on failure; a cover never fails a job).
 3. Sanitize XHTML: allowlisted tags, scripts, styles and handlers removed, decoded character references re-escaped.
-4. Chunk about 400 words, tails under 50 merged, with CFI ranges.
+4. Chunk about 400 words, tails under 50 merged; no CFI range or paragraph index is stored per chunk, so a quote hit opens its chapter, not its paragraph (issue #21).
 5. Embed in batches, 768 dimensions, `EMBEDDING_MODEL_NAME` (`fastembed` is a stub; production needs `GEMINI_API_KEY`).
 6. Atomic cards and the spoiler-free recap with `LLM_MODEL_NAME`; recap input is the key concepts of earlier chapters plus the current text within a 12k-character budget; rows upsert on `uq_tldr_cache`.
 7. Insert chapters and chunks, set the book `published`, `XACK`.
 
-**Reliability.** At-least-once: `XACK` only after success; entries idle past `RECLAIM_IDLE_MS` (300000) are reclaimed with `XAUTOCLAIM`, while a running job refreshes its claim (`XCLAIM ... JUSTID` from a heartbeat thread, at most every 60 s) so a long book is never taken by a second replica; three attempts, then the dead-letter stream. Replay moves an entry with one Lua step (`XDEL`, then `XADD` only if it removed the entry), so concurrent replays re-queue once. SIGTERM or SIGINT interrupts even a blocking call: the job is handed back unacknowledged, its attempt uncounted, its status `queued`; compose runs the worker with `init: true`. A book archived before or during ingestion is never republished (`WHERE status <> 'archived'`). Title, author, language, and headings are clipped to their column widths. Gemini calls send the key in `x-goog-api-key`, retry transient failures (HTTP 429 and 5xx, connect and read timeouts) three times with quadratic backoff (1, 4, 9 s, jitter, `Retry-After` up to 60 s), and time out at 60 s (embeddings) or 120 s (generation). The Redis socket timeout (30 s) exceeds the `XREADGROUP` block window.
+**Reliability.** At-least-once: `XACK` only after success; entries idle past `RECLAIM_IDLE_MS` (300000) are reclaimed with `XAUTOCLAIM`, while a running job refreshes its claim (`XCLAIM ... JUSTID` from a heartbeat thread, at most every 60 s) so a long book is never taken by a second replica; three attempts, then the dead-letter stream. Replay moves an entry with one Lua step (`XDEL`, then `XADD` only if it removed the entry), so concurrent replays re-queue once. SIGTERM or SIGINT interrupts even a blocking call: the job is handed back unacknowledged, its attempt uncounted, its status `queued`; compose runs the worker with `init: true`. A book archived before or during ingestion is never republished (`WHERE status <> 'archived'`). Title, author, language, and headings are clipped to their column widths. Gemini calls send the key in `x-goog-api-key`, retry transient failures (HTTP 429 and 5xx, connect and read timeouts) three times with quadratic backoff (1, 4, 9 s, jitter, `Retry-After` up to 60 s), and time out at 60 s (embeddings) or 120 s (generation). The Redis socket timeout (30 s) exceeds the `XREADGROUP` block window. Gaps (issue #5): the attempt limit is checked only when a job raises, so a job that kills the process is reclaimed forever instead of dead-lettered; permanent errors (corrupt archive, missing object) are retried like transient ones; a failed job keeps its last progress status.
 
-**Search.** Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped `WHERE book_id = $1`, so index memory follows the active book, not the corpus. Catalog search uses a partial GIN index (FTS and trigram) over published books.
+**Search.** Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped `WHERE book_id = $1`, so index memory follows the active book, not the corpus. Catalog search uses a partial GIN index (FTS and trigram) over published books; the index builds `to_tsvector('simple', ...)` while the query calls `plainto_tsquery` with the database default config, so stemmed terms miss and only title and author trigrams match (issue #18).
 
 ## 7. Data
 
 - Paired migrations in `migrations/`; schema and index matrix in `knowledge/erd.md`.
-- Hot indexes: partial GIN FTS and trigram `WHERE status = 'published'`, HNSW cosine on `book_chunks.embedding`, foreign-key B-trees, zero-sort catalog index on `(publication_year DESC NULLS LAST, id)`.
+- Hot indexes: partial GIN FTS and trigram `WHERE status = 'published'`, HNSW cosine on `book_chunks.embedding`, foreign-key B-trees, catalog index on `(publication_year DESC NULLS LAST, id)`. The catalog query orders `NULLS FIRST` and its cursor skips books without a year, so that index is not used and later pages can come back empty (issue #11).
 - Covers: the worker stores `covers/<book uuid>.<ext>` in the covers bucket and `books.cover_url` holds that key.
 - `tldr_cache` has a unique key per (chapter, kind); replays upsert.
 
 ## 8. Deployment
 
-- `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio (internal network only), server, worker, edge (Caddy on 80 and 443 TCP and UDP). Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
+- `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, minio, server, worker, and edge (Caddy on 80 and 443 TCP and UDP), all on the default compose network; least-privilege roles, keys, and networks are issue #47. Targets: `make prod-build`, `prod-up`, `prod-down`, `prod-logs`.
 - `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. The edge image runs the same target.
 - Server and worker images run as uid 10001; the dev compose binds every port to `127.0.0.1`, and `Caddyfile.prod` drops the `Server` banner on every response, errors included.
 - With `APP_ENV=production` the server exits non-zero when Postgres or Redis is unreachable at boot, and `restart: always` retries; development keeps running without them.
