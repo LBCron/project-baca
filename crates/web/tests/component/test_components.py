@@ -84,6 +84,9 @@ CURATOR_BOOKS = [
     {"id": "44444444-4444-4444-8444-444444444444", "title": "Naskah Arsip", "author": "C. Penulis", "language": "id",
      "status": "archived", "chapter_count": 2, "chunk_count": 5,
      "created_at": "2026-09-30T10:00:00Z", "updated_at": "2026-09-30T10:00:00Z"},
+    {"id": "66666666-6666-4666-8666-666666666666", "title": "Arsip Setengah Jalan", "author": "D. Penulis", "language": "id",
+     "status": "archived", "chapter_count": 2, "chunk_count": 0,
+     "created_at": "2026-09-29T10:00:00Z", "updated_at": "2026-09-29T10:00:00Z"},
 ]
 CURATOR_DLQ = [
     {"id": "1700000000000-0", "job_id": "deadbeef-0000-4000-8000-000000000000",
@@ -141,7 +144,9 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
     _story(page, "curator-desk")
 
     rows = page.query_selector_all(".manuscript-row")
-    assert len(rows) == 3, "every status listed"
+    assert len(rows) == 4, "every status listed"
+    assert page.query_selector('.manuscript-row:has-text("Arsip Setengah Jalan") button') is None, \
+        "an archive that never finished ingesting offers no restore"
     body = page.inner_text(".manuscript-list")
     assert "Naskah Terbit" in body and "3 chapters" in body and "12 chunks" in body
     page.click('.manuscript-row:has-text("Naskah Terbit") button:has-text("Archive")')

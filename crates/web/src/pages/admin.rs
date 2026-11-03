@@ -220,7 +220,8 @@ fn ManuscriptRow(row: AdminBookRowDto, on_updated: Callback<AdminBookRowDto>) ->
     let status = row.status.clone();
     let status_for_tag = row.status.clone();
     let archivable = status != "archived";
-    let restorable = !archivable;
+    // Without passages it never finished ingesting; the server would refuse.
+    let restorable = !archivable && row.chunk_count > 0;
     let published = status == "published";
     let (chapters, chunks) = (row.chapter_count, row.chunk_count);
     let byline = if row.language.is_empty() {
