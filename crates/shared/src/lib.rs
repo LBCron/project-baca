@@ -76,6 +76,11 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// A per-account storage limit is spent; distinct from `Conflict` so the
+    /// client can say what the reader can do about it.
+    #[error("Quota exceeded: {0}")]
+    QuotaExceeded(String),
+
     #[error("Rate limit exceeded. Try again in {retry_after} seconds")]
     RateLimited { retry_after: u64 },
 
@@ -623,6 +628,19 @@ pub struct SessionDto {
 
 /// Upper bound of one batch save, matching the guest merge chunk size.
 pub const SAVE_QUOTES_BATCH_MAX: usize = 50;
+
+/// Saved quotes listed per page when the client names no limit.
+pub const SAVED_QUOTES_PAGE: u64 = 50;
+
+/// One page of saved quotes, newest first. `cursor` is the id of the last
+/// quote of the previous page; a page shorter than `limit` is the last.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct SavedQuotesQuery {
+    pub cursor: Option<Uuid>,
+    #[validate(range(min = 1, max = 100, message = "limit must be between 1 and 100"))]
+    pub limit: Option<u64>,
+}
 
 /// Several quotes saved together, used to merge a device's local quotes into
 /// the account at sign-in. Each item is validated like a single save.

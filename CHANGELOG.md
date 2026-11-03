@@ -5,9 +5,11 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Changed
+- `GET /quotes` returns one page, newest first: `limit` (default 50, at most 100) and `cursor` (the id of the last quote of the previous page). The profile loads further pages with "Muat lebih banyak".
 - `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
 
 ### Security
+- One account cannot grow storage without bound: writes on `/me`, `/progress` and `/quotes` are capped at 120 per minute per account (429 with `Retry-After`), and an account keeps at most 5,000 quotes (409 `QUOTA_EXCEEDED`, shown in the reader as "Rak kutipanmu sudah penuh").
 - A login or signup flood can no longer exhaust API memory: at most `ARGON2_MAX_CONCURRENCY` Argon2 operations (19 MiB each, default the core count up to 8) run at once, and a request that waits 2 s for a slot answers 503 with `Retry-After`. The server image fixes glibc's mmap threshold so each Argon2 buffer is returned on free; 100 concurrent logins peak at 189 MB instead of 1.3 GB.
 - Rate limits count an IPv6 client by its /64, so rotating addresses inside one block no longer resets the auth, signup, login and AI limits; an IPv4-mapped address counts as its IPv4. Two ceilings across every client cap what abuse can cost: `OTP_HOURLY_BUDGET` (signup answers 503 past it) and `AI_DAILY_BUDGET` (semantic search answers 429 `AI_RATE_LIMITED` past it). Production refuses to boot with either at 0, or without `TRUST_PROXY_HEADERS=true` and `TRUSTED_IP_HEADER`.
 - Signup cannot hold or hijack someone else's address: registrations for one address live side by side, each holding its own password, and a code only activates the registration it was mailed for. Codes mailed to one address are capped at 3 per hour and 10 per day (the 60-second cooldown is gone), and guesses are capped at 10 per address per day across every code, so asking for a new code never buys more attempts.

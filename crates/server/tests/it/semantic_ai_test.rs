@@ -16,7 +16,6 @@ struct SeededAiContext {
     pub book_id: Uuid,
     pub chapter1_id: Uuid,
     pub chapter2_id: Uuid,
-    #[allow(dead_code)]
     pub user_id: Uuid,
     pub token: String,
     pub other_book_id: Uuid,
@@ -1315,5 +1314,188 @@ async fn test_single_quote_save_is_idempotent() {
         .filter(|q| q["quote_text"] == text)
         .count();
     assert_eq!(copies, 1, "exactly one row for the repeated quote");
+    harness.cleanup().await;
+}
+
+/// Writes `count` quotes for the seeded reader straight into the table, one
+/// second apart, the newest first in time order of `g`.
+async fn plant_quotes(harness: &TestHarness, seeded: &SeededAiContext, count: i64) {
+    use sea_orm::{ConnectionTrait, Statement};
+    harness
+        .state
+        .db
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at)
+             SELECT gen_random_uuid(), $1, $2, $3, 'Planted quote ' || g, NOW() - g * INTERVAL '1 second'
+             FROM generate_series(1, $4) AS g",
+            [
+                seeded.user_id.into(),
+                seeded.book_id.into(),
+                seeded.chapter1_id.into(),
+                count.into(),
+            ],
+        ))
+        .await
+        .expect("planting quotes must succeed");
+}
+
+fn bearer(method: &str, uri: &str, token: &str, body: Option<Value>) -> Request<Body> {
+    let builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    match body {
+        Some(json) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json.to_string())),
+        None => builder.body(Body::empty()),
+    }
+    .expect("Valid request")
+}
+
+#[tokio::test]
+async fn test_saved_quotes_page_by_keyset_and_cap_the_page() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes(&harness, &seeded, 120).await;
+    let page = |uri: String| {
+        let req = bearer("GET", &uri, &seeded.token, None);
+        let harness = &harness;
+        async move { harness.send_json_request(req).await }
+    };
+
+    let (resp, body) = page("/api/v1/quotes".to_string()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 50, "default page");
+
+    let (_, first) = page("/api/v1/quotes?limit=100".to_string()).await;
+    let first = first["data"].as_array().unwrap().clone();
+    assert_eq!(first.len(), 100);
+    let last = first.last().unwrap()["id"].as_str().unwrap().to_string();
+    let (_, rest) = page(format!("/api/v1/quotes?limit=100&cursor={last}")).await;
+    let rest = rest["data"].as_array().unwrap().clone();
+    assert_eq!(rest.len(), 20, "the short page is the last one");
+
+    let texts: Vec<&str> = first
+        .iter()
+        .chain(rest.iter())
+        .map(|q| q["quote_text"].as_str().unwrap())
+        .collect();
+    let expected: Vec<String> = (1..=120).map(|g| format!("Planted quote {g}")).collect();
+    assert_eq!(texts, expected, "newest first, no gap, no repeat");
+
+    for bad in ["limit=101", "limit=0"] {
+        let (resp, _) = page(format!("/api/v1/quotes?{bad}")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    // A cursor from someone else's shelf reveals nothing of their order.
+    let stranger = seed_test_context(&harness).await.expect("second reader");
+    plant_quotes(&harness, &stranger, 3).await;
+    let (_, theirs) = harness
+        .send_json_request(bearer("GET", "/api/v1/quotes", &stranger.token, None))
+        .await;
+    let their_id = theirs["data"][0]["id"].as_str().unwrap().to_string();
+    let (resp, body) = page(format!("/api/v1/quotes?cursor={their_id}")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_saving_past_the_quote_quota_is_409() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes(&harness, &seeded, infra::MAX_SAVED_QUOTES_PER_USER - 1).await;
+    let save = |text: &str| {
+        bearer(
+            "POST",
+            "/api/v1/quotes/save",
+            &seeded.token,
+            Some(serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": text
+            })),
+        )
+    };
+
+    // Five parallel saves at one slot left: the row lock lets exactly one in.
+    let racers = (0..5).map(|i| harness.send_json_request(save(&format!("Racing quote {i}"))));
+    let answers = futures::future::join_all(racers).await;
+    let created = answers
+        .iter()
+        .filter(|(resp, _)| resp.status() == StatusCode::CREATED)
+        .count();
+    assert_eq!(created, 1, "exactly one save fits the last slot");
+    for (resp, body) in answers
+        .iter()
+        .filter(|(resp, _)| resp.status() != StatusCode::CREATED)
+    {
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    }
+
+    // Saving a quote already on the shelf stays idempotent at the cap.
+    let resp = harness.send_request(save("Planted quote 7")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let batch = bearer(
+        "POST",
+        "/api/v1/quotes/save-batch",
+        &seeded.token,
+        Some(serde_json::json!({ "items": [{
+            "book_id": seeded.book_id,
+            "chapter_id": seeded.chapter1_id,
+            "quote_text": "A batch past the cap."
+        }]})),
+    );
+    let (resp, body) = harness.send_json_request(batch).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_account_writes_past_the_minute_limit_are_429() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let _: () = redis::AsyncCommands::del(&mut redis, format!("rl:user:{}", seeded.user_id))
+        .await
+        .unwrap();
+    // An empty body fails validation, yet the limiter counts it first.
+    let write = || {
+        bearer(
+            "POST",
+            "/api/v1/quotes/save",
+            &seeded.token,
+            Some(serde_json::json!({})),
+        )
+    };
+    for i in 1..=120 {
+        let resp = harness.send_request(write()).await;
+        assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "write {i}");
+    }
+    let (resp, body) = harness.send_json_request(write()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    assert!(resp.headers().get(header::RETRY_AFTER).is_some());
+
+    // Reads are not writes: the shelf still opens.
+    let resp = harness
+        .send_request(bearer("GET", "/api/v1/quotes", &seeded.token, None))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
     harness.cleanup().await;
 }

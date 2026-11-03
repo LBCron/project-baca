@@ -17,6 +17,7 @@ use infra::{
 use shared::{ApiResponse, AppError};
 use std::net::IpAddr;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Window policy: how many requests a subject may make per window and how
 /// the refusal is reported.
@@ -47,6 +48,17 @@ pub const AI_POLICY: RateLimitPolicy = RateLimitPolicy {
     window_seconds: 60,
     error_code: "AI_RATE_LIMITED",
     subject_label: "semantic search requests",
+    window_label: "minute",
+};
+
+/// Writes of one signed-in account per minute: room for page turns saved
+/// every 1.2 s on two devices, far below what fills storage by script.
+pub const USER_WRITE_POLICY: RateLimitPolicy = RateLimitPolicy {
+    key_prefix: "rl:user",
+    max_requests: 120,
+    window_seconds: 60,
+    error_code: "RATE_LIMITED",
+    subject_label: "writes",
     window_label: "minute",
 };
 
@@ -226,17 +238,7 @@ pub async fn ai_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let claims = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(|token| verify_access_token(token, state.config.jwt_secret()).ok());
-    let user_id = match claims {
-        Some(claims) if token_still_live(&state, &claims).await => Some(claims.sub),
-        _ => None,
-    };
-    let subject = match user_id {
+    let subject = match bearer_user(&state, req.headers()).await {
         Some(id) => format!("user:{id}"),
         None => format!(
             "guest:{}",
@@ -249,6 +251,32 @@ pub async fn ai_rate_limit_middleware(
         limits.push((ai_budget_policy(budget), "all".to_string()));
     }
     enforce(&state, &limits, req, next).await
+}
+
+/// Caps writes per account on bearer routes. Reads pass, and so does a
+/// request without a live token: its handler answers 401 before writing.
+pub async fn user_write_rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    if req.method().is_safe() {
+        return next.run(req).await;
+    }
+    match bearer_user(&state, req.headers()).await {
+        Some(id) => enforce(&state, &[(USER_WRITE_POLICY, id.to_string())], req, next).await,
+        None => next.run(req).await,
+    }
+}
+
+/// The account behind a live bearer token, if the request carries one.
+async fn bearer_user(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
+    let claims = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|token| verify_access_token(token, state.config.jwt_secret()).ok())?;
+    token_still_live(state, &claims).await.then_some(claims.sub)
 }
 
 /// False when the token was blacklisted or its user revoked after issue.

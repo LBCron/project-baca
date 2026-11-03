@@ -1,6 +1,8 @@
 """Reader flows: body render, type sheet, recap chip, offline save + read,
 and the integrity of the saved reading position."""
+import base64
 import json
+import subprocess
 import urllib.request
 
 import pytest
@@ -488,6 +490,42 @@ def test_selected_text_becomes_an_account_quote(new_context, book_with_chapters:
         assert errors == [], errors[:3]
     finally:
         context.close()
+
+
+def _fill_quote_shelf(user_id: str, book_id: str) -> None:
+    """Plants a full shelf straight into the dev database; saving 5,000
+    quotes through the API would take a hundred batches."""
+    chapter_id = api_get(f"/books/{book_id}")["chapters"][0]["id"]
+    sql = (
+        "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at) "
+        f"SELECT gen_random_uuid(), '{user_id}', '{book_id}', '{chapter_id}', 'Shelf ' || g, NOW() "
+        "FROM generate_series(1, 5000) AS g"
+    )
+    subprocess.run(
+        ["docker", "exec", "project_baca_db", "psql", "-U", "baca_user", "-d", "project_baca_db", "-c", sql],
+        capture_output=True,
+        check=True,
+    )
+
+
+def test_saving_past_a_full_shelf_says_so(new_context, book_with_chapters: str):
+    tokens = register_reader("quota")
+    payload = tokens["access_token"].split(".")[1]
+    user_id = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+    _fill_quote_shelf(user_id, book_with_chapters)
+    context, page, errors = _context(new_context, tokens=tokens)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        _save_selection(page)
+        expect(page.locator(".reader .toast")).to_contain_text("quote shelf is full")
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+        req = urllib.request.Request(
+            f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+        with urllib.request.urlopen(req):
+            pass
 
 
 def _search(page: Page, query: str):

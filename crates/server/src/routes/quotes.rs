@@ -2,7 +2,7 @@
 
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,6 +17,7 @@ use sea_orm::DatabaseConnection;
 use shared::{
     ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteOutcomeDto,
     SaveQuoteRequest, SaveQuotesBatchRequest, SaveQuotesBatchResponseDto, SavedQuoteResponseDto,
+    SavedQuotesQuery, SAVED_QUOTES_PAGE,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -106,6 +107,8 @@ pub async fn search_book_quotes(
         (status = 400, description = "Validation error or chapter does not belong to the book"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Unknown book or chapter"),
+        (status = 409, description = "QUOTA_EXCEEDED: the account already keeps the most quotes it may"),
+        (status = 429, description = "Too many writes from this account this minute"),
         (status = 500, description = "Database error")
     ),
     security(("BearerAuth" = [])),
@@ -196,7 +199,9 @@ fn outcome(
     responses(
         (status = 200, description = "Per-item outcomes in request order", body = SaveQuotesBatchResponseDto),
         (status = 400, description = "Empty batch, more than 50 items, or an invalid item"),
-        (status = 401, description = "Authentication required")
+        (status = 401, description = "Authentication required"),
+        (status = 409, description = "QUOTA_EXCEEDED: the new quotes would carry the account past its quota; nothing is saved"),
+        (status = 429, description = "Too many writes from this account this minute")
     ),
     security(("BearerAuth" = [])),
     tag = "Semantic Search"
@@ -245,12 +250,14 @@ pub async fn handle_save_quotes_batch(
     Ok((StatusCode::OK, Json(ApiResponse::success(response))))
 }
 
-/// Saved quotes of the authenticated user, most recent first.
+/// Saved quotes of the authenticated user, newest first, one page at a time.
 #[utoipa::path(
     get,
     path = "/api/v1/quotes",
+    params(SavedQuotesQuery),
     responses(
-        (status = 200, description = "List of saved quotes ordered by recency", body = Vec<SavedQuoteResponseDto>),
+        (status = 200, description = "One page of saved quotes, newest first; fewer than `limit` means the last page", body = Vec<SavedQuoteResponseDto>),
+        (status = 400, description = "limit outside 1 to 100"),
         (status = 401, description = "Authentication required"),
         (status = 500, description = "Database error")
     ),
@@ -260,10 +267,17 @@ pub async fn handle_save_quotes_batch(
 pub async fn handle_list_saved_quotes(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
+    Query(page): Query<SavedQuotesQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
-    let quotes = repo_list_saved_quotes(&state.db, auth_user.id)
-        .await
-        .map_err(HttpError)?;
+    page.validate().map_err(HttpError::from)?;
+    let quotes = repo_list_saved_quotes(
+        &state.db,
+        auth_user.id,
+        page.cursor,
+        page.limit.unwrap_or(SAVED_QUOTES_PAGE),
+    )
+    .await
+    .map_err(HttpError)?;
 
     let dtos: Vec<SavedQuoteResponseDto> = quotes
         .into_iter()

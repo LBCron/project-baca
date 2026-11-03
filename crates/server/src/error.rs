@@ -98,6 +98,11 @@ impl IntoResponse for HttpError {
                 Json(ApiResponse::<()>::error("CONFLICT", msg, None)),
             )
                 .into_response(),
+            AppError::QuotaExceeded(msg) => (
+                StatusCode::CONFLICT,
+                Json(ApiResponse::<()>::error("QUOTA_EXCEEDED", msg, None)),
+            )
+                .into_response(),
             AppError::RateLimited { retry_after } => {
                 let mut resp = (
                     StatusCode::TOO_MANY_REQUESTS,

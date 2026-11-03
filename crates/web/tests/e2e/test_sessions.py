@@ -164,6 +164,38 @@ def test_guest_quote_merges_on_register(clean_page: Page, book_with_chapters: st
     assert_no_page_errors(page)
 
 
+def test_profile_quotes_open_a_page_at_a_time(clean_page: Page, book_with_chapters: str):
+    """Sixty saved quotes open fifty at a time and the rest follow on request.
+    Each batch shares one timestamp, so the pages also prove the id tiebreak:
+    nothing repeats and nothing is skipped."""
+    page = clean_page
+    tokens = register_reader("pages")
+    token = tokens["access_token"]
+    chapter_id = api_get(f"/books/{book_with_chapters}")["chapters"][0]["id"]
+    texts = [f"Paged quote {i:02d}" for i in range(60)]
+    for batch in (texts[:50], texts[50:]):
+        items = [{"book_id": book_with_chapters, "chapter_id": chapter_id, "quote_text": t} for t in batch]
+        _post("/quotes/save-batch", {"items": items}, token)
+    try:
+        goto(page, "/")
+        page.evaluate(_sign_in_storage(tokens))
+        goto(page, "/me")
+        rows = page.locator(".quote-row blockquote")
+        expect(rows).to_have_count(50)
+        expect(page.get_by_text("All (50+)")).to_be_visible()
+        more = page.locator("section[aria-labelledby='quotes-title'] .load-more button")
+        more.click()
+        expect(rows).to_have_count(60)
+        expect(more).to_have_count(0)
+        expect(page.get_by_text("All (60)")).to_be_visible()
+        assert sorted(rows.all_inner_texts()) == texts
+        assert_no_page_errors(page)
+    finally:
+        req = urllib.request.Request(f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req):
+            pass
+
+
 def _owner(tokens: dict) -> str:
     payload = tokens["access_token"].split(".")[1]
     return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]

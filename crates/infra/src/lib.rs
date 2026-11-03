@@ -37,7 +37,7 @@ pub use repositories::{
     quote_repository::{
         get_chapter_recap, get_saved_quote_by_id, get_tldr_cache, list_saved_quotes, save_quote,
         save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome, QuoteSearchRow,
-        SavedQuoteDto,
+        SavedQuoteDto, MAX_SAVED_QUOTES_PER_USER,
     },
     user_repository::{
         activate_registration, create_inactive_user, delete_user_by_id, find_user_by_email,
