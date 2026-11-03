@@ -212,6 +212,38 @@ impl TestHarness {
     }
 }
 
+/// A book row in `status`, so its cover has something to answer to.
+#[allow(dead_code)]
+pub async fn seed_book(harness: &TestHarness, status: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    use sea_orm::{ActiveModelTrait, Set};
+    books::ActiveModel {
+        id: Set(id),
+        title: Set("Cover Probe".to_string()),
+        author: Set("Probe".to_string()),
+        language: Set("id".to_string()),
+        primary_theme: Set("Probe".to_string()),
+        sub_theme: Set(None),
+        description: Set("Cover probe".to_string()),
+        cover_url: Set(format!("covers/{id}.webp")),
+        epub_storage_path: Set(format!("epubs/{id}.epub")),
+        total_words: Set(1),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Probe".to_string()),
+        source_url: Set(None),
+        license: Set("CC0".to_string()),
+        publication_year: Set(None),
+        status: Set(status.to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("seed book");
+    harness.track_book(id)
+}
+
 /// Code a test swaps in for the one mailed to a registration.
 #[allow(dead_code)]
 pub const KNOWN_OTP: &str = "424242";

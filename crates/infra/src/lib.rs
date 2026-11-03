@@ -17,7 +17,7 @@ pub use config::{
     SmtpSecurity, StorageConfig,
 };
 pub use counter::hit_window;
-pub use email::send_otp_email;
+pub use email::{send_account_exists_email, send_otp_email};
 pub use pool::{
     init_db_pool, init_redis_client, init_redis_conn, RedisConn, REDIS_RETRY_AFTER_SECS,
 };

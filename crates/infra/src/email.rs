@@ -1,4 +1,5 @@
-//! Transactional email dispatch for verification OTPs over SMTP (lettre).
+//! Transactional signup email over SMTP (lettre): verification codes, and a
+//! note to the owner when an address that already has an account signs up.
 //!
 //! STARTTLS with authentication for real relays, cleartext for the local
 //! Mailpit; either way a failed hand-off surfaces as an error so signup
@@ -54,7 +55,12 @@ fn build_transport(config: &EmailConfig) -> Result<AsyncSmtpTransport<Tokio1Exec
     Ok(builder.build())
 }
 
-fn otp_message(config: &EmailConfig, to_email: &str, otp: &str) -> Result<Message, AppError> {
+fn plain_message(
+    config: &EmailConfig,
+    to_email: &str,
+    subject: &str,
+    body: String,
+) -> Result<Message, AppError> {
     let from_address: Address = config
         .smtp_from_email
         .parse()
@@ -68,38 +74,67 @@ fn otp_message(config: &EmailConfig, to_email: &str, otp: &str) -> Result<Messag
             from_address,
         ))
         .to(Mailbox::new(None, to_address))
-        .subject("Project Baca Verification Code")
+        .subject(subject)
         .header(ContentType::TEXT_PLAIN)
-        .body(format!(
-            "Welcome to Project Baca!\r\n\r\nYour 6-digit verification code is:\r\n\r\n  {otp}\r\n\r\nThis code will expire in 10 minutes.\r\n"
-        ))
+        .body(body)
         .map_err(|e| smtp_error("message build", e))
 }
 
-/// Sends an OTP verification email. Fails closed: a code that never left the
-/// server must surface as an error, or the caller reports success and the
-/// user is stranded at the OTP step.
+fn otp_message(config: &EmailConfig, to_email: &str, otp: &str) -> Result<Message, AppError> {
+    plain_message(
+        config,
+        to_email,
+        "Project Baca Verification Code",
+        format!(
+            "Welcome to Project Baca!\r\n\r\nYour 6-digit verification code is:\r\n\r\n  {otp}\r\n\r\nThis code will expire in 10 minutes.\r\n"
+        ),
+    )
+}
+
+fn account_exists_message(config: &EmailConfig, to_email: &str) -> Result<Message, AppError> {
+    plain_message(
+        config,
+        to_email,
+        "Project Baca Account",
+        "Someone, perhaps you, asked to create a Project Baca account with this address.\r\n\r\nThis address already has an account, so no code was sent. Sign in instead; if it was not you, there is nothing to do.\r\n".to_string(),
+    )
+}
+
+/// Hands one message to the relay. Fails closed: a message that never left
+/// the server must surface as an error, or the caller reports success and
+/// the user is stranded waiting for it.
+async fn deliver(config: &EmailConfig, to_email: &str, message: Message) -> Result<(), AppError> {
+    let relay = format!("{}:{}", config.smtp_host, config.smtp_port);
+    let recipient = mask_email(to_email);
+    info!(
+        "Dispatching signup email to {recipient} via {relay} ({:?})",
+        config.smtp_security
+    );
+    let transport = build_transport(config)?;
+    transport.send(message).await.map_err(|e| {
+        warn!("Signup email to {recipient} via {relay} failed: {e}");
+        smtp_error("delivery", e)
+    })?;
+    info!("Dispatched signup email to {recipient}");
+    Ok(())
+}
+
+/// Sends an OTP verification email.
 pub async fn send_otp_email(
     config: &EmailConfig,
     to_email: &str,
     otp: &str,
 ) -> Result<(), AppError> {
-    let relay = format!("{}:{}", config.smtp_host, config.smtp_port);
-    let recipient = mask_email(to_email);
-    info!(
-        "Dispatching OTP email to {recipient} via {relay} ({:?})",
-        config.smtp_security
-    );
+    deliver(config, to_email, otp_message(config, to_email, otp)?).await
+}
 
-    let transport = build_transport(config)?;
-    let message = otp_message(config, to_email, otp)?;
-    transport.send(message).await.map_err(|e| {
-        warn!("OTP email to {recipient} via {relay} failed: {e}");
-        smtp_error("delivery", e)
-    })?;
-
-    info!("Dispatched verification OTP email to {recipient}");
-    Ok(())
+/// Tells the owner of an address that already has an account that a signup
+/// was asked for it; the signup itself answers exactly like a new one.
+pub async fn send_account_exists_email(
+    config: &EmailConfig,
+    to_email: &str,
+) -> Result<(), AppError> {
+    deliver(config, to_email, account_exists_message(config, to_email)?).await
 }
 
 #[cfg(test)]
@@ -134,6 +169,15 @@ mod tests {
         assert!(raw.contains("123456"));
         assert!(raw.contains("Subject: Project Baca Verification Code"));
         assert!(otp_message(&config, "not an address", "123456").is_err());
+    }
+
+    #[test]
+    fn account_exists_message_carries_no_code() {
+        let config = EmailConfig::default();
+        let message = account_exists_message(&config, "reader@example.com").expect("builds");
+        let raw = String::from_utf8(message.formatted()).expect("utf8");
+        assert!(raw.contains("already has an account"));
+        assert!(!raw.contains("verification code is"));
     }
 
     /// Cleartext delivery to the dev Mailpit; skipped when no relay listens

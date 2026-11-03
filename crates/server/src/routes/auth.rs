@@ -18,10 +18,10 @@ use infra::{
     ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
     generate_refresh_token, hash_password_async, hit_window, issue_access_token, list_sessions,
     revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
-    revoke_refresh_token, revoke_session, send_otp_email, start_registration, store_refresh_token,
-    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
-    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
-    DUMMY_ARGON2_HASH,
+    revoke_refresh_token, revoke_session, send_account_exists_email, send_otp_email,
+    start_registration, store_refresh_token, touch_session, update_user_password,
+    update_user_profile, validate_and_rotate_refresh_token, verify_access_token,
+    verify_password_async, verify_registration, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -168,8 +168,7 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     path = "/api/v1/auth/signup",
     request_body = SignupRequest,
     responses(
-        (status = 201, description = "Verification OTP sent to email", body = ApiResponse<RegistrationStartedDto>),
-        (status = 409, description = "Email already registered", body = ApiResponse<ErrorPayload>),
+        (status = 201, description = "Verification OTP sent to email; an address that already has an account answers the same and its owner is told instead", body = ApiResponse<RegistrationStartedDto>),
         (status = 429, description = "Signup cap for this network, codes for this address, or guesses for it spent; Retry-After says when", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
@@ -196,14 +195,10 @@ pub async fn signup(
         }));
     }
 
-    let existing_user = find_user_by_email(&state.db, &req.email)
+    let registered = find_user_by_email(&state.db, &req.email)
         .await
-        .map_err(HttpError::from)?;
-    if existing_user.is_some_and(|user| user.is_active) {
-        return Err(HttpError(AppError::Conflict(
-            "An account with this email is already registered".to_string(),
-        )));
-    }
+        .map_err(HttpError::from)?
+        .is_some_and(|user| user.is_active);
 
     // Registrations for one address live side by side, so nobody can hold
     // the address of someone else; what stays bounded is the mail sent to
@@ -227,9 +222,16 @@ pub async fn signup(
     .await
     .map_err(HttpError::from)?;
 
-    // Fail closed: a 201 without a deliverable code strands the user at the
-    // OTP step.
-    if let Err(e) = send_otp_email(&state.config.email, &req.email, &otp).await {
+    // An address that already has an account answers like a new one, so
+    // signup does not tell who is registered; its owner gets a note instead
+    // of a code. Fail closed: a 201 without a delivered message strands the
+    // user at the OTP step.
+    let delivered = if registered {
+        send_account_exists_email(&state.config.email, &req.email).await
+    } else {
+        send_otp_email(&state.config.email, &req.email, &otp).await
+    };
+    if let Err(e) = delivered {
         tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
         return Err(HttpError(e));
     }

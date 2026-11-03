@@ -1818,7 +1818,7 @@ async fn test_password_change_keeps_old_hash_when_revocation_fails() {
 }
 
 /// Case and padding variants of one address are one account and one
-/// lockout key; a second signup for it is a 409.
+/// lockout key; a second signup for it answers like any signup.
 #[tokio::test]
 async fn test_email_variants_are_one_account() {
     let harness = TestHarness::new().await;
@@ -1857,7 +1857,41 @@ async fn test_email_variants_are_one_account() {
             signup_body(&canonical.to_uppercase(), password),
         ))
         .await;
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    harness.cleanup().await;
+}
+
+/// Signup does not tell who is registered: an address that has an account
+/// answers with the same status and body shape as a new one, and its owner
+/// is told by mail instead of being sent a code.
+#[tokio::test]
+async fn test_signup_answers_alike_for_registered_and_new_addresses() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.19");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "known", &ip).await;
+    let registered = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .email;
+    let fresh = harness.track_email_owned(format!("fresh_{}@example.com", Uuid::new_v4()));
+
+    let mut answers = Vec::new();
+    for email in [&registered, &fresh] {
+        let (resp, body) = harness
+            .send_json_request(json_post(
+                "/api/v1/auth/signup",
+                &ip,
+                signup_body(email, "AnyChoice123!"),
+            ))
+            .await;
+        assert_eq!(resp.status(), StatusCode::CREATED, "{body}");
+        let data = body["data"].as_object().expect("data").clone();
+        answers.push((
+            data.keys().cloned().collect::<Vec<_>>(),
+            data["message"].clone(),
+        ));
+    }
+    assert_eq!(answers[0], answers[1]);
     harness.cleanup().await;
 }
 
@@ -2018,7 +2052,10 @@ async fn test_parallel_login_guesses_evaluate_only_five() {
 
 /// A pending (never verified) account and an unknown address answer a
 /// login in the same time: both run Argon2 before anything branches.
+/// Timing needs a quiet machine, so it runs single-threaded with the live
+/// suite.
 #[tokio::test]
+#[ignore = "timing; runs single-threaded under make test-live"]
 async fn test_login_time_does_not_tell_pending_from_unknown() {
     let harness = TestHarness::new().await;
     harness.live_only().await.expect("live Redis required");
