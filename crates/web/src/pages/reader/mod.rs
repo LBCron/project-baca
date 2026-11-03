@@ -21,8 +21,8 @@ use crate::storage::{self, OfflineChapterRecord};
 use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LEADING_PRESETS};
 use flip::{Dir, DragStart, Flipper, Geometry, Mode, TurnPlan};
 use layout::{
-    anchor_index, columns_for, paddings, page_of, page_of_spot, paragraphs, spot_on, window_width,
-    Spot,
+    anchor_index, columns_for, paddings, page_of, page_of_spot, paragraphs, spot_on, watch_size,
+    window_width, Spot,
 };
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -972,8 +972,11 @@ pub fn ReaderPage() -> impl IntoView {
     });
 
     // The return target is set only once the new column width is in place;
-    // set earlier, the anchor effect would paginate the half-updated layout.
-    let resize = window_event_listener(leptos::ev::resize, move |_| {
+    // set earlier, the anchor effect would paginate a half-updated layout.
+    let relayout = move || {
+        if !chapter_shown() {
+            return;
+        }
         cancel_flip();
         measure(Box::new(move || {
             if pending_anchor.try_get_untracked() == Some(None) {
@@ -986,8 +989,16 @@ pub fn ReaderPage() -> impl IntoView {
             }
             request_animation_frame(paginate);
         }));
-    });
+    };
+    let resize = window_event_listener(leptos::ev::resize, move |_| relayout());
     on_cleanup(move || resize.remove());
+    // The viewport's own size as well: a page scrollbar that comes and goes
+    // during a rotation changes the page width with no window `resize`.
+    Effect::new(move || {
+        if let Some(el) = viewport_ref.get() {
+            watch_size(&el, relayout);
+        }
+    });
 
     let online = window_event_listener(leptos::ev::online, move |_| {
         spawn_local(async move {

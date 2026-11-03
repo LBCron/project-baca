@@ -1,6 +1,7 @@
 //! Column geometry for the paginated reader: the chapter flows into CSS
 //! columns one page wide, so page arithmetic is layout arithmetic.
 
+use leptos::prelude::on_cleanup;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
@@ -60,6 +61,21 @@ pub fn window_width() -> i32 {
         .and_then(|w| w.as_f64())
         .map(|w| w as i32)
         .unwrap_or(0)
+}
+
+/// Calls `on_change` whenever the element's box changes size, until the
+/// owner is cleaned up.
+pub fn watch_size(el: &HtmlElement, on_change: impl Fn() + 'static) {
+    let callback = wasm_bindgen::closure::Closure::<dyn Fn()>::new(on_change);
+    let Ok(observer) = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref()) else {
+        return;
+    };
+    observer.observe(el);
+    let attached = send_wrapper::SendWrapper::new((observer, callback));
+    on_cleanup(move || {
+        let (observer, _callback) = attached.take();
+        observer.disconnect();
+    });
 }
 
 pub fn paragraphs(el: &HtmlElement) -> Vec<HtmlElement> {
