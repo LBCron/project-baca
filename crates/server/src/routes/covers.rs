@@ -33,19 +33,15 @@ fn is_cover_file_name(file: &str) -> bool {
         && matches!(ext, "webp" | "jpg" | "jpeg" | "png")
 }
 
-/// Media type from the stored object, falling back to the extension when the
-/// bucket did not record an image type.
-fn cover_content_type(file: &str, stored: Option<String>) -> String {
-    stored
-        .filter(|ct| ct.starts_with("image/"))
-        .unwrap_or_else(|| {
-            match file.rsplit_once('.').map(|(_, ext)| ext) {
-                Some("webp") => "image/webp",
-                Some("png") => "image/png",
-                _ => "image/jpeg",
-            }
-            .to_string()
-        })
+/// Media type from the file's allowlisted extension, never from what the
+/// bucket recorded: an object stored as `image/svg+xml` is still served as a
+/// raster type the browser will not run.
+fn cover_content_type(file: &str) -> &'static str {
+    match file.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("webp") => "image/webp",
+        Some("png") => "image/png",
+        _ => "image/jpeg",
+    }
 }
 
 /// Cover image bytes for a published book. Public, cached immutably, 404 for
@@ -87,20 +83,21 @@ pub async fn get_cover(
             "Object storage unavailable; covers cannot be served".to_string(),
         ))
     })?;
-    let object = storage
+    let bytes = storage
         .get_cover(&format!("covers/{file}"))
         .await
         .map_err(|e| match e {
             AppError::NotFound(_) => not_found(),
             other => HttpError(other),
         })?;
-    let content_type = HeaderValue::from_str(&cover_content_type(&file, object.content_type))
-        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
 
     Ok((
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(cover_content_type(&file)),
+            ),
             (
                 header::CACHE_CONTROL,
                 HeaderValue::from_static(COVER_CACHE_CONTROL),
@@ -111,7 +108,7 @@ pub async fn get_cover(
                 HeaderValue::from_static("cross-origin"),
             ),
         ],
-        object.bytes,
+        bytes,
     )
         .into_response())
 }
@@ -142,15 +139,10 @@ mod tests {
     }
 
     #[test]
-    fn content_type_prefers_stored_image_type() {
-        assert_eq!(
-            cover_content_type("x.webp", Some("image/png".to_string())),
-            "image/png"
-        );
-        assert_eq!(
-            cover_content_type("x.webp", Some("text/html".to_string())),
-            "image/webp"
-        );
-        assert_eq!(cover_content_type("x.jpg", None), "image/jpeg");
+    fn content_type_comes_from_the_extension_alone() {
+        assert_eq!(cover_content_type("x.webp"), "image/webp");
+        assert_eq!(cover_content_type("x.png"), "image/png");
+        assert_eq!(cover_content_type("x.jpg"), "image/jpeg");
+        assert_eq!(cover_content_type("x.jpeg"), "image/jpeg");
     }
 }

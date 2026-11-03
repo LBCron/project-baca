@@ -129,6 +129,7 @@ pub async fn get_job_status(
         book_id,
         status: fields.get("status").cloned().unwrap_or_default(),
         progress,
+        error: fields.get("error").filter(|e| !e.is_empty()).cloned(),
     }))
 }
 

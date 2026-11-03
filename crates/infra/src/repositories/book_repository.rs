@@ -651,24 +651,51 @@ pub async fn get_book_status(db: &DatabaseConnection, book_id: Uuid) -> Result<S
         .ok_or_else(book_not_found)
 }
 
+/// True for Postgres `lock_not_available`, raised when `lock_timeout` ends a
+/// wait for a row another transaction holds.
+fn is_lock_timeout(error: &sea_orm::DbErr) -> bool {
+    use sea_orm::{sqlx, DbErr, RuntimeErr};
+    match error {
+        DbErr::Exec(RuntimeErr::SqlxError(sqlx::Error::Database(db)))
+        | DbErr::Query(RuntimeErr::SqlxError(sqlx::Error::Database(db))) => {
+            db.code().as_deref() == Some("55P03")
+        }
+        _ => false,
+    }
+}
+
 /// Writes a status the caller has already validated against the lifecycle.
+/// A curator's request waits at most two seconds for a row someone else
+/// holds, then answers 409 so it can be retried, instead of holding a pool
+/// connection for as long as the other transaction runs.
 pub async fn set_book_status(
     db: &DatabaseConnection,
     book_id: Uuid,
     status: &str,
 ) -> Result<(), AppError> {
-    use sea_orm::ActiveModelTrait;
+    use sea_orm::{ActiveModelTrait, ConnectionTrait, TransactionTrait};
+    let failed =
+        |e: sea_orm::DbErr| AppError::Database(format!("Failed to update book status: {e}"));
+    let txn = db.begin().await.map_err(failed)?;
+    txn.execute_unprepared("SET LOCAL lock_timeout = '2s'")
+        .await
+        .map_err(failed)?;
     let model = books::ActiveModel {
         id: sea_orm::Set(book_id),
         status: sea_orm::Set(status.to_string()),
         updated_at: sea_orm::Set(chrono::Utc::now().into()),
         ..Default::default()
     };
-    model
-        .update(db)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to update book status: {e}")))?;
-    Ok(())
+    model.update(&txn).await.map_err(|e| {
+        if is_lock_timeout(&e) {
+            AppError::Conflict(
+                "This manuscript is busy right now; try again in a moment".to_string(),
+            )
+        } else {
+            failed(e)
+        }
+    })?;
+    txn.commit().await.map_err(failed)
 }
 
 #[cfg(test)]

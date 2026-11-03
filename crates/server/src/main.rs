@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dimension: config.ai.dimension,
                 daily_budget: 0,
             })
-            .unwrap_or_else(|_| unreachable!("fastembed provider always succeeds"))
+            .map_err(|e| format!("FastEmbed fallback failed to start: {e}"))?
         }
     };
 

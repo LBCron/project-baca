@@ -558,11 +558,7 @@ async fn test_guest_ai_burst_enforcement() {
         .expect("Seeding must succeed");
 
     // Unique IP per run isolates this bucket from other tests and re-runs.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock must advance")
-        .as_nanos();
-    let guest_ip = format!("198.51.100.{}", (nanos % 200 + 1) as u8);
+    let guest_ip = common::unique_ip("198.19");
 
     let mut ok_count = 0;
     for _ in 0..25 {

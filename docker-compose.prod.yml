@@ -101,6 +101,10 @@ services:
     restart: always
     # tini as PID 1 forwards SIGTERM to the worker, which releases its job.
     init: true
+    # A runaway parse is killed inside its own cgroup, never Postgres by the
+    # host OOM killer; the largest real book peaks near 100 MB.
+    mem_limit: 768m
+    memswap_limit: 768m
     depends_on:
       postgres:
         condition: service_healthy

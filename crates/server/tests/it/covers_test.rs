@@ -60,6 +60,45 @@ async fn test_cover_roundtrip_through_storage() {
     harness.cleanup().await;
 }
 
+/// An object whose stored media type is SVG, as the old worker fallback could
+/// write, is served under its raster extension's type: never as SVG a
+/// browser would run.
+#[tokio::test]
+async fn test_cover_stored_as_svg_is_never_served_as_svg() {
+    let harness = TestHarness::new().await;
+    let storage = harness
+        .state
+        .storage
+        .clone()
+        .expect("live MinIO required (db-up)");
+    let book_id = common::seed_book(&harness, "published").await;
+    let key = format!("covers/{book_id}.png");
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
+    storage
+        .put_cover(&key, svg.to_vec(), "image/svg+xml")
+        .await
+        .expect("cover upload must succeed");
+
+    let resp = harness
+        .send_request(get_cover(&format!("{book_id}.png")))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+
+    storage
+        .delete_cover(&key)
+        .await
+        .expect("cover cleanup must succeed");
+    harness.cleanup().await;
+}
+
 /// Unknown covers and names outside `<uuid>.<image ext>` both answer 404
 /// with the standard envelope; no other bucket key is reachable.
 #[tokio::test]

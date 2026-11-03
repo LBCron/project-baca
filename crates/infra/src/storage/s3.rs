@@ -19,13 +19,6 @@ pub struct StorageService {
     bucket_covers: String,
 }
 
-/// One object read back from a bucket with the media type it was stored under.
-#[derive(Debug, Clone)]
-pub struct StoredObject {
-    pub bytes: Vec<u8>,
-    pub content_type: Option<String>,
-}
-
 /// Upper bound for one S3 call including the SDK's retries, so a store that
 /// accepts connections but never answers cannot hold a request open.
 pub const S3_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -114,14 +107,12 @@ impl StorageService {
 
     /// Fetches raw bytes for `key` from the EPUB bucket (worker path).
     pub async fn get_epub(&self, key: &str) -> Result<Vec<u8>, AppError> {
-        self.get_object(&self.bucket_epubs.clone(), key)
-            .await
-            .map(|object| object.bytes)
+        self.get_object(&self.bucket_epubs.clone(), key).await
     }
 
-    /// Fetches a cover image with its stored media type; `NotFound` when the
-    /// key is absent so the web route can answer 404.
-    pub async fn get_cover(&self, key: &str) -> Result<StoredObject, AppError> {
+    /// Fetches a cover image; `NotFound` when the key is absent so the web
+    /// route can answer 404.
+    pub async fn get_cover(&self, key: &str) -> Result<Vec<u8>, AppError> {
         self.get_object(&self.bucket_covers.clone(), key).await
     }
 
@@ -166,7 +157,7 @@ impl StorageService {
         Ok(())
     }
 
-    async fn get_object(&self, bucket: &str, key: &str) -> Result<StoredObject, AppError> {
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>, AppError> {
         let output = self
             .client
             .get_object()
@@ -182,16 +173,11 @@ impl StorageService {
                     AppError::Internal(format!("Storage read failed: {service_error:?}"))
                 }
             })?;
-        let content_type = output.content_type().map(str::to_string);
-        let bytes = output
+        output
             .body
             .collect()
             .await
             .map(|data| data.into_bytes().to_vec())
-            .map_err(|e| AppError::Internal(format!("Storage body read failed: {e:?}")))?;
-        Ok(StoredObject {
-            bytes,
-            content_type,
-        })
+            .map_err(|e| AppError::Internal(format!("Storage body read failed: {e:?}")))
     }
 }

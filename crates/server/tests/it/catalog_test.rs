@@ -701,7 +701,7 @@ async fn test_unpublished_books_hide_chapters_and_insights() {
 async fn test_progress_ignores_unpublished_books() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live services required");
-    let ip = format!("198.19.77.{}", (Uuid::new_v4().as_u128() % 250) as u8);
+    let ip = common::unique_ip("198.22");
     let (token, _) = common::provision_verified_user(&harness, &mut redis, "draftprog", &ip).await;
     let (draft_id, draft_chapter) = seed_book_with_chapter(&harness, "draft").await;
     let (later_id, later_chapter) = seed_book_with_chapter(&harness, "published").await;

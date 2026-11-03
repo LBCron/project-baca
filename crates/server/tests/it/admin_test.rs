@@ -657,6 +657,7 @@ async fn test_job_status_shows_failed_with_error() {
     let json: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(json["data"]["status"], "failed");
     assert_eq!(json["data"]["job_id"], job_id);
+    assert_eq!(json["data"]["error"], "EPUB container.xml missing");
     harness.cleanup().await;
 }
 
@@ -1121,5 +1122,45 @@ async fn test_concurrent_dlq_replays_requeue_once() {
         .await
         .unwrap();
     let _: () = redis.del(format!("job:{job_id}")).await.unwrap();
+    harness.cleanup().await;
+}
+
+/// Archiving a book whose row another transaction holds (an ingestion used
+/// to, for its whole run) answers 409 within the two-second lock wait
+/// instead of holding the request, then goes through once the row is free.
+#[tokio::test]
+async fn test_archiving_a_held_book_answers_409_without_waiting() {
+    use sea_orm::{ConnectionTrait, Statement, TransactionTrait};
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let book_id = common::seed_book(&harness, "published").await;
+    let holder = harness.state.db.begin().await.expect("transaction opens");
+    holder
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT id FROM books WHERE id = $1 FOR UPDATE",
+            [book_id.into()],
+        ))
+        .await
+        .expect("row lock taken");
+
+    let started = std::time::Instant::now();
+    let (resp, json) = harness
+        .send_json_request(admin_patch(book_id, "archived", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(json["error"]["code"], "CONFLICT");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "answered after {:?}",
+        started.elapsed()
+    );
+
+    holder.rollback().await.expect("lock released");
+    let (resp, json) = harness
+        .send_json_request(admin_patch(book_id, "archived", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(json["data"]["status"], "archived");
     harness.cleanup().await;
 }

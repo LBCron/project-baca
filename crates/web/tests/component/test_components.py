@@ -148,3 +148,29 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
     assert widths == [100.0, 60.0], widths
     assert "40% drop" in page.inner_text(".funnel")
     assert_no_page_errors(page)
+
+
+def test_curator_desk_shows_why_a_job_failed(clean_page: Page, tmp_path):
+    """An upload the worker refuses shows the reason under the failure, so
+    the curator knows what to fix instead of only that it failed."""
+    page = clean_page
+    job_id = "33333333-3333-4333-8333-333333333333"
+    reason = "EPUB holds more than 5000 files"
+    page.route("**/api/**/admin/books**", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": CURATOR_BOOKS})))
+    page.route("**/api/**/admin/books/upload", lambda r: r.fulfill(
+        status=202, content_type="application/json", body=json.dumps({"success": True, "data": {
+            "job_id": job_id, "book_id": CURATOR_BOOKS[1]["id"], "status": "queued"}})))
+    page.route(f"**/api/**/admin/jobs/{job_id}", lambda r: r.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"success": True, "data": {
+            "job_id": job_id, "book_id": CURATOR_BOOKS[1]["id"], "status": "failed", "progress": 100,
+            "error": reason}})))
+    _story(page, "curator-desk")
+    epub = tmp_path / "refused.epub"
+    epub.write_bytes(b"PK\x03\x04 not really an epub")
+    page.set_input_files(".upload-card input[type=file]", str(epub))
+    page.click(".upload-card button[type=submit]")
+    card = page.locator(".job-card")
+    expect(card.locator(".form-error")).to_be_visible()
+    expect(card.locator(".job-error")).to_have_text(reason)
+    assert_no_page_errors(page)
