@@ -67,7 +67,26 @@ pub fn set_token(token: &str) {
     }
 }
 
+/// The account the stored access token was issued to (its `sub` claim),
+/// read from the payload without verification: it only tags data kept on
+/// this device, and the server checks every request anyway.
+fn token_owner() -> Option<uuid::Uuid> {
+    let payload = token()?
+        .split('.')
+        .nth(1)?
+        .replace('-', "+")
+        .replace('_', "/");
+    let padded = format!("{payload}{}", "=".repeat((4 - payload.len() % 4) % 4));
+    let claims: serde_json::Value = serde_json::from_str(&window()?.atob(&padded).ok()?).ok()?;
+    claims.get("sub")?.as_str()?.parse().ok()
+}
+
+/// Ends the session on this device, together with the progress writes it
+/// left unsent: they must never reach the next account to sign in here.
 pub fn clear_token() {
+    if let Some(owner) = token_owner() {
+        wasm_bindgen_futures::spawn_local(forget_pending(owner));
+    }
     if let Some(storage) = storage() {
         let _ = storage.remove_item(TOKEN_KEY);
         let _ = storage.remove_item(REFRESH_KEY);
@@ -650,10 +669,14 @@ pub async fn save_quotes_batch(
 }
 
 /// One unsent reading-progress write, replayed FIFO when connectivity returns.
+/// `user_id` is the account that wrote it; a record without one predates the
+/// owner and is never sent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingProgress {
     pub book_id: String,
     pub update: ReadingProgressUpdateDto,
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
 }
 
 pub async fn queue_pending_progress(
@@ -665,42 +688,65 @@ pub async fn queue_pending_progress(
         &PendingProgress {
             book_id: book_id.to_string(),
             update: update.clone(),
+            user_id: token_owner(),
         },
     )
     .await
 }
 
-pub async fn pending_count() -> usize {
-    crate::storage::get_all::<PendingProgress>(crate::storage::STORE_PENDING_SYNC)
+async fn pending_ops() -> Vec<(wasm_bindgen::JsValue, PendingProgress)> {
+    crate::storage::get_all_keyed(crate::storage::STORE_PENDING_SYNC)
         .await
-        .map(|ops| ops.len())
-        .unwrap_or(0)
+        .unwrap_or_default()
+}
+
+/// Writes waiting for the signed-in account; none without one.
+pub async fn pending_count() -> usize {
+    let Some(owner) = token_owner() else {
+        return 0;
+    };
+    pending_ops()
+        .await
+        .iter()
+        .filter(|(_, op)| op.user_id == Some(owner))
+        .count()
+}
+
+/// Drops the unsent writes of an account whose session ended on this device.
+async fn forget_pending(owner: uuid::Uuid) {
+    let keys: Vec<_> = pending_ops()
+        .await
+        .into_iter()
+        .filter(|(_, op)| op.user_id == Some(owner))
+        .map(|(key, _)| key)
+        .collect();
+    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &keys).await;
 }
 
 thread_local! {
     static DRAINING: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// Replays queued progress writes oldest-first; failures stay queued.
-/// Returns the number still pending. Each replayed write is deleted by its
-/// own key, so a write queued during the replay survives it, and a second
-/// call while one runs returns at once instead of sending everything twice.
+/// Replays the signed-in account's queued writes oldest-first; failures stay
+/// queued, and writes of any other account are dropped unsent. Returns the
+/// number still pending. Each handled write is deleted by its own key, so a
+/// write queued during the replay survives it, and a second call while one
+/// runs returns at once instead of sending everything twice.
 pub async fn drain_pending() -> usize {
+    let Some(owner) = token_owner() else {
+        return 0;
+    };
     let already = DRAINING.with(|f| f.replace(true));
     if already {
         return pending_count().await;
     }
-    let ops: Vec<(wasm_bindgen::JsValue, PendingProgress)> =
-        crate::storage::get_all_keyed(crate::storage::STORE_PENDING_SYNC)
-            .await
-            .unwrap_or_default();
-    let mut sent = Vec::new();
-    for (key, op) in ops {
-        if save_progress(&op.book_id, &op.update).await.is_ok() {
-            sent.push(key);
+    let mut done = Vec::new();
+    for (key, op) in pending_ops().await {
+        if op.user_id != Some(owner) || save_progress(&op.book_id, &op.update).await.is_ok() {
+            done.push(key);
         }
     }
-    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &sent).await;
+    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &done).await;
     DRAINING.with(|f| f.replace(false));
     pending_count().await
 }

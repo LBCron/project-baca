@@ -6,6 +6,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Fixed
 - Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
+- Queued progress belongs to the account that wrote it: signing out (or a refused session) drops that account's unsent writes, and a drain sends only the signed-in account's writes, so a shared device never moves one reader's position into another's shelf.
 
 ## [0.1.0] — 2026-11-03
 
