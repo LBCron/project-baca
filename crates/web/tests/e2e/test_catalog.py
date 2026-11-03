@@ -75,3 +75,37 @@ def test_home_catalog_shows_two_rows_then_everything(clean_page: Page):
     page.wait_for_timeout(400)
     assert cards.count() > 4
     assert_no_page_errors(page)
+
+
+NO_WEB_SHARE = "delete Navigator.prototype.share; delete navigator.share;"
+
+
+def test_share_copies_when_the_browser_cannot_share(new_context, book_with_chapters: str):
+    """Without the Web Share API (desktop Chromium on Linux, Firefox) both
+    share buttons copy instead, say so, and raise no page error."""
+    import json
+
+    context = new_context(permissions=["clipboard-read", "clipboard-write"])
+    context.add_init_script(NO_WEB_SHARE)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        goto(page, f"/book/{book_with_chapters}")
+        page.get_by_role("button", name="Share this book").click()
+        expect(page.locator(".toast").filter(has_text="Link copied")).to_be_visible()
+        assert page.evaluate("navigator.clipboard.readText()").endswith(f"/book/{book_with_chapters}")
+
+        hit = {"chunk_id": "00000000-0000-4000-8000-0000000000bb", "chapter_number": 1, "chapter_title": None,
+               "cfi_range": "p-1", "content": "Kapal tiba di teluk.", "similarity_score": 0.9}
+        page.route("**/quotes/search", lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps({"success": True, "data": [hit]})))
+        page.click("text=Find a quote")
+        page.fill(".sheet .search-bar input", "kapal di teluk")
+        page.click(".sheet .search-bar .btn-primary")
+        page.get_by_role("button", name="Share card").click()
+        expect(page.locator(".toast").filter(has_text="Quote copied")).to_be_visible()
+        assert "Kapal tiba di teluk." in page.evaluate("navigator.clipboard.readText()")
+        assert errors == [], errors[:3]
+    finally:
+        context.close()

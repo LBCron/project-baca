@@ -79,7 +79,7 @@ fn share_quote(toasts: crate::components::toast::Toasts, text: String, source: S
             return;
         }
         if api::copy_text(&body).await {
-            toasts.info(lang.text("quote_saved"));
+            toasts.info(lang.text("quote_copied"));
         } else {
             toasts.error(lang.text("error_generic"));
         }

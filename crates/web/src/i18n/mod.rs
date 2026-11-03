@@ -106,6 +106,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("recap_last", "Rekap bab lalu", "Recap so far"),
     ("share_book", "Bagikan buku", "Share this book"),
     ("share_copied", "Tautan disalin.", "Link copied."),
+    ("quote_copied", "Kutipan disalin.", "Quote copied."),
     ("font_smaller", "Perkecil huruf", "Smaller type"),
     ("font_larger", "Perbesar huruf", "Larger type"),
     ("leading_tight", "Rapat", "Tight"),
