@@ -109,8 +109,7 @@ impl BookStatus {
         }
         matches!(
             (self, next),
-            (Processing, Published)
-                | (Draft, Archived)
+            (Draft, Archived)
                 | (Processing, Archived)
                 | (Published, Archived)
                 | (Archived, Published)
@@ -325,7 +324,10 @@ mod tests {
             !Draft.can_transition_to(Processing),
             "only the worker moves a book into processing"
         );
-        assert!(Processing.can_transition_to(Published));
+        assert!(
+            !Processing.can_transition_to(Published),
+            "only the worker publishes a book it is ingesting"
+        );
         assert!(Draft.can_transition_to(Archived));
         assert!(Published.can_transition_to(Archived));
         assert!(Published.can_transition_to(Published));

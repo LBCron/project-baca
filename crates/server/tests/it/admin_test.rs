@@ -1180,6 +1180,14 @@ async fn test_admin_patch_refuses_processing_status() {
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{json}");
 
+    // A book the worker is ingesting has no committed chapters or word
+    // count yet; publishing it by hand would show readers a broken book.
+    let ingesting = seed_status_book(&harness, "processing").await;
+    let (resp, json) = harness
+        .send_json_request(admin_patch(ingesting, "published", &ctx.admin_token))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT, "{json}");
+
     let still_draft = books::Entity::find_by_id(draft_id)
         .one(&harness.state.db)
         .await

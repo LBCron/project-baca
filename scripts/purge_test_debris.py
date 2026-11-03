@@ -87,7 +87,7 @@ def main() -> int:
         minio_client.remove_object(bucket, name)
 
     def object_gone(path: str) -> bool:
-        if path in fake_objs:
+        if not path or path in fake_objs:
             return True
         try:
             minio_client.stat_object(bucket, path)

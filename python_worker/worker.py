@@ -30,6 +30,7 @@ import time
 import urllib.request
 import uuid
 import zipfile
+import zlib
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -314,6 +315,20 @@ def _safe_member(prefix: str, href: str) -> str:
     return joined
 
 
+# What zipfile raises for a member it cannot inflate: a corrupt deflate
+# stream, a bad CRC, a cut-off entry, an unknown method, or encryption.
+CORRUPT_MEMBER_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
+
+
+def _read_member(epub: zipfile.ZipFile, name: str) -> bytes:
+    """Reads one archive member; a missing one stays a ``KeyError`` for the
+    caller, a corrupt one rejects the upload."""
+    try:
+        return epub.read(name)
+    except CORRUPT_MEMBER_ERRORS as exc:
+        raise RejectedEpub(f"EPUB entry {name!r} is corrupt") from exc
+
+
 def _xml(text: str, name: str) -> ET.Element:
     try:
         return ET.fromstring(text)
@@ -323,7 +338,7 @@ def _xml(text: str, name: str) -> ET.Element:
 
 def _opf_path(epub: zipfile.ZipFile) -> str:
     try:
-        container = epub.read("META-INF/container.xml").decode("utf-8", "replace")
+        container = _read_member(epub, "META-INF/container.xml").decode("utf-8", "replace")
     except KeyError as exc:
         raise RejectedEpub("EPUB missing META-INF/container.xml") from exc
     root = _xml(container, "container.xml")
@@ -348,7 +363,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     base = opf_path.rpartition("/")[0]
     prefix = f"{base}/" if base else ""
 
-    opf = _xml(epub.read(_safe_member("", opf_path)).decode("utf-8", "replace"), "package document")
+    opf = _xml(_read_member(epub, _safe_member("", opf_path)).decode("utf-8", "replace"), "package document")
     ns = {
         "opf": "http://www.idpf.org/2007/opf",
         "dc": "http://purl.org/dc/elements/1.1/",
@@ -373,7 +388,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
     for item_id, (href, media) in manifest.items():
         if "cover-image" in properties[item_id] or item_id.lower() == "cover-image":
             try:
-                cover_bytes = epub.read(_safe_member(prefix, href))
+                cover_bytes = _read_member(epub, _safe_member(prefix, href))
             except (KeyError, ValueError):
                 cover_bytes = None
             break
@@ -381,7 +396,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
         for item_id, (href, media) in manifest.items():
             if media.startswith("image/") and "cover" in (item_id + href).lower():
                 try:
-                    cover_bytes = epub.read(_safe_member(prefix, href))
+                    cover_bytes = _read_member(epub, _safe_member(prefix, href))
                 except (KeyError, ValueError):
                     cover_bytes = None
                 break
@@ -409,7 +424,7 @@ def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
             continue
         read.add(member)
         try:
-            raw = epub.read(member).decode("utf-8", "replace")
+            raw = _read_member(epub, member).decode("utf-8", "replace")
         except KeyError:
             continue
         cleaned = sanitize_html(raw)
@@ -938,13 +953,18 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 80 + int(15 * number / len(chapter_ids)),
             )
 
-        # Publish the book.
+        # The word count marks a finished ingestion even for a book archived
+        # meanwhile, so a curator can restore it; only the status waits on
+        # the archive.
         minutes = max(1, total_words // 200)
         cur.execute(
-            """UPDATE books SET total_words = %s, estimated_reading_minutes = %s,
-                      status = 'published', updated_at = NOW()
-               WHERE id = %s AND status <> 'archived'""",
+            """UPDATE books SET total_words = %s, estimated_reading_minutes = %s, updated_at = NOW()
+               WHERE id = %s""",
             (total_words, minutes, book_id),
+        )
+        cur.execute(
+            "UPDATE books SET status = 'published' WHERE id = %s AND status <> 'archived'",
+            (book_id,),
         )
         published = cur.rowcount > 0
         conn.commit()
@@ -1151,7 +1171,11 @@ def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason
     """Ends a job for good: dead letter first, so a crash before the ack
     leaves it pending rather than lost."""
     job_id = fields.get("job_id", msg_id)
-    dead_letter(redis_client, settings, job_id, fields.get("book_id", ""), reason)
+    # A crash between this dead letter and the ack below redelivers the
+    # entry; the job already failed, so a second letter would only double a
+    # replay.
+    if redis_client.hget(f"job:{job_id}", "status") != "failed":
+        dead_letter(redis_client, settings, job_id, fields.get("book_id", ""), reason)
     set_job(redis_client, job_id, "failed", 100, error=reason)
     return_to_draft(settings, fields.get("book_id", ""))
     redis_client.xack(settings.stream, settings.group, msg_id)

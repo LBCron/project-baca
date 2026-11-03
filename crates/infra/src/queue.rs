@@ -219,6 +219,9 @@ pub async fn replay_dlq_entry(
     conn: &mut RedisConn,
     entry_id: &str,
 ) -> Result<Option<String>, AppError> {
+    if !is_stream_id(entry_id) {
+        return Ok(None);
+    }
     let reply: redis::streams::StreamRangeReply = conn
         .xrange(INGESTION_DLQ_STREAM, entry_id, entry_id)
         .await

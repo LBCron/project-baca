@@ -470,6 +470,26 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
         )
 
 
+class CorruptMemberTest(unittest.TestCase):
+    def test_a_corrupt_chapter_rejects_the_upload(self):
+        data = bytearray(make_epub([("One", "word " * 2_000)]))
+        name = b"OEBPS/chap0.xhtml"
+        # Overwrite deflated bytes just past the member's local header name.
+        start = data.find(name) + len(name) + 40
+        data[start : start + 40] = bytes(range(40))
+        with self.assertRaisesRegex(worker.RejectedEpub, "chap0.xhtml' is corrupt"):
+            worker.parse_epub(bytes(data))
+
+    def test_a_job_failed_before_is_not_dead_lettered_twice(self):
+        client = mock.MagicMock()
+        client.hget.return_value = "failed"
+        with mock.patch.object(worker, "dead_letter") as dead, \
+             mock.patch.object(worker, "return_to_draft"):
+            worker.fail_job(client, worker.Settings(), "1-0", {"job_id": "j", "book_id": "b"}, "why")
+        dead.assert_not_called()
+        client.xack.assert_called_once()
+
+
 class MetadataBackfillTest(unittest.TestCase):
     def backfill(self, row: tuple, epub: bytes) -> dict:
         """Runs the pipeline to its first commit on a book row ``row`` and
