@@ -218,6 +218,44 @@ def test_leaving_inside_the_debounce_saves_the_new_page(new_context, book_with_c
         context.close()
 
 
+VISIBLE_PARAGRAPHS = """() => {
+  const v = document.querySelector('.reader-viewport');
+  const box = v.getBoundingClientRect();
+  return [...v.querySelectorAll('.chapter-body p')].flatMap((p, i) =>
+    [...p.getClientRects()].some(r => r.width > 0 && r.right > box.left + 1 && r.left < box.right - 1) ? [i + 1] : []);
+}"""
+
+
+def _resize(page: Page, width: int, height: int) -> list[int]:
+    page.set_viewport_size({"width": width, "height": height})
+    page.wait_for_timeout(500)
+    return page.evaluate(VISIBLE_PARAGRAPHS)
+
+
+def test_resizing_keeps_the_paragraph_being_read(new_context, book_with_chapters: str):
+    context = new_context(viewport={"width": 1280, "height": 800}, reduced_motion="reduce")
+    install_fetch_shim(context, chapters=3)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        _open(page, book_with_chapters)
+        _turn(page, "ArrowRight", 3)
+        reading = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        for width, height in [(800, 1100), (1280, 800), (390, 844), (1280, 800), (1024, 768), (1280, 800)]:
+            shown = _resize(page, width, height)
+        assert reading in shown, f"p-{reading} left the screen, now {shown}"
+
+        _resize(page, 390, 844)
+        _turn(page, "ArrowRight", 2)
+        first = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        _resize(page, 844, 390)
+        assert abs(_resize(page, 390, 844)[0] - first) <= 1, "one rotation and back keeps the paragraph"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 PENDING_SYNC = """
 () => new Promise(resolve => {
   const open = indexedDB.open('project_baca_db');

@@ -82,8 +82,97 @@ pub fn page_of(offset_left: i32, stride: i32) -> usize {
     }
 }
 
+/// Where reading stands: a paragraph and the share of its text laid out
+/// before the page. Unlike a `p-N` anchor it survives a relayout that moves
+/// the page break into the middle of that paragraph.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spot {
+    pub index: usize,
+    pub fraction: f64,
+}
+
+/// (page, height) of each column fragment a paragraph is split into.
+fn fragments(viewport: &HtmlElement, paragraph: &HtmlElement) -> Vec<(usize, f64)> {
+    let stride = viewport.client_width();
+    let origin = viewport.get_bounding_client_rect().left() - f64::from(viewport.scroll_left());
+    let rects = paragraph.get_client_rects();
+    (0..rects.length())
+        .filter_map(|i| rects.get(i))
+        .filter(|r| r.width() > 0.0)
+        .map(|r| {
+            (
+                page_of((r.left() - origin).round() as i32, stride),
+                r.height(),
+            )
+        })
+        .collect()
+}
+
+/// The spot at the top of `page`: the first paragraph with text on it.
+pub fn spot_on(viewport: &HtmlElement, page: usize) -> Option<Spot> {
+    paragraphs(viewport)
+        .iter()
+        .enumerate()
+        .find_map(|(index, p)| {
+            let parts = fragments(viewport, p);
+            parts.iter().any(|(at, _)| *at >= page).then(|| {
+                let total: f64 = parts.iter().map(|(_, h)| h).sum();
+                let before: f64 = parts
+                    .iter()
+                    .filter(|(at, _)| *at < page)
+                    .map(|(_, h)| h)
+                    .sum();
+                Spot {
+                    index,
+                    fraction: if total > 0.0 { before / total } else { 0.0 },
+                }
+            })
+        })
+}
+
+/// The page that holds `spot` in the current layout.
+pub fn page_of_spot(viewport: &HtmlElement, spot: Spot) -> Option<usize> {
+    let paragraph = paragraphs(viewport).into_iter().nth(spot.index)?;
+    let parts = fragments(viewport, &paragraph);
+    let total: f64 = parts.iter().map(|(_, h)| h).sum();
+    fragment_at(&parts, spot.fraction * total)
+}
+
+/// Page of the fragment that holds the text `offset` pixels into the
+/// paragraph; a fragment ending exactly there hands over to the next one.
+fn fragment_at(parts: &[(usize, f64)], offset: f64) -> Option<usize> {
+    let mut seen = 0.0;
+    parts
+        .iter()
+        .find(|(_, h)| {
+            seen += h;
+            seen - offset > 0.5
+        })
+        .or(parts.last())
+        .map(|(page, _)| *page)
+}
+
 pub fn anchor_index(cfi: &str) -> Option<usize> {
     cfi.strip_prefix("p-")
         .and_then(|n| n.parse::<usize>().ok())
         .map(|n| n.saturating_sub(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fragment_at;
+
+    #[test]
+    fn spot_lands_on_the_fragment_that_holds_it() {
+        let parts = [(3, 100.0), (4, 300.0), (5, 100.0)];
+        assert_eq!(fragment_at(&parts, 0.0), Some(3));
+        assert_eq!(
+            fragment_at(&parts, 100.0),
+            Some(4),
+            "a break at the offset hands over"
+        );
+        assert_eq!(fragment_at(&parts, 399.7), Some(5));
+        assert_eq!(fragment_at(&parts, 1e9), Some(5));
+        assert_eq!(fragment_at(&[], 0.0), None);
+    }
 }

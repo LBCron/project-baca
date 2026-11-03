@@ -20,7 +20,10 @@ use crate::i18n::use_lang;
 use crate::storage::{self, OfflineChapterRecord};
 use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LEADING_PRESETS};
 use flip::{Dir, DragStart, Flipper, Geometry, Mode, TurnPlan};
-use layout::{anchor_index, columns_for, paddings, page_of, paragraphs, window_width};
+use layout::{
+    anchor_index, columns_for, paddings, page_of, page_of_spot, paragraphs, spot_on, window_width,
+    Spot,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_params_map, use_query_map};
@@ -42,6 +45,8 @@ const CHAPTER_SWIPE_PX: f64 = 48.0;
 const EDGE_ZONE: f64 = 0.22;
 /// Anchor hint meaning "open on the last page" (stepping back a chapter).
 const ANCHOR_END: &str = "end";
+/// Anchor hint meaning "return to the spot being read" after a relayout.
+const ANCHOR_SPOT: &str = "spot";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Zone {
@@ -246,6 +251,7 @@ pub fn ReaderPage() -> impl IntoView {
     let (column_width, set_column_width) = signal(0.0f64);
     let (anchor, set_anchor) = signal(String::from("p-1"));
     let (pending_anchor, set_pending_anchor) = signal(None::<String>);
+    let spot = StoredValue::new(None::<Spot>);
     let (turning, set_turning) = signal(false);
     let (streak, set_streak) = signal(None::<i32>);
     let (queued, set_queued) = signal(0usize);
@@ -327,6 +333,7 @@ pub fn ReaderPage() -> impl IntoView {
                             );
                         }
                     }
+                    spot.set_value(None);
                     set_pending_anchor.set(anchor_hint);
                     set_page.set(0);
                     set_finished.set(false);
@@ -406,6 +413,14 @@ pub fn ReaderPage() -> impl IntoView {
         if let Some(cfi) = pending_anchor.try_get_untracked().flatten() {
             if cfi == ANCHOR_END {
                 set_page.set(total - 1);
+            } else if cfi == ANCHOR_SPOT {
+                if let Some(p) = spot
+                    .try_get_value()
+                    .flatten()
+                    .and_then(|s| page_of_spot(&el, s))
+                {
+                    set_page.set(p.min(total - 1));
+                }
             } else if let Some(p) =
                 anchor_index(&cfi).and_then(|i| paragraphs(&el).into_iter().nth(i))
             {
@@ -520,6 +535,12 @@ pub fn ReaderPage() -> impl IntoView {
             .position(|p| page_of(p.offset_left(), width) >= current)
         {
             set_anchor.set(format!("p-{}", first + 1));
+        }
+        // Kept while it still lies on this page: rederived after a relayout,
+        // it would walk back to whatever paragraph now opens the page.
+        let kept = spot.get_value().and_then(|s| page_of_spot(&el, s)) == Some(current);
+        if !kept {
+            spot.set_value(spot_on(&el, current));
         }
         schedule_save();
     });
@@ -950,10 +971,21 @@ pub fn ReaderPage() -> impl IntoView {
         });
     });
 
+    // The return target is set only once the new column width is in place;
+    // set earlier, the anchor effect would paginate the half-updated layout.
     let resize = window_event_listener(leptos::ev::resize, move |_| {
         cancel_flip();
-        set_pending_anchor.set(Some(anchor.get_untracked()));
-        measure(Box::new(move || request_animation_frame(paginate)));
+        measure(Box::new(move || {
+            if pending_anchor.try_get_untracked() == Some(None) {
+                let target = if spot.try_get_value().flatten().is_some() {
+                    ANCHOR_SPOT.to_string()
+                } else {
+                    anchor.get_untracked()
+                };
+                set_pending_anchor.set(Some(target));
+            }
+            request_animation_frame(paginate);
+        }));
     });
     on_cleanup(move || resize.remove());
 
