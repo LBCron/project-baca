@@ -19,6 +19,14 @@ use uuid::Uuid;
 /// rate-limit bucket or lockout key the way an edge proxy would.
 pub const CLIENT_IP_HEADER: &str = "cf-connecting-ip";
 
+/// A random IPv4 address under `prefix` (two octets), drawn from 62,500 so
+/// tests running in the same minute do not share a rate-limit bucket.
+#[allow(dead_code)]
+pub fn unique_ip(prefix: &str) -> String {
+    let n = Uuid::new_v4().as_u128();
+    format!("{prefix}.{}.{}", (n % 250) as u8, ((n >> 8) % 250) as u8)
+}
+
 pub struct TestHarness {
     pub app: Router,
     #[allow(dead_code)]

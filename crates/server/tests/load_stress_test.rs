@@ -142,7 +142,9 @@ async fn test_stress_rate_limit_saturation_and_shedding() {
 
     // A single IP sends 50 requests in rapid succession to /api/v1/auth/login
     // The rate limiter limit is 20 req/minute
-    let spammer_ip = format!("198.51.100.{}", (Uuid::new_v4().as_u128() % 250) + 1);
+    // A prefix no other suite uses: a shared address would start the burst
+    // with requests already counted in its bucket.
+    let spammer_ip = common::unique_ip("198.20");
     let total_requests = 40;
     let mut accepted_count = 0;
     let mut rejected_count = 0;

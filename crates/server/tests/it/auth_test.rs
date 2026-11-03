@@ -889,7 +889,7 @@ async fn test_auth_signup_ip_cap_eleven_per_hour() {
     };
     // The cap counts every signup from the address for an hour, so the test
     // starts from an empty counter instead of hoping no other test drew it.
-    let ip = unique_ip("198.18");
+    let ip = common::unique_ip("198.18");
     let _: () = redis_conn.del(format!("otp:signup:ip:{ip}")).await.unwrap();
     let mut last_status = StatusCode::CREATED;
     for i in 0..11 {
@@ -1499,11 +1499,6 @@ async fn test_sessions_list_single_revoke_and_keep_current() {
     harness.cleanup().await;
 }
 
-fn unique_ip(prefix: &str) -> String {
-    let n = Uuid::new_v4().as_u128();
-    format!("{prefix}.{}.{}", (n % 250) as u8, ((n >> 8) % 250) as u8)
-}
-
 fn json_post(uri: &str, ip: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -1534,7 +1529,7 @@ async fn plant_known_otp(redis: &mut infra::RedisConn, email: &str) {
 async fn test_signup_cannot_overwrite_a_pending_registration() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_ip("198.19");
+    let ip = common::unique_ip("198.19");
     let email = harness.track_email_owned(format!("pending_{}@example.com", Uuid::new_v4()));
     let owner_pw = "OwnerChoice123!";
     let cooldown = format!("otp:cooldown:{email}");
@@ -1605,7 +1600,7 @@ async fn test_signup_cannot_overwrite_a_pending_registration() {
 async fn test_parallel_wrong_otps_are_counted_atomically() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_ip("198.19");
+    let ip = common::unique_ip("198.19");
     let email = harness.track_email_owned(format!("otprace_{}@example.com", Uuid::new_v4()));
     let resp = harness
         .send_request(json_post(
@@ -1652,7 +1647,7 @@ async fn test_parallel_wrong_otps_are_counted_atomically() {
 async fn test_refresh_grace_after_revoke_all_is_refused() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_ip("198.19");
+    let ip = common::unique_ip("198.19");
     let (_, first_refresh) = provision_verified_user(&harness, &mut redis, "grace", &ip).await;
 
     let (resp, rotated) = harness
@@ -1691,7 +1686,7 @@ async fn test_password_change_keeps_old_hash_when_revocation_fails() {
     let relay_url = common::redis_url_via(&base, relay.port());
     let harness = TestHarness::with_config(|c| c.redis.url = relay_url).await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_ip("198.19");
+    let ip = common::unique_ip("198.19");
     let (access, _) = provision_verified_user(&harness, &mut redis, "pwfail", &ip).await;
     let me = Request::builder()
         .uri("/api/v1/me")
@@ -1738,7 +1733,7 @@ async fn test_password_change_keeps_old_hash_when_revocation_fails() {
 async fn test_email_variants_are_one_account() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_ip("198.19");
+    let ip = common::unique_ip("198.19");
     let id = Uuid::new_v4();
     let canonical = harness.track_email_owned(format!("case_{id}@example.com"));
     let shouted = format!("  Case_{id}@Example.COM ");
@@ -1793,12 +1788,12 @@ async fn test_concurrent_signups_never_fail_with_5xx() {
     let (a, b) = tokio::join!(
         harness.send_request(json_post(
             "/api/v1/auth/signup",
-            &unique_ip("198.19"),
+            &common::unique_ip("198.19"),
             signup_body(&email, "TwinSignup123!"),
         )),
         harness.send_request(json_post(
             "/api/v1/auth/signup",
-            &unique_ip("198.19"),
+            &common::unique_ip("198.19"),
             signup_body(&email, "TwinSignup123!"),
         )),
     );
