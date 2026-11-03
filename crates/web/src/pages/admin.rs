@@ -114,6 +114,7 @@ fn JobCard(job: JobStatusDto) -> impl IntoView {
                 }).collect::<Vec<_>>()}
             </ol>
             {failed.then(|| view! { <p class="form-error" role="alert">{move || lang.get().text("job_failed")}</p> })}
+            {failed.then(|| job.error.clone()).flatten().map(|reason| view! { <p class="form-hint job-error">{reason}</p> })}
         </article>
     }
 }

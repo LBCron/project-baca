@@ -165,6 +165,137 @@ class ParseTest(unittest.TestCase):
             parse_epub(data)
 
 
+def repeated_spine_epub(refs: int) -> bytes:
+    """An EPUB whose spine names its one chapter ``refs`` times. The OPF is
+    stored, not deflated: deflated it would trip the compression ratio check
+    first and never reach the spine."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="c.opf"/></rootfiles></container>',
+        )
+        words = " ".join(f"w{i}" for i in range(500))
+        archive.writestr("one.xhtml", f"<html><body><h1>One</h1><p>{words}</p></body></html>")
+        archive.writestr(
+            "c.opf",
+            '<package xmlns="http://www.idpf.org/2007/opf"><metadata/>'
+            '<manifest><item id="c" href="one.xhtml" media-type="application/xhtml+xml"/></manifest>'
+            "<spine>" + '<itemref idref="c"/>' * refs + "</spine></package>",
+            compress_type=zipfile.ZIP_STORED,
+        )
+    return buffer.getvalue()
+
+
+def many_entries_zip(entries: int) -> bytes:
+    """A stored zip of ``entries`` empty files written record by record, so a
+    400,000-entry archive costs its bytes here and no ZipInfo per entry."""
+    import struct
+
+    local, central = io.BytesIO(), io.BytesIO()
+    for i in range(entries):
+        name = f"{i:06d}".encode()
+        offset = local.tell()
+        local.write(struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, 0, 0, 0, 0, 0, 0, len(name), 0) + name)
+        central.write(
+            struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, 0, 0, 0, 0, 0, 0, 0, len(name), 0, 0, 0, 0, 0, offset)
+            + name
+        )
+    directory = central.getvalue()
+    start = local.tell()
+    count = min(entries, 0xFFFF)
+    end = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, count, count, len(directory), start, 0)
+    return local.getvalue() + directory + end
+
+
+class LimitsTest(unittest.TestCase):
+    def test_a_spine_naming_one_entry_many_times_is_one_chapter(self):
+        for refs in (2_000, 10_000):
+            self.assertEqual(len(parse_epub(repeated_spine_epub(refs)).chapters), 1, refs)
+
+    def test_past_the_chapter_limit_is_rejected_with_its_reason(self):
+        data = make_epub([(f"C{i}", "body words") for i in range(3)])
+        with self.assertRaisesRegex(worker.RejectedEpub, "more than 2 chapters"):
+            parse_epub(data, worker.EpubLimits(chapters=2))
+        self.assertEqual(len(parse_epub(data, worker.EpubLimits(chapters=3)).chapters), 3)
+
+    def test_past_the_text_limit_is_rejected(self):
+        data = make_epub([("Long", "word " * 2_000)])
+        with self.assertRaisesRegex(worker.RejectedEpub, "text exceeds"):
+            parse_epub(data, worker.EpubLimits(text_bytes=5_000))
+
+    def test_declared_entries_past_the_limit_are_refused_before_zipfile(self):
+        data = many_entries_zip(10)
+        with self.assertRaisesRegex(worker.RejectedEpub, "more than 5 files"):
+            worker.check_central_directory(data, worker.EpubLimits(archive_files=5))
+        worker.check_central_directory(data, worker.EpubLimits(archive_files=10))
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.assertEqual(len(archive.infolist()), 10, "the fixture is a real zip")
+
+    def test_a_400000_entry_archive_is_refused_with_little_memory(self):
+        """Building every ZipInfo used to cost 469 MB just to refuse it."""
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False) as bomb:
+            bomb.write(many_entries_zip(400_000))
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = (
+            "import resource, sys\n"
+            f"sys.path.insert(0, {here!r})\n"
+            "import worker\n"
+            f"data = open({bomb.name!r}, 'rb').read()\n"
+            "try:\n"
+            "    worker.parse_epub(data)\n"
+            "    print('parsed')\n"
+            "except worker.RejectedEpub as exc:\n"
+            "    print('rejected')\n"
+            "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
+        )
+        try:
+            out = subprocess.run(
+                [sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=True
+            ).stdout.split()
+        finally:
+            os.unlink(bomb.name)
+        self.assertEqual(out[0], "rejected")
+        self.assertLess(int(out[1]) // 1024, 150, f"peak RSS {int(out[1]) // 1024} MB")
+
+    def test_past_the_chunk_limit_fails_before_any_embedding(self):
+        cursor = FakeCursor("draft")
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("Long", "word " * 1_000)]))
+        minio.get_object.return_value.release_conn = lambda: None
+        redis_client = mock.MagicMock()
+        settings = worker.Settings(limits=worker.EpubLimits(chunks=1))
+        with mock.patch.object(worker, "make_redis", return_value=redis_client), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "embed_batch") as embed:
+            with self.assertRaisesRegex(worker.RejectedEpub, "most one book may embed is 1"):
+                worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, settings)
+        embed.assert_not_called()
+
+    def test_a_rejected_upload_fails_at_once_without_retries(self):
+        client = mock.MagicMock()
+        client.pipeline.return_value.execute.return_value = [1, True]
+        client.xreadgroup.return_value = [("s", [("9-0", {"job_id": "j", "book_id": "b", "storage_path": "p"})])]
+        with mock.patch.object(worker, "make_redis", return_value=client), \
+             mock.patch.object(worker, "keep_claimed"), \
+             mock.patch.object(worker, "process_message", side_effect=worker.RejectedEpub("EPUB has more than 2000 chapters")), \
+             mock.patch.object(worker, "dead_letter") as dead:
+            worker.run(once=True, settings=worker.Settings())
+        dead.assert_not_called()
+        client.xack.assert_called_once()
+        status = client.pipeline.return_value.hset.call_args.kwargs["mapping"]
+        self.assertEqual((status["status"], status["error"]), ("failed", "EPUB has more than 2000 chapters"))
+
+
 class ArchiveLimitsTest(unittest.TestCase):
     def test_rejects_oversized_archives(self):
         from types import SimpleNamespace

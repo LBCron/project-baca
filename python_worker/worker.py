@@ -42,6 +42,26 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+@dataclass(frozen=True)
+class EpubLimits:
+    """What one upload may cost. Loose next to the largest real book in dev
+    (300 chapters, 6.3 MB of text, about 2,800 chunks), tight next to an
+    amplification: a 1 KiB file naming one entry ten thousand times."""
+
+    archive_bytes: int = 200_000_000
+    archive_files: int = 5_000
+    entry_bytes: int = 10_000_000
+    compression_ratio: int = 100
+    chapters: int = 2_000
+    text_bytes: int = 32_000_000
+    chunks: int = 8_000
+
+
+class RejectedEpub(ValueError):
+    """An upload that can never ingest: malformed or past a limit. It fails
+    its job at once with this message instead of being retried."""
+
+
 @dataclass
 class Settings:
     redis_url: str = field(default_factory=lambda: env("REDIS_URL", "redis://localhost:6380/0"))
@@ -75,6 +95,7 @@ class Settings:
     reclaim_idle_ms: int = field(
         default_factory=lambda: int(env("RECLAIM_IDLE_MS", "300000"))
     )
+    limits: EpubLimits = field(default_factory=EpubLimits)
 
 
 # Pure helpers (import-safe: stdlib only)
@@ -229,29 +250,48 @@ class ParsedEpub:
     chapters: list[ParsedChapter]
 
 
-# Maximum total uncompressed bytes accepted from one archive.
-MAX_ARCHIVE_BYTES = 200_000_000
-# Maximum entries accepted from one archive.
-MAX_ARCHIVE_FILES = 5_000
-# Maximum uncompressed bytes accepted from a single entry.
-MAX_ENTRY_BYTES = 10_000_000
-# Maximum file_size/compress_size ratio accepted per entry.
-MAX_COMPRESSION_RATIO = 100
+# Smallest central directory record: a file header with an empty name.
+CENTRAL_HEADER_BYTES = 46
+# Room per central directory record for its name and extra fields.
+CENTRAL_RECORD_ALLOWANCE = 512
 
 
-def check_archive_limits(infos: list) -> None:
+def check_central_directory(data: bytes, limits: EpubLimits) -> None:
+    """Reads the entry count and directory size from the end record before
+    ``ZipFile`` builds one object per entry: 400,000 entries in 33 MiB used
+    to cost 469 MB just to be refused. ``ZipFile`` walks the directory by
+    its size, so the size is bounded as well as the declared count."""
+    tail = max(0, len(data) - (22 + 65_535))
+    end = data.rfind(b"PK\x05\x06", tail)
+    if end < 0 or end + 22 > len(data):
+        return  # no end record: ZipFile rejects the upload itself
+    entries = int.from_bytes(data[end + 10 : end + 12], "little")
+    size = int.from_bytes(data[end + 12 : end + 16], "little")
+    locator = end - 20
+    if locator >= 0 and data[locator : locator + 4] == b"PK\x06\x07":
+        record = int.from_bytes(data[locator + 8 : locator + 16], "little")
+        if data[record : record + 4] == b"PK\x06\x06":
+            entries = int.from_bytes(data[record + 32 : record + 40], "little")
+            size = int.from_bytes(data[record + 40 : record + 48], "little")
+    if entries > limits.archive_files or size > limits.archive_files * CENTRAL_RECORD_ALLOWANCE:
+        raise RejectedEpub(f"EPUB holds more than {limits.archive_files} files")
+    if size < entries * CENTRAL_HEADER_BYTES:
+        raise RejectedEpub("EPUB central directory is malformed")
+
+
+def check_archive_limits(infos: list, limits: EpubLimits = EpubLimits()) -> None:
     """Rejects zip bombs before any entry is extracted."""
     total = 0
     for info in infos:
         size = info.file_size
-        if size > MAX_ENTRY_BYTES:
-            raise ValueError("Archive entry exceeds per-file limit")
+        if size > limits.entry_bytes:
+            raise RejectedEpub("Archive entry exceeds per-file limit")
         squeezed = getattr(info, "compress_size", 0) or 0
-        if squeezed > 0 and size // squeezed > MAX_COMPRESSION_RATIO:
-            raise ValueError("Archive entry exceeds compression ratio")
+        if squeezed > 0 and size // squeezed > limits.compression_ratio:
+            raise RejectedEpub("Archive entry exceeds compression ratio")
         total += size
-    if len(infos) > MAX_ARCHIVE_FILES or total > MAX_ARCHIVE_BYTES:
-        raise ValueError("Archive exceeds decompression limits")
+    if len(infos) > limits.archive_files or total > limits.archive_bytes:
+        raise RejectedEpub("Archive exceeds decompression limits")
 
 
 def _safe_member(prefix: str, href: str) -> str:
@@ -259,10 +299,10 @@ def _safe_member(prefix: str, href: str) -> str:
     import posixpath
 
     if href.startswith("/") or href.startswith("\\"):
-        raise ValueError(f"EPUB entry escapes package: {href!r}")
+        raise RejectedEpub(f"EPUB entry escapes package: {href!r}")
     joined = posixpath.normpath(prefix + href)
     if joined.startswith("..") or posixpath.isabs(joined):
-        raise ValueError(f"EPUB entry escapes package: {href!r}")
+        raise RejectedEpub(f"EPUB entry escapes package: {href!r}")
     return joined
 
 
@@ -270,22 +310,24 @@ def _opf_path(epub: zipfile.ZipFile) -> str:
     try:
         container = epub.read("META-INF/container.xml").decode("utf-8", "replace")
     except KeyError as exc:
-        raise ValueError("EPUB missing META-INF/container.xml") from exc
+        raise RejectedEpub("EPUB missing META-INF/container.xml") from exc
     root = ET.fromstring(container)
     ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
     node = root.find("c:rootfiles/c:rootfile", ns)
     if node is None or not node.get("full-path"):
-        raise ValueError("EPUB container.xml has no rootfile")
+        raise RejectedEpub("EPUB container.xml has no rootfile")
     return node.get("full-path", "")
 
 
-def parse_epub(data: bytes) -> ParsedEpub:
-    """Parses EPUB bytes into metadata, optional cover, and spine-ordered chapters."""
+def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
+    """Parses EPUB bytes into metadata, optional cover, and spine-ordered
+    chapters, refusing anything past ``limits`` with :class:`RejectedEpub`."""
+    check_central_directory(data, limits)
     try:
         epub = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
-        raise ValueError("Upload is not a valid ZIP/EPUB archive") from exc
-    check_archive_limits(epub.infolist())
+        raise RejectedEpub("Upload is not a valid ZIP/EPUB archive") from exc
+    check_archive_limits(epub.infolist(), limits)
 
     opf_path = _opf_path(epub)
     base = opf_path.rpartition("/")[0]
@@ -336,7 +378,10 @@ def parse_epub(data: bytes) -> ParsedEpub:
     chapters: list[ParsedChapter] = []
     spine = opf.find("opf:spine", ns)
     if spine is None:
-        raise ValueError("EPUB OPF has no spine")
+        raise RejectedEpub("EPUB OPF has no spine")
+    # A spine may name one document many times; it is one chapter.
+    read: set[str] = set()
+    text_bytes = 0
     for itemref in spine.findall("opf:itemref", ns):
         ref = itemref.get("idref", "")
         if ref not in manifest:
@@ -345,13 +390,25 @@ def parse_epub(data: bytes) -> ParsedEpub:
         if "html" not in media and "xhtml" not in media and "xml" not in media:
             continue
         try:
-            raw = epub.read(_safe_member(prefix, href)).decode("utf-8", "replace")
-        except (KeyError, ValueError):
+            member = _safe_member(prefix, href)
+        except ValueError:
+            continue
+        if member in read:
+            continue
+        read.add(member)
+        try:
+            raw = epub.read(member).decode("utf-8", "replace")
+        except KeyError:
             continue
         cleaned = sanitize_html(raw)
         text = extract_text(cleaned)
         if not text:
             continue
+        if len(chapters) == limits.chapters:
+            raise RejectedEpub(f"EPUB has more than {limits.chapters} chapters")
+        text_bytes += len(text.encode("utf-8"))
+        if text_bytes > limits.text_bytes:
+            raise RejectedEpub(f"EPUB text exceeds {limits.text_bytes // 1_000_000} MB")
         heading = ""
         for tag in ("h1", "h2", "h3"):
             start = cleaned.lower().find(f"<{tag}>")
@@ -369,7 +426,7 @@ def parse_epub(data: bytes) -> ParsedEpub:
         )
 
     if not chapters:
-        raise ValueError("EPUB contains no readable spine chapters")
+        raise RejectedEpub("EPUB contains no readable spine chapters")
     return ParsedEpub(
         title=title,
         author=author,
@@ -657,7 +714,7 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         epub_bytes = response.read()
         response.close()
         response.release_conn()
-        parsed = parse_epub(epub_bytes)
+        parsed = parse_epub(epub_bytes, settings.limits)
 
         # Metadata backfill: fill only blank admin-provided fields.
         cur.execute(
@@ -740,6 +797,10 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 pending.append((chapter_id, index, piece))
         if not pending:
             raise RuntimeError("No embeddable chunks produced")
+        if len(pending) > settings.limits.chunks:
+            raise RejectedEpub(
+                f"EPUB yields {len(pending)} passages; the most one book may embed is {settings.limits.chunks}"
+            )
 
         set_job(redis_client, job_id, "embedding", 55)
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
@@ -973,6 +1034,11 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
                     release_job(redis_client, job_id)
                     LOG.info("shutdown: job %s released unacknowledged", job_id)
                     raise
+                except RejectedEpub as exc:
+                    # Retrying cannot change the file: fail it now, say why.
+                    LOG.warning("job %s rejected: %s", job_id, exc)
+                    set_job(redis_client, job_id, "failed", 100, error=str(exc))
+                    redis_client.xack(settings.stream, settings.group, msg_id)
                 except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
                     LOG.exception("job %s failed: %s", job_id, exc)
                     if attempts >= 3:

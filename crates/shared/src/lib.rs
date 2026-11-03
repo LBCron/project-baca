@@ -699,6 +699,9 @@ pub struct JobStatusDto {
     pub status: String,
     /// Completion percentage 0-100.
     pub progress: i32,
+    /// Why a failed job failed, in the worker's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Accepted EPUB upload response (HTTP 202).

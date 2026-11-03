@@ -657,6 +657,7 @@ async fn test_job_status_shows_failed_with_error() {
     let json: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(json["data"]["status"], "failed");
     assert_eq!(json["data"]["job_id"], job_id);
+    assert_eq!(json["data"]["error"], "EPUB container.xml missing");
     harness.cleanup().await;
 }
 
