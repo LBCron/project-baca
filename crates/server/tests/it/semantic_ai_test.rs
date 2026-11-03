@@ -183,6 +183,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
             "The oldest and strongest emotion of mankind is fear, and the oldest and strongest kind of fear is fear of the unknown."
                 .to_string(),
         ),
+        cfi_range: Set(Some("p-1".to_string())),
         embedding: Set(PgVector::from(one_hot(0))),
         created_at: Set(now.into()),
     };
@@ -201,6 +202,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
             "The crumbling roofs of Innsmouth hung over the dark bay as fog swallowed the harbor lights."
                 .to_string(),
         ),
+        cfi_range: Set(None),
         embedding: Set(PgVector::from(one_hot(1))),
         created_at: Set(now.into()),
     };
@@ -260,6 +262,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_id: Set(other_chapter_id),
         chunk_index: Set(0),
         chunk_text: Set("Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.".to_string()),
+        cfi_range: Set(None),
         embedding: Set(PgVector::from(one_hot(0))),
         created_at: Set(now.into()),
     };
@@ -392,6 +395,9 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
     // ~1.0); the orthogonal chapter-2 chunk ranks last.
     let top = &data[0];
     assert_eq!(top["chapter_number"], 1);
+    // The anchor of the paragraph the chunk starts in, for "Buka halaman".
+    assert_eq!(top["cfi_range"], "p-1");
+    assert_eq!(data[1]["cfi_range"], Value::Null);
     let top_sim = top["similarity_score"]
         .as_f64()
         .expect("similarity_score must be a number");

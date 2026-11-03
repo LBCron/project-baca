@@ -532,6 +532,17 @@ class ParagraphIndexTest(unittest.TestCase):
             "istanbul \u03bf\u03b4\u03c5\u03c3\u03c3\u03b5\u03c5\u03c3 \u03c3",
         )
 
+    def test_each_chunk_anchors_on_the_paragraph_it_starts_in(self):
+        paragraphs = ["", "alpha beta gamma", "delta epsilon", "zeta eta theta"]
+        # The heading sits before any paragraph; a chunk starting there opens
+        # the first paragraph after it, one starting mid-paragraph opens that one.
+        chunks = ["Heading alpha", "beta gamma delta", "epsilon zeta eta", "theta"]
+        self.assertEqual(worker.chunk_anchors(chunks, paragraphs), ["p-2", "p-2", "p-3", "p-4"])
+
+    def test_a_chunk_past_every_paragraph_anchors_on_the_last(self):
+        self.assertEqual(worker.chunk_anchors(["one", "tail"], ["one"]), ["p-1", "p-1"])
+        self.assertEqual(worker.chunk_anchors(["loose"], []), [None])
+
     def test_ingestion_writes_the_paragraph_index(self):
         cursor = FakeCursor("draft")
         cursor.fetchone = lambda: ("chapter-id",) if cursor.statements[-1].lstrip().startswith("INSERT INTO chapters") else ("Title", "Author", "en", "draft")
@@ -553,6 +564,8 @@ class ParagraphIndexTest(unittest.TestCase):
                 worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         inserts = [p for sql, p in params if sql.startswith("INSERT INTO chapter_paragraphs")]
         self.assertEqual(inserts, [["b", 1, 1, "Some text worth reading.", "some text worth reading."]])
+        chunk = next(p for sql, p in params if "INSERT INTO book_chunks" in sql)
+        self.assertEqual(chunk[5], "p-1")
 
 
 class CorruptMemberTest(unittest.TestCase):

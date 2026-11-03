@@ -13,6 +13,7 @@ pub struct Model {
     pub chunk_index: i32,
     #[sea_orm(column_type = "Text")]
     pub chunk_text: String,
+    pub cfi_range: Option<String>,
     pub embedding: PgVector,
     pub created_at: DateTimeWithTimeZone,
 }

@@ -271,6 +271,19 @@ pub fn ReaderPage() -> impl IntoView {
     // (chapter, paragraph) a search hit opened, highlighted once it lands.
     let (flash, set_flash) = signal(None::<(i32, usize)>);
     let wants_recap = use_query_map().get_untracked().get("recap").is_some();
+    // A quote search hit opens on its paragraph, lit like an in-book hit.
+    let start_anchor = use_query_map()
+        .get_untracked()
+        .get("at")
+        .filter(|a| anchor_index(a).is_some());
+    if let Some(index) = start_anchor.as_deref().and_then(anchor_index) {
+        set_flash.set(Some((start_chapter, index)));
+        // Read once: a reload afterwards returns to the saved place, not the hit.
+        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+            let url = format!("/read/{}?chapter={start_chapter}", book_id.get_value());
+            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
+        }
+    }
     let recap_open = RwSignal::new(wants_recap && start_chapter > 1);
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let book_ref = NodeRef::<leptos::html::Div>::new();
@@ -358,7 +371,7 @@ pub fn ReaderPage() -> impl IntoView {
             }
         });
     };
-    load_chapter(start_chapter, None);
+    load_chapter(start_chapter, start_anchor.clone());
 
     spawn_local(async move {
         let id = book_id.get_value();
@@ -376,7 +389,10 @@ pub fn ReaderPage() -> impl IntoView {
                 .iter()
                 .find(|c| c.id == chapter_id)
                 .map(|c| c.chapter_number);
-            if saved_chapter.is_some() && saved_chapter == chapter_no.try_get_untracked() {
+            if start_anchor.is_none()
+                && saved_chapter.is_some()
+                && saved_chapter == chapter_no.try_get_untracked()
+            {
                 set_pending_anchor.set(Some(cfi));
             }
         }

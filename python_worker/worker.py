@@ -329,6 +329,30 @@ def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     return chunks
 
 
+def chunk_anchors(chunks: list[str], paragraphs: list[str]) -> list[str | None]:
+    """The reader anchor (``p-N``) each chunk starts in, or the first
+    paragraph after its start when that is a heading. Positions are compared
+    with all whitespace removed, because chunks and paragraphs space the same
+    text differently (tag boundaries, ``<br>``). A paragraph the chapter text
+    does not contain is skipped rather than guessed."""
+    text = "".join("".join(chunks).split())
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for n, paragraph in enumerate(paragraphs, start=1):
+        squeezed = "".join(paragraph.split())
+        at = text.find(squeezed, cursor) if squeezed else -1
+        if at >= 0:
+            spans.append((n, at + len(squeezed)))
+            cursor = at + len(squeezed)
+    anchors: list[str | None] = []
+    offset = 0
+    for chunk in chunks:
+        n = next((n for n, end in spans if end > offset), spans[-1][0] if spans else None)
+        anchors.append(f"p-{n}" if n is not None else None)
+        offset += len("".join(chunk.split()))
+    return anchors
+
+
 # Widths of the VARCHAR columns the parsed metadata lands in; an EPUB that
 # overflows them must not fail the job after its embeddings were paid for.
 TITLE_MAX_CHARS = 255
@@ -981,10 +1005,11 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
         # Scene chunking at ~400 words, then batched embeddings.
-        pending: list[tuple[str, int, str]] = []
+        pending: list[tuple[str, int, str, str | None]] = []
         for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            for index, piece in enumerate(chapter.chunks):
-                pending.append((chapter_id, index, piece))
+            anchors = chunk_anchors(chapter.chunks, chapter.paragraphs)
+            for index, (piece, anchor) in enumerate(zip(chapter.chunks, anchors)):
+                pending.append((chapter_id, index, piece, anchor))
         if not pending:
             raise PermanentJobError("EPUB yields no passages to embed")
         # The book row is free since the first commit, so a curator may have
@@ -1001,19 +1026,20 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
-            vectors = embed_batch([text for _, _, text in batch], settings, job_id)
-            for (chapter_id, index, text), vector in zip(batch, vectors):
+            vectors = embed_batch([text for _, _, text, _ in batch], settings, job_id)
+            for (chapter_id, index, text, anchor), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
                 cur.execute(
                     """INSERT INTO book_chunks
-                       (id, book_id, chapter_id, chunk_index, chunk_text, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                       (id, book_id, chapter_id, chunk_index, chunk_text, cfi_range, embedding)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
                     (
                         str(uuid.uuid4()),
                         book_id,
                         chapter_id,
                         index,
                         text,
+                        anchor,
                         literal,
                     ),
                 )
@@ -1129,15 +1155,30 @@ def write_paragraphs(cur, book_id: str, chapter_number: int, paragraphs: list[st
 
 
 def backfill_paragraphs(settings: Settings) -> int:
-    """Indexes the paragraphs of every chapter from its stored HTML, for
-    books ingested before the paragraph table existed. Returns chapters done."""
+    """Indexes the paragraphs of every chapter from its stored HTML and
+    anchors its stored chunks on them, for books ingested before either
+    existed; the embeddings are kept, nothing is paid again. Returns
+    chapters done."""
     conn = make_db(settings)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT book_id, chapter_number, html_content FROM chapters ORDER BY book_id, chapter_number")
+        cur.execute(
+            "SELECT id, book_id, chapter_number, html_content FROM chapters ORDER BY book_id, chapter_number"
+        )
         chapters = cur.fetchall()
-        for book_id, chapter_number, html_content in chapters:
-            write_paragraphs(cur, str(book_id), chapter_number, paragraph_texts(html_content or ""))
+        for chapter_id, book_id, chapter_number, html_content in chapters:
+            paragraphs = paragraph_texts(html_content or "")
+            write_paragraphs(cur, str(book_id), chapter_number, paragraphs)
+            cur.execute(
+                "SELECT id, chunk_text FROM book_chunks WHERE chapter_id = %s ORDER BY chunk_index",
+                (str(chapter_id),),
+            )
+            chunks = cur.fetchall()
+            anchors = chunk_anchors([text for _, text in chunks], paragraphs)
+            for (chunk_id, _), anchor in zip(chunks, anchors):
+                cur.execute(
+                    "UPDATE book_chunks SET cfi_range = %s WHERE id = %s", (anchor, str(chunk_id))
+                )
         conn.commit()
         return len(chapters)
     finally:

@@ -185,7 +185,7 @@ worker-test-live:
 	@cd python_worker && RECLAIM_IDLE_MS=0 .venv/bin/python -m unittest test_worker_live -v
 
 backfill-paragraphs:
-	@echo "Indexing the paragraphs of every stored chapter (one-off, idempotent)..."
+	@echo "Indexing the paragraphs of every stored chapter and anchoring its chunks (one-off, idempotent)..."
 	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python worker.py --backfill-paragraphs
 
 worker:
