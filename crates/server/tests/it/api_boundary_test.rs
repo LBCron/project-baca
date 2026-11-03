@@ -298,3 +298,177 @@ async fn test_api_boundary_search_and_filter_length_caps() {
     assert_eq!(resp.status(), StatusCode::OK, "{body}");
     harness.cleanup().await;
 }
+
+/// Rejections axum raises before a handler runs (path, query, content type,
+/// JSON syntax, a missing field, a wrong method) answer the same JSON
+/// envelope as every handler error, keeping their status.
+#[tokio::test]
+async fn test_every_rejection_answers_the_json_envelope() {
+    let harness = TestHarness::new().await;
+    // (method, uri, content type, body, status, error code)
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        &'a str,
+        StatusCode,
+        &'a str,
+    );
+    let cases: [Case; 7] = [
+        (
+            "GET",
+            "/api/v1/books/null%2Cnull",
+            None,
+            "",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+        ),
+        (
+            "GET",
+            "/api/v1/books?limit=abc",
+            None,
+            "",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+        ),
+        (
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            "{}",
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "BAD_REQUEST",
+        ),
+        (
+            "POST",
+            "/api/v1/auth/login",
+            Some("application/json"),
+            "{bad",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+        ),
+        (
+            "POST",
+            "/api/v1/auth/login",
+            Some("application/json"),
+            "{}",
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "VALIDATION_FAILED",
+        ),
+        (
+            "POST",
+            "/api/v1/auth/signup",
+            Some("application/json"),
+            "",
+            StatusCode::BAD_REQUEST,
+            "BAD_REQUEST",
+        ),
+        (
+            "PUT",
+            "/api/v1/books",
+            None,
+            "",
+            StatusCode::METHOD_NOT_ALLOWED,
+            "METHOD_NOT_ALLOWED",
+        ),
+    ];
+    for (index, (method, uri, content_type, body, status, code)) in cases.into_iter().enumerate() {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(common::CLIENT_IP_HEADER, format!("10.9.0.{index}"));
+        if let Some(ct) = content_type {
+            req = req.header(header::CONTENT_TYPE, ct);
+        }
+        let req = req.body(Body::from(body)).expect("valid request");
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), status, "{method} {uri}: {json}");
+        assert_eq!(json["success"], false, "{method} {uri}: {json}");
+        let types: Vec<_> = resp
+            .headers()
+            .get_all(header::CONTENT_TYPE)
+            .iter()
+            .collect();
+        assert_eq!(types, ["application/json"], "{method} {uri}");
+        assert_eq!(json["error"]["code"], code, "{method} {uri}: {json}");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .is_some_and(|m| !m.is_empty()),
+            "{method} {uri}: {json}"
+        );
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            assert!(
+                resp.headers().contains_key(header::ALLOW),
+                "405 keeps its Allow header"
+            );
+        }
+    }
+    harness.cleanup().await;
+}
+
+/// Postgres refuses NUL in text; a NUL anywhere a reader can type answers
+/// 400 instead of surfacing as a database failure.
+#[tokio::test]
+async fn test_a_nul_byte_in_text_is_a_bad_request() {
+    let harness = TestHarness::new().await;
+    for uri in [
+        "/api/v1/books/search?q=ab%00cd",
+        "/api/v1/books?theme=a%00b",
+    ] {
+        let req = Request::builder()
+            .uri(uri)
+            .header(common::CLIENT_IP_HEADER, "10.9.1.1")
+            .body(Body::empty())
+            .expect("valid request");
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri}: {json}");
+        assert_eq!(json["error"]["code"], "BAD_REQUEST", "{uri}: {json}");
+    }
+    harness.cleanup().await;
+}
+
+/// The spec states what the server does: shared error answers on every
+/// operation, the validators' bounds, the envelope around list bodies, and
+/// a token that logout takes only optionally.
+#[test]
+fn test_openapi_documents_errors_bounds_and_envelopes() {
+    use utoipa::OpenApi;
+    let doc = serde_json::to_value(server::ApiDoc::openapi()).expect("spec serialises");
+    let paths = doc["paths"].as_object().expect("paths");
+    for (path, item) in paths {
+        for (method, op) in item.as_object().expect("path item") {
+            let responses = op["responses"].as_object().expect("responses");
+            let mut wanted = vec!["400", "429", "500"];
+            if op.get("requestBody").is_some() {
+                wanted.extend(["415", "422"]);
+            }
+            for status in wanted {
+                assert!(
+                    responses.contains_key(status),
+                    "{method} {path} lacks {status}"
+                );
+            }
+        }
+    }
+    let search = &doc["paths"]["/api/v1/books/search"]["get"]["parameters"];
+    let q = search
+        .as_array()
+        .and_then(|ps| ps.iter().find(|p| p["name"] == "q"))
+        .expect("q parameter");
+    assert_eq!(q["schema"]["minLength"], 2);
+    assert_eq!(q["schema"]["maxLength"], 200);
+    for (path, method) in [("/api/v1/me/sessions", "get"), ("/api/v1/quotes", "get")] {
+        let body = doc["paths"][path][method]["responses"]["200"].to_string();
+        assert!(
+            body.contains("ApiResponse") || body.contains("success"),
+            "{path}: {body}"
+        );
+    }
+    let logout = &doc["paths"]["/api/v1/auth/logout"]["post"]["security"];
+    assert_eq!(logout.as_array().map(Vec::len), Some(2), "{logout}");
+    assert!(!doc["paths"]["/api/v1/auth/logout"]["post"]["responses"]
+        .as_object()
+        .expect("responses")
+        .contains_key("401"));
+}

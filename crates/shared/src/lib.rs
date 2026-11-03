@@ -124,13 +124,16 @@ pub struct SignupRequest {
         max = 100,
         message = "Display name must be between 2 and 100 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 2, max_length = 100))]
     pub display_name: String,
 
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
     #[validate(length(min = 8, max = 128, message = "Password must be at least 8 characters"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub password: String,
 }
 
@@ -139,12 +142,14 @@ pub struct SignupRequest {
 pub struct VerifyOtpRequest {
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
     /// The registration the code was mailed for, from the signup answer.
     pub registration_id: Uuid,
 
     #[validate(length(equal = 6, message = "OTP must be exactly 6 digits"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 6, max_length = 6))]
     pub otp: String,
 }
 
@@ -163,9 +168,11 @@ pub struct RegistrationStartedDto {
 pub struct LoginRequest {
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
     #[validate(length(min = 1, message = "Password cannot be empty"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub password: String,
 }
 
@@ -173,6 +180,7 @@ pub struct LoginRequest {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RefreshTokenRequest {
     #[validate(length(min = 1, message = "Refresh token must not be empty"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub refresh_token: String,
 }
 
@@ -209,6 +217,7 @@ pub struct UpdateProfileRequest {
         max = 100,
         message = "Display name must be between 2 and 100 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 2, max_length = 100))]
     pub display_name: Option<String>,
     #[validate(custom(function = "validate_avatar_url"))]
     pub avatar_url: Option<String>,
@@ -235,12 +244,14 @@ pub fn validate_avatar_url(url: &str) -> Result<(), validator::ValidationError> 
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChangePasswordRequest {
     #[validate(length(min = 1, message = "Current password is required"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub current_password: String,
     #[validate(length(
         min = 8,
         max = 128,
         message = "New password must be at least 8 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub new_password: String,
     #[serde(default)]
     pub revoke_other_sessions: Option<bool>,
@@ -263,8 +274,10 @@ pub struct GuestProgressRecord {
     pub book_id: Uuid,
     pub last_chapter_id: Uuid,
     #[validate(length(min = 1, max = 255))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 255))]
     pub last_anchor_cfi: String,
     #[validate(range(min = 0.0, max = 100.0))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 0.0, maximum = 100.0))]
     pub completion_percentage: f32,
     pub is_finished: Option<bool>,
     pub last_read_at: Option<DateTime<Utc>>,
@@ -275,6 +288,7 @@ pub struct GuestProgressRecord {
 pub struct GuestMergeRequest {
     #[validate(length(max = 100, message = "Cannot merge more than 100 records at once"))]
     #[validate(nested)]
+    #[cfg_attr(feature = "openapi", schema(max_items = 100))]
     pub records: Vec<GuestProgressRecord>,
 }
 
@@ -353,12 +367,16 @@ pub struct OfflineBundleDto {
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BookCatalogQuery {
     pub cursor: Option<Uuid>,
-    pub limit: Option<u64>,
+    /// Page size, clamped to 1..=100 (default 20).
+    pub limit: Option<i64>,
     #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 10))]
     pub language: Option<String>,
     #[validate(length(max = 50, message = "Theme filter must not exceed 50 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 50))]
     pub theme: Option<String>,
     #[validate(length(max = 50, message = "Tag filter must not exceed 50 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 50))]
     pub tag: Option<String>,
 }
 
@@ -370,10 +388,13 @@ pub struct BookSearchQuery {
         max = 200,
         message = "Search query must be between 2 and 200 characters"
     ))]
+    #[cfg_attr(feature = "openapi", param(min_length = 2, max_length = 200))]
     pub q: String,
     #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 10))]
     pub language: Option<String>,
-    pub limit: Option<u64>,
+    /// Result count, clamped to 1..=50 (default 20).
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +419,7 @@ pub struct BookTextSearchQuery {
         max = 200,
         message = "Search query must be between 2 and 200 characters"
     ))]
+    #[cfg_attr(feature = "openapi", param(min_length = 2, max_length = 200))]
     pub q: String,
 }
 
@@ -481,6 +503,7 @@ pub struct ReadingProgressUpdateDto {
         max = 255,
         message = "CFI position must be between 1 and 255 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 255))]
     pub last_anchor_cfi: String,
     #[serde(alias = "percentage")]
     #[validate(range(
@@ -488,6 +511,7 @@ pub struct ReadingProgressUpdateDto {
         max = 100.0,
         message = "Percentage must be between 0.0 and 100.0"
     ))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 0.0, maximum = 100.0))]
     pub completion_percentage: f32,
 }
 
@@ -520,6 +544,7 @@ pub struct ReadingHeartbeatRequest {
         max = 3600,
         message = "Seconds spent must be between 1 and 3600"
     ))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 3600))]
     pub seconds_spent: i32,
 }
 
@@ -580,8 +605,10 @@ pub struct QuoteSearchRequest {
         max = 500,
         message = "Query must be between 3 and 500 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 3, max_length = 500))]
     pub query: String,
     #[validate(range(min = 1, max = 20, message = "Limit must be between 1 and 20"))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 20))]
     pub limit: Option<u64>,
 }
 
@@ -630,6 +657,7 @@ pub struct SaveQuoteRequest {
         max = 2000,
         message = "Quote text must be between 1 and 2000 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 2000))]
     pub quote_text: String,
 }
 
@@ -662,6 +690,7 @@ pub const SAVED_QUOTES_PAGE: u64 = 50;
 pub struct SavedQuotesQuery {
     pub cursor: Option<Uuid>,
     #[validate(range(min = 1, max = 100, message = "limit must be between 1 and 100"))]
+    #[cfg_attr(feature = "openapi", param(minimum = 1, maximum = 100))]
     pub limit: Option<u64>,
 }
 
@@ -674,6 +703,7 @@ pub struct SaveQuotesBatchRequest {
         length(min = 1, max = 50, message = "A batch holds between 1 and 50 quotes"),
         nested
     )]
+    #[cfg_attr(feature = "openapi", schema(min_items = 1, max_items = 50))]
     pub items: Vec<SaveQuoteRequest>,
 }
 
@@ -765,6 +795,7 @@ pub struct AdminBookRowDto {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminBookPatchRequest {
     #[validate(length(min = 1, max = 20))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 20))]
     pub status: String,
 }
 

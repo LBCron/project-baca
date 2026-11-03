@@ -60,7 +60,7 @@ pub async fn list_books(
     db: &DatabaseConnection,
     query: &BookCatalogQuery,
 ) -> Result<Vec<BookSummaryDto>, AppError> {
-    let limit = query.limit.unwrap_or(20).clamp(1, 100);
+    let limit = query.limit.unwrap_or(20).clamp(1, 100).unsigned_abs();
 
     let mut select = books::Entity::find().filter(books::Column::Status.eq("published"));
 
@@ -259,7 +259,7 @@ pub async fn search_books(
         vec![
             Value::from(term),
             Value::from(search.language.clone()),
-            Value::from(limit as i64),
+            Value::from(limit),
         ],
     );
 

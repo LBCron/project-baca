@@ -151,7 +151,7 @@ impl AppState {
             DropOffPointDto
         )
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ErrorResponsesAddon),
     tags(
         (name = "System & Health", description = "Runtime health checks and infrastructure connectivity"),
         (name = "Authentication", description = "User registration, OTP verification, and JWT sessions"),
@@ -185,6 +185,85 @@ impl utoipa::Modify for SecurityAddon {
                         .build(),
                 ),
             );
+        }
+    }
+}
+
+/// Answers any operation can give whatever its handler does: extractor
+/// rejections (400, and 415 and 422 where it takes a body), the rate limits
+/// (429), a failure (500), and 401 where it takes a token. Documented once
+/// here instead of on every path; a path's own description of a status wins.
+struct ErrorResponsesAddon;
+
+impl utoipa::Modify for ErrorResponsesAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{ContentBuilder, ResponseBuilder};
+        use utoipa::PartialSchema;
+
+        let error = |description: &str| {
+            ResponseBuilder::new()
+                .description(description)
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(ApiResponse::<ErrorPayload>::schema()))
+                        .build(),
+                )
+                .build()
+        };
+        for item in openapi.paths.paths.values_mut() {
+            let operations = [
+                &mut item.get,
+                &mut item.put,
+                &mut item.post,
+                &mut item.delete,
+                &mut item.patch,
+            ];
+            for operation in operations.into_iter().flatten() {
+                let takes_body = operation.request_body.is_some();
+                // An empty requirement among them makes the token optional.
+                let takes_token = operation.security.as_ref().is_some_and(|reqs| {
+                    !reqs.is_empty()
+                        && reqs.iter().all(|r| {
+                            serde_json::to_value(r)
+                                .is_ok_and(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+                        })
+                });
+                let mut shared = vec![
+                    (
+                        "400",
+                        "BAD_REQUEST or VALIDATION_FAILED: a path, query, or body the API refuses",
+                    ),
+                    (
+                        "429",
+                        "RATE_LIMITED: too many requests; Retry-After says when to try again",
+                    ),
+                    ("500", "DATABASE_ERROR or INTERNAL_ERROR"),
+                ];
+                if takes_body {
+                    shared.push((
+                        "415",
+                        "BAD_REQUEST: the body is not sent as the content type the operation takes",
+                    ));
+                    shared.push((
+                        "422",
+                        "VALIDATION_FAILED: the body parses but misses or mistypes a field",
+                    ));
+                }
+                if takes_token {
+                    shared.push((
+                        "401",
+                        "UNAUTHORIZED: the access token is missing, invalid, or revoked",
+                    ));
+                }
+                for (status, description) in shared {
+                    operation
+                        .responses
+                        .responses
+                        .entry(status.to_string())
+                        .or_insert_with(|| error(description).into());
+                }
+            }
         }
     }
 }
@@ -448,6 +527,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         )
         .nest("/api/v1/admin", routes::admin_routes())
         .fallback(not_found_handler)
+        .layer(axum_mw::from_fn(error::envelope_rejections))
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))
         .layer(cors)

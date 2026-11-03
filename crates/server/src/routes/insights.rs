@@ -56,7 +56,7 @@ pub fn insights_routes() -> Router<Arc<AppState>> {
     path = "/api/v1/books/{book_id}/chapters/{chapter_ref}/atomic-cards",
     params(
         ("book_id" = Uuid, Path, description = "UUID of the book"),
-        ("chapter_ref" = String, Path, description = "Chapter number (e.g. 1) or chapter UUID")
+        ("chapter_ref" = String, Path, description = "Chapter number (e.g. 1) or chapter UUID", pattern = r"^([0-9]{1,9}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
     ),
     responses(
         (status = 200, description = "Atomic insight cards retrieved from cache", body = AtomicCardsDto),
@@ -100,7 +100,7 @@ pub async fn get_atomic_cards(
     path = "/api/v1/books/{book_id}/chapters/{chapter_ref}/recap",
     params(
         ("book_id" = Uuid, Path, description = "UUID of the book"),
-        ("chapter_ref" = String, Path, description = "Chapter number (e.g. 2) or chapter UUID")
+        ("chapter_ref" = String, Path, description = "Chapter number (e.g. 2) or chapter UUID", pattern = r"^([0-9]{1,9}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$")
     ),
     responses(
         (status = 200, description = "Spoiler-free catch-up recap retrieved from cache", body = ChapterRecapDto),

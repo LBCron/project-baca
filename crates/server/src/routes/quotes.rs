@@ -287,7 +287,7 @@ pub async fn handle_save_quotes_batch(
     path = "/api/v1/quotes",
     params(SavedQuotesQuery),
     responses(
-        (status = 200, description = "One page of saved quotes, newest first; fewer than `limit` means the last page", body = Vec<SavedQuoteResponseDto>),
+        (status = 200, description = "One page of saved quotes, newest first; fewer than `limit` means the last page", body = ApiResponse<Vec<SavedQuoteResponseDto>>),
         (status = 400, description = "limit outside 1 to 100"),
         (status = 401, description = "Authentication required"),
         (status = 500, description = "Database error")

@@ -18,7 +18,7 @@ use shared::{BookCatalogQuery, BookSearchQuery, BookSummaryDto, GuestProgressRec
 use std::time::Duration;
 
 const PLATE_SRC: &str = "/assets/library-bookshelf-ladder.webp";
-const PAGE_SIZE: u64 = 20;
+const PAGE_SIZE: usize = 20;
 /// Rows of covers shown before "see the whole catalog".
 const CATALOG_PREVIEW_ROWS: usize = 2;
 const SHORT_READ_MINUTES: i32 = 120;
@@ -267,7 +267,7 @@ pub fn HomePage() -> impl IntoView {
         spawn_local(async move {
             let outcome = api::catalog(&BookCatalogQuery {
                 cursor: cur.as_deref().and_then(|c| c.parse::<uuid::Uuid>().ok()),
-                limit: Some(PAGE_SIZE),
+                limit: Some(PAGE_SIZE as i64),
                 language,
                 ..Default::default()
             })
@@ -284,7 +284,7 @@ pub fn HomePage() -> impl IntoView {
                 }
             };
             set_load_error.set(false);
-            set_exhausted.set((page.len() as u64) < PAGE_SIZE);
+            set_exhausted.set(page.len() < PAGE_SIZE);
             if let Some(last) = page.last() {
                 set_cursor.set(Some(last.id.to_string()));
             }
