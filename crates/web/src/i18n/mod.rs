@@ -21,7 +21,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("retry", "Coba lagi", "Try again"),
     ("load_failed", "Katalog tidak dapat dimuat.", "The catalog could not be loaded."),
     ("book_load_failed", "Buku tidak dapat dimuat.", "The book could not be loaded."),
-    ("chapter_load_failed", "Bab tidak dapat dimuat.", "The chapter could not be loaded."),
+    ("chapter_load_failed", "Bab ini belum bisa dimuat.", "This chapter could not be loaded yet."),
     ("page_range", "Halaman {a}\u{2013}{b} dari {n}", "Pages {a}\u{2013}{b} of {n}"),
     ("book_finished_title", "Kamu menamatkan buku ini.", "You finished this book."),
     (

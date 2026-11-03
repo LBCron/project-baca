@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Fixed
+- Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
+
 ## [0.1.0] — 2026-11-03
 
 First release: the reader, the curator desk, the ingestion worker, and the deployment stack as they stand on this date. A 0.y version is initial development under semantic versioning; the public launch waits on the launch gate (staging domain, live email, trademark search).

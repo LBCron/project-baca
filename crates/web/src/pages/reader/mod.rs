@@ -134,6 +134,17 @@ fn selection_is_collapsed() -> bool {
         .unwrap_or(true)
 }
 
+/// Copy key that explains why a chapter did not load.
+fn load_failure(err: &str) -> &'static str {
+    if api::is_not_found(err) {
+        "not_found"
+    } else if api::is_online() {
+        "chapter_load_failed"
+    } else {
+        "offline_notice"
+    }
+}
+
 /// Stores a guest's position on this device.
 fn persist_guest(book: &str, update: &ReadingProgressUpdateDto) {
     let Ok(book_id) = book.parse::<uuid::Uuid>() else {
@@ -285,9 +296,6 @@ pub fn ReaderPage() -> impl IntoView {
 
     let load_chapter = move |number: i32, anchor_hint: Option<String>| {
         cancel_flip();
-        set_pending_anchor.set(anchor_hint);
-        set_page.set(0);
-        set_finished.set(false);
         let id = book_id.get_value();
         let generation = load_generation.get_value() + 1;
         load_generation.set_value(generation);
@@ -305,12 +313,36 @@ pub fn ReaderPage() -> impl IntoView {
                 return;
             }
             match loaded {
+                // The reader moves only onto text it can show: the chapter
+                // number, the URL and the position to save follow the text.
                 Ok((detail, from_device)) => {
+                    if number != chapter_no.get_untracked() {
+                        set_chapter_no.set(number);
+                        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+                            let url = format!("/read/{id}?chapter={number}");
+                            let _ = history.replace_state_with_url(
+                                &wasm_bindgen::JsValue::NULL,
+                                "",
+                                Some(&url),
+                            );
+                        }
+                    }
+                    set_pending_anchor.set(anchor_hint);
+                    set_page.set(0);
+                    set_finished.set(false);
+                    set_chapter_end.set(false);
                     set_chapter.set(Some(detail));
                     set_error.set(None);
                     set_offline.set(from_device);
                 }
-                Err(e) => set_error.set(Some(e)),
+                // A chapter already on screen stays there; the error view
+                // takes over only while none has loaded yet.
+                Err(e) => {
+                    if chapter.get_untracked().is_some() {
+                        toasts.error(lang.get_untracked().text(load_failure(&e)));
+                    }
+                    set_error.set(Some(e));
+                }
             }
         });
     };
@@ -408,7 +440,10 @@ pub fn ReaderPage() -> impl IntoView {
     });
 
     let percent = Memo::new(move |_| {
-        let Some(b) = book.get() else {
+        let (Some(b), Some(shown)) = (
+            book.get(),
+            chapter.with(|c| c.as_ref().map(|c| c.chapter_number)),
+        ) else {
             return 0.0f32;
         };
         let total = b.chapters.len() as f32;
@@ -418,7 +453,7 @@ pub fn ReaderPage() -> impl IntoView {
         let index = b
             .chapters
             .iter()
-            .position(|c| c.chapter_number == chapter_no.get())
+            .position(|c| c.chapter_number == shown)
             .unwrap_or(0) as f32;
         let fraction = (page.get() as f32 + 1.0) / pages.get().max(1) as f32;
         (((index + fraction) / total) * 100.0).clamp(0.0, 100.0)
@@ -554,19 +589,18 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let go_chapter = move |number: i32, anchor_hint: Option<String>| {
-        set_chapter_no.set(number);
         set_menu_open.set(false);
-        set_chapter_end.set(false);
         load_chapter(number, anchor_hint);
-        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
-            let url = format!("/read/{}?chapter={number}", book_id.get_value());
-            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
-        }
     };
+    // Until a chapter is on screen there is nothing to finish or leave.
+    let chapter_shown = move || chapter.with_untracked(Option::is_some);
 
     // Leaving a chapter forward shows its closing card the first time; the
     // next step forward, or the card's own button, moves on.
     let advance = move |number: i32| {
+        if !chapter_shown() {
+            return;
+        }
         let current = chapter_no.get_untracked();
         let first_time = ends_shown.with_value(|shown| !shown.contains(&current));
         if !chapter_end.get_untracked() && first_time {
@@ -581,7 +615,7 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let next = move || {
-        if flip_active() || finished.get_untracked() {
+        if flip_active() || finished.get_untracked() || !chapter_shown() {
             return;
         }
         let current = page.get_untracked();
@@ -1082,13 +1116,7 @@ pub fn ReaderPage() -> impl IntoView {
                                 None => view! { <div class="skeleton" style="height: 60vh" aria-busy="true"></div> }.into_any(),
                                 Some(err) => {
                                     let not_found = api::is_not_found(&err);
-                                    let message = if not_found {
-                                        "not_found"
-                                    } else if api::is_online() {
-                                        "chapter_load_failed"
-                                    } else {
-                                        "offline_notice"
-                                    };
+                                    let message = load_failure(&err);
                                     view! {
                                         <div class="reader-end">
                                             <p>{move || lang.get().text(message)}</p>
