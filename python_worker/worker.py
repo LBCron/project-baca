@@ -765,6 +765,11 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 "UPDATE books SET cover_url = %s, updated_at = NOW() WHERE id = %s",
                 (cover_key, book_id),
             )
+        # The book row is written only above and at publish. Committing now
+        # frees it for the hours of embedding and summaries below: a curator
+        # archiving the book meanwhile is not left waiting on this job, and
+        # the publish step still leaves an archived book archived.
+        conn.commit()
 
         # Chapters upsert (idempotent across re-runs).
         set_job(redis_client, job_id, "chunking", 30)
