@@ -327,9 +327,11 @@ pub async fn verify_otp(
             .await
             .map_err(HttpError::from)?
             .ok_or_else(|| {
-                HttpError(AppError::ValidationError(
-                    "Invalid or expired OTP".to_string(),
-                ))
+                let message = "Invalid or expired OTP".to_string();
+                HttpError(AppError::ValidationDetailed {
+                    details: serde_json::json!({ "otp": [message.clone()] }),
+                    message,
+                })
             })?;
 
     let user = activate_registration(

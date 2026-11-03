@@ -414,8 +414,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("not_found", "Naskah tidak ditemukan.", "Manuscript not found."),
     (
         "rate_limited",
-        "Terlalu banyak percobaan. Coba lagi dalam {t}.",
-        "Too many attempts. Try again in {t}.",
+        "Terlalu banyak permintaan dalam waktu singkat. Coba lagi dalam {t}.",
+        "Too many requests in a short time. Try again in {t}.",
     ),
     (
         "quotes_full",
@@ -468,14 +468,9 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "That file is too large.",
     ),
     (
-        "err_rate_limited",
-        "Terlalu banyak percobaan. Coba lagi sebentar lagi.",
-        "Too many attempts. Try again shortly.",
-    ),
-    (
         "err_ai_rate_limited",
-        "Pencarian kutipan sedang ramai. Coba lagi dalam {t}.",
-        "Quote search is busy. Try again in {t}.",
+        "Pencarian kutipan sedang dibatasi. Coba lagi dalam {t}.",
+        "Quote search is paused for now. Try again in {t}.",
     ),
     (
         "err_service_unavailable",
@@ -524,8 +519,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ),
     (
         "err_field_otp",
-        "Kode verifikasi terdiri dari 6 angka.",
-        "The verification code has 6 digits.",
+        "Kode itu salah atau sudah kedaluwarsa. Periksa lagi, atau minta kode baru.",
+        "That code is wrong or has expired. Check it, or ask for a new one.",
     ),
     (
         "err_field_quote_text",
@@ -552,6 +547,17 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Alamat ini sudah punya akun. Masuk saja dengan kata sandimu.",
         "This address already has an account. Sign in with your password.",
     ),
+    (
+        "err_field_title",
+        "Judulnya terlalu panjang. Persingkat sampai 255 karakter.",
+        "The title is too long. Keep it to 255 characters.",
+    ),
+    (
+        "err_field_author",
+        "Nama penulisnya terlalu panjang. Persingkat sampai 255 karakter.",
+        "The author name is too long. Keep it to 255 characters.",
+    ),
+    ("unit_hours", "jam", "hours"),
     ("unit_minutes", "menit", "minutes"),
     ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
@@ -608,12 +614,12 @@ impl Lang {
         }
     }
 
-    /// Looks a key up; unknown keys echo themselves so a typo is visible.
     /// True when the dictionary holds `key` (a miss would show the key).
     pub fn has(self, key: &str) -> bool {
         ENTRIES.iter().any(|(k, _, _)| *k == key)
     }
 
+    /// Looks a key up; unknown keys echo themselves so a typo is visible.
     pub fn text(self, key: &str) -> String {
         ENTRIES
             .iter()
@@ -660,7 +666,9 @@ impl Lang {
 
     /// A wait in whole minutes when it is a minute or more, else seconds.
     pub fn wait_text(self, seconds: u64) -> String {
-        if seconds >= 60 {
+        if seconds >= 3600 {
+            format!("{} {}", seconds.div_ceil(3600), self.text("unit_hours"))
+        } else if seconds >= 60 {
             format!("{} {}", seconds.div_ceil(60), self.text("unit_minutes"))
         } else {
             format!("{} {}", seconds.max(1), self.text("unit_seconds"))

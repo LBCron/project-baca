@@ -190,7 +190,7 @@ impl utoipa::Modify for SecurityAddon {
 }
 
 /// Answers any operation can give whatever its handler does: extractor
-/// rejections (400, and 415 and 422 where it takes a body), the rate limits
+/// rejections (400, and 415 and 422 where it takes JSON), the rate limits
 /// (429), a failure (500), and 401 where it takes a token. Documented once
 /// here instead of on every path; a path's own description of a status wins.
 struct ErrorResponsesAddon;
@@ -220,7 +220,14 @@ impl utoipa::Modify for ErrorResponsesAddon {
                 &mut item.patch,
             ];
             for operation in operations.into_iter().flatten() {
-                let takes_body = operation.request_body.is_some();
+                // axum refuses a multipart body with 400, never 415 or 422.
+                let takes_json = operation
+                    .request_body
+                    .as_ref()
+                    .is_some_and(|body| match body {
+                        utoipa::openapi::RefOr::T(b) => b.content.contains_key("application/json"),
+                        utoipa::openapi::RefOr::Ref(_) => true,
+                    });
                 // An empty requirement among them makes the token optional.
                 let takes_token = operation.security.as_ref().is_some_and(|reqs| {
                     !reqs.is_empty()
@@ -240,7 +247,7 @@ impl utoipa::Modify for ErrorResponsesAddon {
                     ),
                     ("500", "DATABASE_ERROR or INTERNAL_ERROR"),
                 ];
-                if takes_body {
+                if takes_json {
                     shared.push((
                         "415",
                         "BAD_REQUEST: the body is not sent as the content type the operation takes",

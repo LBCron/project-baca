@@ -50,9 +50,9 @@ fn status_key(status: &str) -> &'static str {
 fn upload_error(error: &str, lang: &crate::i18n::Lang) -> String {
     if error.starts_with(shared::error_code::PAYLOAD_TOO_LARGE) {
         lang.text("admin_too_large")
-    } else if error.starts_with(shared::error_code::BAD_REQUEST)
-        || error.starts_with(shared::error_code::VALIDATION_FAILED)
-    {
+    } else if error.starts_with(shared::error_code::BAD_REQUEST) {
+        // A refused field (an overlong title) arrives as VALIDATION_FAILED
+        // and is named below; a bare BAD_REQUEST is the file itself.
         lang.text("upload_rejected")
     } else {
         crate::components::auth::friendly_error(error, *lang)

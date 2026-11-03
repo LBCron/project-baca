@@ -440,7 +440,10 @@ fn test_openapi_documents_errors_bounds_and_envelopes() {
         for (method, op) in item.as_object().expect("path item") {
             let responses = op["responses"].as_object().expect("responses");
             let mut wanted = vec!["400", "429", "500"];
-            if op.get("requestBody").is_some() {
+            if op["requestBody"]["content"]
+                .get("application/json")
+                .is_some()
+            {
                 wanted.extend(["415", "422"]);
             }
             for status in wanted {

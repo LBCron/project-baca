@@ -274,7 +274,8 @@ def test_curator_errors_read_in_the_readers_language(clean_page: Page, tmp_path)
     page = clean_page
     page.add_init_script("localStorage.setItem('rotaria_lang', 'ID')")
     answers = [
-        (400, {"code": "VALIDATION_FAILED", "message": "Uploaded file is not a ZIP-based EPUB (missing PK signature)"}),
+        (400, {"code": "BAD_REQUEST", "message": "Uploaded file is not a ZIP-based EPUB (missing PK signature)"}),
+        (400, {"code": "VALIDATION_FAILED", "message": "Field 'title' exceeds 255 characters", "details": {"title": ["Field 'title' exceeds 255 characters"]}}),
         (429, {"code": "RATE_LIMITED", "message": "Rate limit exceeded: at most 5 uploads per 15 minutes. Try again in 857 seconds"}),
     ]
     page.route("**/api/**/admin/books**", lambda r: r.fulfill(
@@ -286,7 +287,7 @@ def test_curator_errors_read_in_the_readers_language(clean_page: Page, tmp_path)
     epub = tmp_path / "notes.epub"
     epub.write_bytes(b"not a zip at all")
     toasts = page.locator(".toast")
-    for expected in ["Berkas itu bukan EPUB yang bisa kami baca", "Coba lagi dalam 15 menit"]:
+    for expected in ["Berkas itu bukan EPUB yang bisa kami baca", "Judulnya terlalu panjang", "Coba lagi dalam 15 menit"]:
         page.set_input_files(".upload-card input[type=file]", str(epub))
         page.click(".upload-card button[type=submit]")
         expect(toasts.filter(has_text=expected)).to_be_visible()

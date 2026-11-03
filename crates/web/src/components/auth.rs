@@ -311,8 +311,11 @@ mod tests {
         let raw = "RATE_LIMITED: Rate limit exceeded: at most 5 attempts per 15 minutes. Try again in 857 seconds";
         assert_eq!(
             friendly_error(raw, Lang::Id),
-            "Terlalu banyak percobaan. Coba lagi dalam 15 menit."
+            "Terlalu banyak permintaan dalam waktu singkat. Coba lagi dalam 15 menit."
         );
+        // A daily budget waits hours, not 1440 minutes.
+        let budget = "AI_RATE_LIMITED: daily budget spent. Try again in 86400 seconds";
+        assert!(friendly_error(budget, Lang::Id).ends_with("dalam 24 jam."));
         assert_eq!(
             friendly_error("SOMETHING_NEW: x", Lang::En),
             Lang::En.text("error_generic")

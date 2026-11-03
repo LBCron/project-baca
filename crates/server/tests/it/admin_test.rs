@@ -1331,3 +1331,30 @@ async fn test_archiving_a_held_book_answers_409_without_waiting() {
     assert_eq!(json["data"]["status"], "archived");
     harness.cleanup().await;
 }
+
+/// A title is measured in characters, as its VARCHAR column and the form
+/// measure it, and a refusal names the field so the curator knows what to
+/// shorten.
+#[tokio::test]
+async fn test_upload_measures_titles_in_characters_and_names_the_field() {
+    let harness = TestHarness::new().await;
+    let ctx = seed_users(&harness).await;
+    let too_long = "\u{e9}".repeat(256);
+    let (ctype, body) = multipart_body(
+        "book.epub",
+        "application/epub+zip",
+        b"PK\x03\x04payload",
+        &[("title", &too_long)],
+    );
+    let resp = harness
+        .send_request(upload_request(Some(&ctx.admin_token), ctype, body))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(json["error"]["code"], "VALIDATION_FAILED", "{json}");
+    assert!(json["error"]["details"]["title"].is_array(), "{json}");
+    harness.cleanup().await;
+}

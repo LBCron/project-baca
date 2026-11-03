@@ -242,10 +242,19 @@ pub async fn envelope_rejections(req: Request, next: Next) -> Response {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("application/json"));
-    if !resp.status().is_client_error() || is_json {
+    if is_json || !(resp.status().is_client_error() || resp.status().is_server_error()) {
         return resp;
     }
-    let (mut parts, body) = resp.into_parts();
+    let (parts, body) = resp.into_parts();
+    // A plain-text failure (a missing extension, a panic) says nothing a
+    // client should read.
+    if parts.status.is_server_error() {
+        return enveloped(
+            parts,
+            shared::error_code::INTERNAL_ERROR,
+            "An internal server error occurred. Please try again later.",
+        );
+    }
     let text = axum::body::to_bytes(body, REJECTION_TEXT_LIMIT)
         .await
         .map(|b| String::from_utf8_lossy(&b).trim().to_string())
@@ -263,11 +272,20 @@ pub async fn envelope_rejections(req: Request, next: Next) -> Response {
         StatusCode::METHOD_NOT_ALLOWED => shared::error_code::METHOD_NOT_ALLOWED,
         StatusCode::PAYLOAD_TOO_LARGE => shared::error_code::PAYLOAD_TOO_LARGE,
         StatusCode::UNPROCESSABLE_ENTITY => shared::error_code::VALIDATION_FAILED,
+        StatusCode::UNAUTHORIZED => shared::error_code::UNAUTHORIZED,
+        StatusCode::FORBIDDEN => shared::error_code::FORBIDDEN,
+        StatusCode::NOT_FOUND => shared::error_code::NOT_FOUND,
         _ => shared::error_code::BAD_REQUEST,
     };
+    enveloped(parts, code, &message)
+}
+
+/// The response's status and headers (`Allow`, `Retry-After`) around an
+/// error envelope body.
+fn enveloped(mut parts: axum::http::response::Parts, code: &str, message: &str) -> Response {
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::CONTENT_TYPE);
-    let envelope = Json(ApiResponse::<()>::error(code, &message, None)).into_response();
+    let envelope = Json(ApiResponse::<()>::error(code, message, None)).into_response();
     let (envelope_parts, envelope_body) = envelope.into_parts();
     parts.headers.extend(envelope_parts.headers);
     Response::from_parts(parts, envelope_body)
