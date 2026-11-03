@@ -1162,27 +1162,38 @@ def backfill_paragraphs(settings: Settings) -> int:
     conn = make_db(settings)
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id, book_id, chapter_number, html_content FROM chapters ORDER BY book_id, chapter_number"
-        )
-        chapters = cur.fetchall()
-        for chapter_id, book_id, chapter_number, html_content in chapters:
-            paragraphs = paragraph_texts(html_content or "")
-            write_paragraphs(cur, str(book_id), chapter_number, paragraphs)
-            cur.execute(
-                "SELECT id, chunk_text FROM book_chunks WHERE chapter_id = %s ORDER BY chunk_index",
-                (str(chapter_id),),
-            )
-            chunks = cur.fetchall()
-            anchors = chunk_anchors([text for _, text in chunks], paragraphs)
-            for (chunk_id, _), anchor in zip(chunks, anchors):
-                cur.execute(
-                    "UPDATE book_chunks SET cfi_range = %s WHERE id = %s", (anchor, str(chunk_id))
-                )
-        conn.commit()
-        return len(chapters)
+        cur.execute("SELECT DISTINCT book_id FROM chapters")
+        books = [str(row[0]) for row in cur.fetchall()]
+        done = 0
+        # One book's HTML in memory and one transaction per book: a large
+        # library neither loads whole nor holds its locks until the end.
+        for book_id in books:
+            done += backfill_book(cur, book_id)
+            conn.commit()
+        return done
     finally:
         conn.close()
+
+
+def backfill_book(cur, book_id: str) -> int:
+    """Indexes one book's paragraphs and anchors its chunks. Returns chapters done."""
+    cur.execute(
+        "SELECT id, chapter_number, html_content FROM chapters WHERE book_id = %s ORDER BY chapter_number",
+        (book_id,),
+    )
+    chapters = cur.fetchall()
+    for chapter_id, chapter_number, html_content in chapters:
+        paragraphs = paragraph_texts(html_content or "")
+        write_paragraphs(cur, book_id, chapter_number, paragraphs)
+        cur.execute(
+            "SELECT id, chunk_text FROM book_chunks WHERE chapter_id = %s ORDER BY chunk_index",
+            (str(chapter_id),),
+        )
+        chunks = cur.fetchall()
+        anchors = chunk_anchors([text for _, text in chunks], paragraphs)
+        for (chunk_id, _), anchor in zip(chunks, anchors):
+            cur.execute("UPDATE book_chunks SET cfi_range = %s WHERE id = %s", (anchor, str(chunk_id)))
+    return len(chapters)
 
 
 # Consumer loop

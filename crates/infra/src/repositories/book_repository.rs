@@ -361,15 +361,16 @@ pub async fn get_chapter_book_id(
     Ok(chapter.book_id)
 }
 
-/// True when `quote` occurs in the chapter's text. Both sides are folded
-/// and lose every space: a reader's selection runs paragraphs together with
+/// The chapter's text in the form quotes are matched in: folded, with no
+/// whitespace at all. A reader's selection runs paragraphs together with
 /// line breaks and inline tags without spaces, while a quote-search passage
 /// puts a space at every tag, and either must match the page it came from.
-pub async fn chapter_holds_quote(
+/// A long chapter is megabytes of text, so the work runs off the async
+/// threads; a caller checking several quotes reuses one result per chapter.
+pub async fn chapter_quote_text(
     db: &DatabaseConnection,
     chapter_id: Uuid,
-    quote: &str,
-) -> Result<bool, AppError> {
+) -> Result<String, AppError> {
     let html: Option<String> = chapters::Entity::find_by_id(chapter_id)
         .select_only()
         .column(chapters::Column::HtmlContent)
@@ -379,8 +380,15 @@ pub async fn chapter_holds_quote(
         .map_err(|e| AppError::Database(format!("Failed to retrieve chapter: {e}")))?;
     let html =
         html.ok_or_else(|| AppError::NotFound(format!("Chapter not found: {chapter_id}")))?;
+    tokio::task::spawn_blocking(move || squeezed(&decode_entities(&strip_tags(&html))))
+        .await
+        .map_err(|e| AppError::Internal(format!("Chapter text task failed: {e}")))
+}
+
+/// True when `quote` occurs in text from [`chapter_quote_text`].
+pub fn quote_in_text(chapter_text: &str, quote: &str) -> bool {
     let needle = squeezed(quote);
-    Ok(!needle.is_empty() && squeezed(&decode_entities(&strip_tags(&html))).contains(&needle))
+    !needle.is_empty() && chapter_text.contains(&needle)
 }
 
 fn strip_tags(html: &str) -> String {
@@ -397,8 +405,9 @@ fn strip_tags(html: &str) -> String {
     text
 }
 
+/// Soft hyphens go too: a browser may leave them out of a selection.
 fn squeezed(text: &str) -> String {
-    shared::fold_for_search(text).replace(' ', "")
+    shared::fold_for_search(text).replace([' ', '\u{00AD}'], "")
 }
 
 /// Character references left in stored chapter HTML, decoded as a browser
@@ -418,6 +427,7 @@ fn decode_entities(text: &str) -> String {
                 "quot" => Some('"'),
                 "apos" => Some('\''),
                 "nbsp" => Some(' '),
+                "shy" => Some('\u{00AD}'),
                 _ => name
                     .strip_prefix("#x")
                     .or_else(|| name.strip_prefix("#X"))
@@ -807,5 +817,13 @@ mod tests {
             "Bab I Laras menulis surat -nya & menunggu. Kapal tiba."
         )));
         assert!(!page.contains(&squeezed("Laras menulis puisi")));
+    }
+
+    #[test]
+    fn a_soft_hyphen_does_not_split_a_quote() {
+        let page = squeezed(&decode_entities(&strip_tags(
+            "<p>sur&shy;at\u{00AD}nya</p>",
+        )));
+        assert_eq!(page, squeezed("suratnya"));
     }
 }

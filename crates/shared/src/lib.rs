@@ -421,7 +421,7 @@ const SNIPPET_CONTEXT: usize = 70;
 /// Case folding for matching, one character at a time on both sides: a
 /// whole-string lowercase turns a final capital sigma into `ς` and `İ` into
 /// two characters, so a needle and the text it came from stopped matching.
-fn fold(c: char) -> char {
+pub fn fold(c: char) -> char {
     match c.to_lowercase().next().unwrap_or(c) {
         '\u{03C2}' => '\u{03C3}',
         lower => lower,

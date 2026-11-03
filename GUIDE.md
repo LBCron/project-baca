@@ -67,6 +67,7 @@ make worker            # after make worker-install
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
 - Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
+- Paragraph index and quote anchors for books ingested before them: `make backfill-paragraphs` (production `make prod-backfill-paragraphs`), one book per transaction, idempotent, no embeddings paid. Run it after migrating and before the new server takes traffic, or in-book search finds nothing in those books.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
 
 App shell:

@@ -9,8 +9,8 @@ use axum::{
     Json, Router,
 };
 use infra::{
-    chapter_holds_quote, get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
-    list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
+    chapter_quote_text, get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
+    list_saved_quotes as repo_list_saved_quotes, quote_in_text, save_quote as repo_save_quote,
     save_quotes_batch as repo_save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome,
 };
 use sea_orm::DatabaseConnection;
@@ -19,6 +19,8 @@ use shared::{
     SaveQuoteRequest, SaveQuotesBatchRequest, SaveQuotesBatchResponseDto, SavedQuoteResponseDto,
     SavedQuotesQuery, SAVED_QUOTES_PAGE,
 };
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -128,6 +130,7 @@ pub async fn handle_save_quote(
         payload.book_id,
         payload.chapter_id,
         &payload.quote_text,
+        &mut HashMap::new(),
     )
     .await
     .map_err(HttpError)?;
@@ -172,6 +175,7 @@ async fn validate_quote_target(
     book_id: Uuid,
     chapter_id: Uuid,
     quote_text: &str,
+    chapter_texts: &mut HashMap<Uuid, String>,
 ) -> Result<(), AppError> {
     get_book_by_id(db, book_id).await?;
     let chapter_book_id = get_chapter_book_id(db, chapter_id).await?;
@@ -180,7 +184,11 @@ async fn validate_quote_target(
             "Chapter {chapter_id} does not belong to book {book_id}"
         )));
     }
-    if !chapter_holds_quote(db, chapter_id, quote_text).await? {
+    let text = match chapter_texts.entry(chapter_id) {
+        Entry::Occupied(known) => known.into_mut(),
+        Entry::Vacant(slot) => slot.insert(chapter_quote_text(db, chapter_id).await?),
+    };
+    if !quote_in_text(text, quote_text) {
         return Err(AppError::ValidationError(
             "The quote is not in this chapter".to_string(),
         ));
@@ -228,9 +236,17 @@ pub async fn handle_save_quotes_batch(
 
     let mut outcomes: Vec<Option<SaveQuoteOutcomeDto>> = vec![None; payload.items.len()];
     let mut accepted: Vec<(usize, (Uuid, Uuid, String))> = Vec::new();
+    // A device usually merges many quotes from one chapter: load it once.
+    let mut chapter_texts = HashMap::new();
     for (index, item) in payload.items.iter().enumerate() {
-        match validate_quote_target(&state.db, item.book_id, item.chapter_id, &item.quote_text)
-            .await
+        match validate_quote_target(
+            &state.db,
+            item.book_id,
+            item.chapter_id,
+            &item.quote_text,
+            &mut chapter_texts,
+        )
+        .await
         {
             Ok(()) => accepted.push((
                 index,

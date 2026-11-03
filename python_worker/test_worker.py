@@ -568,6 +568,41 @@ class ParagraphIndexTest(unittest.TestCase):
         self.assertEqual(chunk[5], "p-1")
 
 
+class ParagraphBackfillTest(unittest.TestCase):
+    def test_each_book_is_indexed_and_committed_on_its_own(self):
+        events: list[str] = []
+
+        class Cursor:
+            last = ""
+
+            def execute(self, sql, params=()):
+                self.last = sql
+                if sql.startswith("SELECT id, chapter_number"):
+                    events.append(f"read {params[0]}")
+                if sql.startswith("UPDATE book_chunks"):
+                    events.append(f"anchor {params[1]} {params[0]}")
+
+            def fetchall(self):
+                if "DISTINCT" in self.last:
+                    return [("b1",), ("b2",)]
+                if "FROM chapters" in self.last:
+                    return [("c1", 1, "<h2>Bab</h2><p>alpha beta</p>")]
+                if "FROM book_chunks" in self.last:
+                    return [("k1", "Bab alpha beta")]
+                return []
+
+        conn = mock.Mock()
+        conn.cursor.return_value = Cursor()
+        conn.commit.side_effect = lambda: events.append("commit")
+        with mock.patch.object(worker, "make_db", return_value=conn):
+            self.assertEqual(worker.backfill_paragraphs(worker.Settings()), 2)
+        self.assertEqual(
+            events,
+            ["read b1", "anchor k1 p-1", "commit", "read b2", "anchor k1 p-1", "commit"],
+        )
+        conn.close.assert_called_once()
+
+
 class CorruptMemberTest(unittest.TestCase):
     def test_a_corrupt_chapter_rejects_the_upload(self):
         data = bytearray(make_epub([("One", "word " * 2_000)]))
