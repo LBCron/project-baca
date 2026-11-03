@@ -538,7 +538,8 @@ pub async fn change_password(
 }
 
 pub async fn my_streak() -> Result<shared::ReadingStreakDto, String> {
-    get("/me/streak").await
+    let offset = crate::format::utc_offset_minutes();
+    get(&format!("/me/streak?utc_offset_minutes={offset}")).await
 }
 
 /// Uploads an EPUB. The form is rebuilt for each send, so an expired

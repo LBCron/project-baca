@@ -2,14 +2,14 @@
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use shared::{
     ApiResponse, AppError, BadgeDto, ErrorPayload, ReadingHeartbeatRequest,
-    ReadingHeartbeatResponse, ReadingStreakDto, UserBadgeDto,
+    ReadingHeartbeatResponse, ReadingStreakDto, StreakQuery, UserBadgeDto,
 };
 use std::sync::Arc;
 use validator::Validate;
@@ -109,6 +109,7 @@ pub async fn list_user_badges(
 #[utoipa::path(
     get,
     path = "/api/v1/me/streak",
+    params(StreakQuery),
     responses(
         (status = 200, description = "Current streak standing", body = ApiResponse<ReadingStreakDto>),
         (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
@@ -119,8 +120,10 @@ pub async fn list_user_badges(
 pub async fn get_my_streak(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
+    Query(query): Query<StreakQuery>,
 ) -> Result<Response, HttpError> {
-    let streak = infra::get_streak(&state.db, auth.id)
+    query.validate().map_err(HttpError::from)?;
+    let streak = infra::get_streak(&state.db, auth.id, query.utc_offset_minutes.unwrap_or(0))
         .await
         .map_err(HttpError::from)?;
     Ok(Json(ApiResponse::success(streak)).into_response())

@@ -1,6 +1,7 @@
 """Authed flow: OTP via Mailpit, automatic progress save, shelf, cleanup."""
 import base64
 import json
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -443,3 +444,36 @@ def test_fourth_code_in_an_hour_is_refused_and_not_mailed():
     assert refused.value.headers.get("Retry-After")
     time.sleep(1)
     assert mailed() == before == 3
+
+
+def test_quote_dates_read_on_the_readers_clock(browser: Browser, book_with_chapters: str):
+    """A quote saved at 06:56 WIB on 3 November is dated 3 November in
+    Jakarta, though the server stored it at 23:56 UTC on the 2nd."""
+    tokens = register_reader("wib")
+    chapter_id = api_get(f"/books/{book_with_chapters}")["chapters"][0]["id"]
+    sql = (
+        "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at) "
+        f"VALUES (gen_random_uuid(), '{_owner(tokens)}', '{book_with_chapters}', '{chapter_id}', "
+        "'Pagi di Jakarta', '2026-11-02T23:56:00Z')"
+    )
+    subprocess.run(
+        ["docker", "exec", "project_baca_db", "psql", "-U", "baca_user", "-d", "project_baca_db", "-c", sql],
+        capture_output=True,
+        check=True,
+    )
+    context = browser.new_context(base_url=WEB, timezone_id="Asia/Jakarta", locale="en-US")
+    page = context.new_page()
+    page.errors = []  # type: ignore[attr-defined]
+    page.on("pageerror", lambda e: page.errors.append(str(e)))
+    try:
+        goto(page, "/")
+        page.evaluate(_sign_in_storage(tokens))
+        goto(page, "/me")
+        row = page.locator(".quote-row", has_text="Pagi di Jakarta")
+        expect(row.locator(".quote-meta")).to_contain_text("3 Nov 2026")
+        assert_no_page_errors(page)
+    finally:
+        context.close()
+        req = urllib.request.Request(f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+        with urllib.request.urlopen(req):
+            pass

@@ -41,6 +41,12 @@ fn test_i18n_placeholders_and_durations() {
         .with_timezone(&chrono::Utc);
     assert_eq!(Lang::Id.month_year(october), "Okt 2026");
     assert_eq!(Lang::En.date_short(october), "8 Oct 2026");
+    // 06:56 WIB on 3 November is 23:56 UTC the day before.
+    let morning_wib = chrono::DateTime::parse_from_rfc3339("2026-11-02T23:56:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(Lang::Id.date_short_at(morning_wib, 420), "3 Nov 2026");
+    assert_eq!(Lang::Id.date_short_at(morning_wib, 0), "2 Nov 2026");
     assert_eq!(Lang::Id.month_short(0), "Jan");
     assert_eq!(Lang::Id.wait_text(300), "5 menit");
     assert_eq!(Lang::En.wait_text(61), "2 minutes");

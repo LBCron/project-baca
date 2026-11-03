@@ -169,12 +169,14 @@ async fn seconds_read_on(
 pub async fn get_streak(
     db: &DatabaseConnection,
     user_id: Uuid,
+    utc_offset_minutes: i32,
 ) -> Result<ReadingStreakDto, AppError> {
     let record = user_reading_streaks::Entity::find_by_id(user_id)
         .one(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to fetch streak record: {e}")))?;
-    let today_seconds = seconds_read_on(db, user_id, Utc::now().date_naive()).await?;
+    let today = domain::local_date(Utc::now(), utc_offset_minutes);
+    let today_seconds = seconds_read_on(db, user_id, today).await?;
 
     Ok(ReadingStreakDto {
         current_streak_days: record.as_ref().map(|s| s.current_streak_days).unwrap_or(0),
@@ -209,7 +211,7 @@ pub async fn record_heartbeat(
     }
 
     let now = Utc::now();
-    let today = now.date_naive();
+    let today = domain::local_date(now, req.utc_offset_minutes.unwrap_or(0));
     let credited_seconds = domain::credited_heartbeat_seconds(req.seconds_spent);
 
     let log_entry = reading_activity_logs::ActiveModel {

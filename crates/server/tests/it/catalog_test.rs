@@ -1096,3 +1096,138 @@ async fn test_catalog_search_finds_words_only_in_the_description() {
     assert!(ids.contains(&book_id.to_string().as_str()), "{json}");
     harness.cleanup().await;
 }
+
+async fn seed_reader(harness: &TestHarness) -> (Uuid, String) {
+    let now = Utc::now();
+    let user_id = harness.track_user(Uuid::new_v4());
+    let email = format!("tz_{}@baca.local", Uuid::new_v4());
+    users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.clone()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Pembaca WIB".to_string()),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("user seed must succeed");
+    let token = infra::generate_access_token(
+        user_id,
+        &email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        1440,
+    )
+    .expect("token");
+    (user_id, token)
+}
+
+async fn heartbeat(
+    harness: &TestHarness,
+    token: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .uri("/api/v1/activity/heartbeat")
+        .method("POST")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    (resp.status(), json)
+}
+
+/// A streak day is the reader's own: reading is logged on their calendar
+/// day, a reader whose local yesterday counted reaches day two today, and an
+/// offset no clock uses is refused.
+#[tokio::test]
+async fn test_streak_days_follow_the_readers_clock() {
+    use infra::entities::{reading_activity_logs, user_reading_streaks};
+    use sea_orm::QueryOrder;
+    let harness = TestHarness::new().await;
+    let book = common::seed_book(&harness, "published").await;
+    harness.track_book(book);
+    let db = &harness.state.db;
+
+    // The same instant is a different calendar day at UTC+14 and UTC-12.
+    for offset in [840, -720] {
+        let (user, token) = seed_reader(&harness).await;
+        let (status, json) = heartbeat(
+            &harness,
+            &token,
+            serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": offset}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let logged = reading_activity_logs::Entity::find()
+            .filter(reading_activity_logs::Column::UserId.eq(user))
+            .order_by_desc(reading_activity_logs::Column::CreatedAt)
+            .one(db)
+            .await
+            .expect("query")
+            .expect("logged");
+        let expected = domain::local_date(logged.created_at.with_timezone(&Utc), offset);
+        assert_eq!(logged.activity_date, expected, "offset {offset}");
+    }
+
+    // Read 23:00 yesterday (WIB), now 06:30: the second day of a streak.
+    let (user, token) = seed_reader(&harness).await;
+    let today = domain::local_date(Utc::now(), 420);
+    let yesterday = today.pred_opt().expect("a day before");
+    user_reading_streaks::ActiveModel {
+        user_id: Set(user),
+        current_streak_days: Set(1),
+        longest_streak_days: Set(1),
+        total_reading_seconds: Set(300),
+        total_xp: Set(0),
+        last_activity_date: Set(Some(yesterday)),
+        updated_at: Set(Utc::now().into()),
+    }
+    .insert(db)
+    .await
+    .expect("streak seed");
+    reading_activity_logs::ActiveModel {
+        user_id: Set(user),
+        book_id: Set(book),
+        seconds_spent: Set(290),
+        activity_date: Set(today),
+        created_at: Set(Utc::now().into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("log seed");
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 420}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["current_streak_days"], 2, "{json}");
+
+    let req = Request::builder()
+        .uri("/api/v1/me/streak?utc_offset_minutes=420")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, streak) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{streak}");
+    assert_eq!(streak["data"]["today_seconds"], 320, "{streak}");
+
+    let (_, token) = seed_reader(&harness).await;
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 9999}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["error"]["code"], "VALIDATION_FAILED");
+    harness.cleanup().await;
+}
