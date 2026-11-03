@@ -2,7 +2,10 @@
 
 use crate::{
     error::HttpError,
-    middleware::{auth::AuthUser, rate_limit::client_ip_from_headers},
+    middleware::{
+        auth::AuthUser,
+        rate_limit::{client_ip_from_headers, client_subject_from_headers},
+    },
     AppState,
 };
 use axum::{
@@ -163,6 +166,34 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     }
 }
 
+/// True only for the first count past the ceiling, so the operator sees one
+/// event per window however long the refusals go on.
+fn first_refusal(count: i64, ceiling: i64) -> bool {
+    count == ceiling + 1
+}
+
+/// Counts one signup mail against the hourly ceiling of every address
+/// together; past it signup answers 503 and the first refusal of the hour
+/// is logged once for the operator.
+async fn claim_mail_budget(redis: &mut infra::RedisConn, budget: u32) -> Result<(), HttpError> {
+    if budget == 0 {
+        return Ok(());
+    }
+    let (sent, ttl) = hit_window(redis, "budget:otp:hour", 3600)
+        .await
+        .map_err(redis_unavailable)?;
+    let budget = i64::from(budget);
+    if sent <= budget {
+        return Ok(());
+    }
+    if first_refusal(sent, budget) {
+        tracing::warn!(target: "server::auth", event = "otp_budget_exhausted", budget, "Hourly signup mail budget spent; signups answer 503 until the hour turns");
+    }
+    Err(HttpError(AppError::ServiceUnavailable {
+        retry_after: ttl.max(1) as u64,
+    }))
+}
+
 /// Register a new account with email OTP verification
 #[utoipa::path(
     post,
@@ -185,7 +216,7 @@ pub async fn signup(
 
     // Per-IP signup cap: rotating the local part cannot bypass this, so one
     // client cannot burn SMTP quota or sender reputation at will.
-    let client_ip = client_ip_from_headers(&headers, &state.config.server);
+    let client_ip = client_subject_from_headers(&headers, &state.config.server);
     let ip_key = format!("otp:signup:ip:{client_ip}");
     let (ip_count, ip_ttl) = hit_window(&mut redis_conn, &ip_key, 3600)
         .await
@@ -210,6 +241,7 @@ pub async fn signup(
     claim_code_quota(&mut redis_conn, &req.email)
         .await
         .map_err(HttpError::from)?;
+    claim_mail_budget(&mut redis_conn, state.config.email.otp_hourly_budget).await?;
 
     let password_hash = hash_password_async(req.password.clone())
         .await
@@ -313,7 +345,7 @@ pub async fn login(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let client_ip = client_ip_from_headers(&headers, &state.config.server);
+    let client_ip = client_subject_from_headers(&headers, &state.config.server);
     claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await?;
 
     let user = find_user_by_email(&state.db, &req.email)
@@ -872,4 +904,16 @@ pub fn user_routes() -> Router<Arc<AppState>> {
         .route("/sessions/{session_id}", delete(revoke_my_session))
         .route("/badges", get(crate::routes::list_user_badges))
         .route("/streak", get(crate::routes::get_my_streak))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_refusal;
+
+    #[test]
+    fn a_spent_ceiling_is_reported_once_per_window() {
+        let reported = (1..=200).filter(|&n| first_refusal(n, 100)).count();
+        assert_eq!(reported, 1);
+        assert!(first_refusal(101, 100));
+    }
 }

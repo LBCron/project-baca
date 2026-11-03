@@ -28,6 +28,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         api_key: String::new(),
         model_name: "text-embedding-004".to_string(),
         dimension: 768,
+        daily_budget: 0,
     })
     .expect("fastembed stub must always succeed");
 
@@ -249,6 +250,10 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
         .env("DATABASE_CONNECT_TIMEOUT_SECS", "2")
         .env("JWT_SECRET", "p".repeat(48))
         .env("SMTP_SECURITY", "starttls")
+        .env("TRUST_PROXY_HEADERS", "true")
+        .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
+        .env("OTP_HOURLY_BUDGET", "100")
+        .env("AI_DAILY_BUDGET", "5000")
         .env("RUST_LOG", "server=info")
         .kill_on_drop(true)
         .output();
@@ -285,6 +290,7 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         api_key: String::new(),
         model_name: "text-embedding-004".to_string(),
         dimension: 768,
+        daily_budget: 0,
     })
     .expect("fastembed stub must always succeed");
     let app = create_app(Arc::new(AppState {

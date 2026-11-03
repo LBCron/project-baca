@@ -100,6 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 api_key: String::new(),
                 model_name: config.ai.model_name.clone(),
                 dimension: config.ai.dimension,
+                daily_budget: 0,
             })
             .unwrap_or_else(|_| unreachable!("fastembed provider always succeeds"))
         }

@@ -27,6 +27,7 @@ pub struct RateLimitPolicy {
     pub window_seconds: u64,
     pub error_code: &'static str,
     pub subject_label: &'static str,
+    pub window_label: &'static str,
 }
 
 /// Public auth endpoints: 20 req/min per IP.
@@ -36,6 +37,7 @@ pub const AUTH_POLICY: RateLimitPolicy = RateLimitPolicy {
     window_seconds: 60,
     error_code: "RATE_LIMITED",
     subject_label: "requests",
+    window_label: "minute",
 };
 
 /// Embedding-backed search: 10 req/min per user, or per IP for guests.
@@ -45,7 +47,21 @@ pub const AI_POLICY: RateLimitPolicy = RateLimitPolicy {
     window_seconds: 60,
     error_code: "AI_RATE_LIMITED",
     subject_label: "semantic search requests",
+    window_label: "minute",
 };
+
+/// Embedding-backed requests of every reader together per day, so abuse
+/// that slips past the per-reader limit still has a price ceiling.
+fn ai_budget_policy(max_requests: u32) -> RateLimitPolicy {
+    RateLimitPolicy {
+        key_prefix: "budget:ai",
+        max_requests: i64::from(max_requests),
+        window_seconds: 86_400,
+        error_code: "AI_RATE_LIMITED",
+        subject_label: "semantic search requests",
+        window_label: "day",
+    }
+}
 
 /// Unauthenticated catalog and insight reads; the cap comes from config.
 pub fn public_policy(max_requests: u32) -> RateLimitPolicy {
@@ -55,6 +71,7 @@ pub fn public_policy(max_requests: u32) -> RateLimitPolicy {
         window_seconds: 60,
         error_code: "RATE_LIMITED",
         subject_label: "requests",
+        window_label: "minute",
     }
 }
 
@@ -84,9 +101,36 @@ pub fn client_ip_from_headers(headers: &HeaderMap, server: &ServerConfig) -> Str
         .to_string()
 }
 
+/// The rate-limit subject of a client address. An IPv6 address is cut to
+/// its /64, the block one customer holds, so rotating addresses inside it
+/// buys nothing; an IPv4-mapped IPv6 address counts as its IPv4.
+pub fn rate_subject(ip: &str) -> String {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+        Ok(IpAddr::V4(v4)) => v4.to_string(),
+        Err(_) => ip.to_string(),
+    }
+}
+
+/// Rate-limit subject of the client behind `headers`; every per-client
+/// limit and lockout keys on this, never on the raw address.
+pub fn client_subject_from_headers(headers: &HeaderMap, server: &ServerConfig) -> String {
+    rate_subject(&client_ip_from_headers(headers, server))
+}
+
 /// Client IP for rate limiting (see [`client_ip_from_headers`]).
 pub fn extract_client_ip(req: &Request<Body>, server: &ServerConfig) -> String {
     client_ip_from_headers(req.headers(), server)
+}
+
+fn extract_client_subject(req: &Request<Body>, server: &ServerConfig) -> String {
+    client_subject_from_headers(req.headers(), server)
 }
 
 fn set_limit_headers(headers: &mut HeaderMap, limit: i64, remaining: i64, reset: i64) {
@@ -102,55 +146,66 @@ fn set_limit_headers(headers: &mut HeaderMap, limit: i64, remaining: i64, reset:
     }
 }
 
-/// Counts one hit for `subject` and either forwards the request (with RFC
-/// rate-limit headers) or answers 429. Fails closed when Redis is
-/// unreachable: an unenforceable limit must shed traffic, not open it.
-async fn enforce(
+/// Counts one hit for `subject`: the count and window TTL, or the response
+/// that refuses the request. Fails closed when Redis is unreachable: an
+/// unenforceable limit must shed traffic, not open it.
+async fn count_hit(
     state: &AppState,
     policy: RateLimitPolicy,
     subject: &str,
+) -> Result<(i64, i64), Box<Response>> {
+    let unavailable =
+        || Box::new(HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response());
+    let redis_key = format!("{}:{subject}", policy.key_prefix);
+    let mut redis_conn = state.get_redis_conn().await.map_err(|_| unavailable())?;
+    let (count, ttl) = hit_window(&mut redis_conn, &redis_key, policy.window_seconds)
+        .await
+        .map_err(|_| unavailable())?;
+    let ttl = ttl.max(1);
+    if count <= policy.max_requests {
+        return Ok((count, ttl));
+    }
+    let mut resp = (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ApiResponse::<()>::error(
+            policy.error_code,
+            &format!(
+                "Rate limit exceeded. Maximum {} {} per {} allowed.",
+                policy.max_requests, policy.subject_label, policy.window_label
+            ),
+            None,
+        )),
+    )
+        .into_response();
+    set_limit_headers(resp.headers_mut(), policy.max_requests, 0, ttl);
+    if let Ok(v) = HeaderValue::from_str(&ttl.to_string()) {
+        resp.headers_mut().insert(header::RETRY_AFTER, v);
+    }
+    Err(Box::new(resp))
+}
+
+/// Counts one hit against every limit and either forwards the request, with
+/// RFC rate-limit headers for the first limit, or answers with the refusal
+/// of the first limit that is spent.
+async fn enforce(
+    state: &AppState,
+    limits: &[(RateLimitPolicy, String)],
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let redis_key = format!("{}:{subject}", policy.key_prefix);
-
-    let mut redis_conn = match state.get_redis_conn().await {
-        Ok(conn) => conn,
-        Err(_) => {
-            return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
+    let mut headline = None;
+    for (policy, subject) in limits {
+        match count_hit(state, *policy, subject).await {
+            Ok((count, ttl)) => {
+                headline.get_or_insert((policy.max_requests, count, ttl));
+            }
+            Err(refusal) => return *refusal,
         }
-    };
-    let (count, ttl) = match hit_window(&mut redis_conn, &redis_key, policy.window_seconds).await {
-        Ok(hit) => hit,
-        Err(_) => {
-            return HttpError(AppError::ServiceUnavailable { retry_after: 60 }).into_response()
-        }
-    };
-    let ttl = ttl.max(1);
-    let remaining = (policy.max_requests - count).max(0);
-
-    if count > policy.max_requests {
-        let mut resp = (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ApiResponse::<()>::error(
-                policy.error_code,
-                &format!(
-                    "Rate limit exceeded. Maximum {} {} per minute allowed.",
-                    policy.max_requests, policy.subject_label
-                ),
-                None,
-            )),
-        )
-            .into_response();
-        set_limit_headers(resp.headers_mut(), policy.max_requests, 0, ttl);
-        if let Ok(v) = HeaderValue::from_str(&ttl.to_string()) {
-            resp.headers_mut().insert(header::RETRY_AFTER, v);
-        }
-        return resp;
     }
-
     let mut response = next.run(req).await;
-    set_limit_headers(response.headers_mut(), policy.max_requests, remaining, ttl);
+    if let Some((limit, count, ttl)) = headline {
+        set_limit_headers(response.headers_mut(), limit, (limit - count).max(0), ttl);
+    }
     response
 }
 
@@ -160,8 +215,8 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req, &state.config.server);
-    enforce(&state, AUTH_POLICY, &ip, req, next).await
+    let subject = extract_client_subject(&req, &state.config.server);
+    enforce(&state, &[(AUTH_POLICY, subject)], req, next).await
 }
 
 /// Caps embedding-backed search: signed-in users by id, guests by IP. A
@@ -183,9 +238,17 @@ pub async fn ai_rate_limit_middleware(
     };
     let subject = match user_id {
         Some(id) => format!("user:{id}"),
-        None => format!("guest:{}", extract_client_ip(&req, &state.config.server)),
+        None => format!(
+            "guest:{}",
+            extract_client_subject(&req, &state.config.server)
+        ),
     };
-    enforce(&state, AI_POLICY, &subject, req, next).await
+    let mut limits = vec![(AI_POLICY, subject)];
+    let budget = state.config.ai.daily_budget;
+    if budget > 0 {
+        limits.push((ai_budget_policy(budget), "all".to_string()));
+    }
+    enforce(&state, &limits, req, next).await
 }
 
 /// False when the token was blacklisted or its user revoked after issue.
@@ -210,9 +273,9 @@ pub async fn public_rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ip = extract_client_ip(&req, &state.config.server);
+    let subject = extract_client_subject(&req, &state.config.server);
     let policy = public_policy(state.config.server.public_rate_limit_per_minute);
-    enforce(&state, policy, &ip, req, next).await
+    enforce(&state, &[(policy, subject)], req, next).await
 }
 
 #[cfg(test)]
@@ -233,6 +296,21 @@ mod tests {
             trusted_ip_header: header.to_string(),
             ..ServerConfig::default()
         }
+    }
+
+    #[test]
+    fn one_ipv6_block_is_one_subject() {
+        assert_eq!(
+            rate_subject("2001:db8::1"),
+            rate_subject("2001:db8::ffff:2")
+        );
+        assert_eq!(rate_subject("2001:db8::1"), "2001:db8:0:0::/64");
+        assert_ne!(
+            rate_subject("2001:db8:0:1::1"),
+            rate_subject("2001:db8:0:2::1")
+        );
+        assert_eq!(rate_subject("::ffff:203.0.113.7"), "203.0.113.7");
+        assert_eq!(rate_subject("203.0.113.7"), "203.0.113.7");
     }
 
     #[test]

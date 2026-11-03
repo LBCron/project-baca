@@ -42,7 +42,8 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist; the last two are the Tauri app WebView origins |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-IP cap on unauthenticated reads; production compose sets 600, and production refuses a cap without `TRUST_PROXY_HEADERS=true` |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on unauthenticated reads; production compose sets 600 |
+| `OTP_HOURLY_BUDGET`, `AI_DAILY_BUDGET` | `0` (off) | ceilings across every client: signup mail per hour (past it signup answers 503 and logs `otp_budget_exhausted` once) and semantic searches per day (past it 429 `AI_RATE_LIMITED`); production compose sets 100 and 5000, and production refuses to boot with either at 0 or without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
 | `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |
@@ -99,7 +100,7 @@ Notes:
 - The web suite runs from `crates/web/tests` with `--browser chromium`. Contexts pin `color_scheme=dark`; the a11y suite also scans the Paper theme. Goldens are 1280x720 under `tests/visual/test_visual.py-snapshots/`; delete one to regenerate it after an intended change and review the image before committing.
 - Benchmarks follow machine load. Rerun on an idle machine before reading a failure as a regression.
 - Do not run the web suite while heavy backend suites run; Playwright `networkidle` waits can time out.
-- Signup is capped at 10 per hour per IP. Delete the Redis key `otp:signup:ip:127.0.0.1` if local auth tests answer 429.
+- Signup is capped at 10 per hour per client (an IPv6 client counts as its /64). Delete the Redis key `otp:signup:ip:127.0.0.1` if local auth tests answer 429.
 
 ## 6. Troubleshooting
 

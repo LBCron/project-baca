@@ -593,6 +593,51 @@ async fn test_guest_ai_burst_enforcement() {
     harness.cleanup().await;
 }
 
+/// The daily ceiling counts every reader together, so a fresh address per
+/// request still stops once the ceiling is spent.
+#[tokio::test]
+async fn test_ai_daily_budget_sheds_across_addresses() {
+    let harness = TestHarness::with_config(|c| c.ai.daily_budget = 2).await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let _: () = redis::AsyncCommands::del(&mut redis, "budget:ai:all")
+        .await
+        .unwrap();
+    for i in 1..=3 {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
+            .header(common::CLIENT_IP_HEADER, common::unique_ip("198.19"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "query": "foggy harbor" }).to_string(),
+            ))
+            .expect("Valid request");
+        let resp = harness.send_request(req).await;
+        if i <= 2 {
+            assert_eq!(resp.status(), StatusCode::OK, "search {i}");
+            continue;
+        }
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "AI_RATE_LIMITED");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("per day"));
+    }
+    let _: () = redis::AsyncCommands::del(&mut redis, "budget:ai:all")
+        .await
+        .unwrap();
+    harness.cleanup().await;
+}
+
 #[tokio::test]
 async fn test_quote_search_unknown_book_returns_404() {
     let harness = TestHarness::new().await;

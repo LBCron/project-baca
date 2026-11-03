@@ -920,6 +920,81 @@ async fn test_auth_signup_ip_cap_eleven_per_hour() {
     harness.cleanup().await;
 }
 
+fn signup_from(harness: &TestHarness, ip: &str, tag: &str) -> Request<Body> {
+    let signup_req = SignupRequest {
+        display_name: format!("Cap {tag}"),
+        email: harness.track_email_owned(format!("{tag}_{}@example.com", Uuid::new_v4())),
+        password: "CapTest123!".to_string(),
+    };
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/signup")
+        .header(common::CLIENT_IP_HEADER, ip)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+        .unwrap()
+}
+
+/// Rotating IPv6 addresses inside one /64 buys nothing: the signup cap
+/// counts the block, so the 11th signup from it is shed.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_signup_cap_counts_the_ipv6_block() {
+    let harness = TestHarness::new().await;
+    let Some(mut redis_conn) = harness.live_only().await else {
+        panic!("live services required (BACA_LIVE_TEST=1 with db-up)");
+    };
+    let n = Uuid::new_v4().as_u128();
+    let block = format!(
+        "2001:db8:{:x}:{:x}",
+        (n & 0xffff) as u16,
+        ((n >> 16) & 0xffff) as u16
+    );
+    let _: () = redis_conn
+        .del(format!("otp:signup:ip:{block}::/64"))
+        .await
+        .unwrap();
+    for i in 1..=11u32 {
+        let ip = format!("{block}:{i:x}::{:x}", i * 7);
+        let (resp, _) = harness
+            .send_json_request(signup_from(&harness, &ip, "v6cap"))
+            .await;
+        let expected = if i <= 10 {
+            StatusCode::CREATED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(resp.status(), expected, "signup {i} from {ip}");
+    }
+    harness.cleanup().await;
+}
+
+/// Past the hourly mail ceiling of every address together, signup answers
+/// 503 with Retry-After instead of sending more mail.
+#[tokio::test]
+#[ignore = "needs live Postgres + Redis (BACA_LIVE_TEST=1)"]
+async fn test_auth_signup_hourly_mail_budget_answers_503() {
+    let harness = TestHarness::with_config(|c| c.email.otp_hourly_budget = 2).await;
+    let Some(mut redis_conn) = harness.live_only().await else {
+        panic!("live services required (BACA_LIVE_TEST=1 with db-up)");
+    };
+    let _: () = redis_conn.del("budget:otp:hour").await.unwrap();
+    for i in 1..=3 {
+        let ip = common::unique_ip("198.19");
+        let resp = harness
+            .send_request(signup_from(&harness, &ip, "budget"))
+            .await;
+        if i <= 2 {
+            assert_eq!(resp.status(), StatusCode::CREATED, "signup {i}");
+        } else {
+            assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert!(resp.headers().get("retry-after").is_some());
+        }
+    }
+    let _: () = redis_conn.del("budget:otp:hour").await.unwrap();
+    harness.cleanup().await;
+}
+
 /// OTP abuse: 3 wrong attempts lock the OTP for 5 minutes (even the right
 /// code 429s), and an expired OTP is 400 — never a silent accept.
 #[tokio::test]

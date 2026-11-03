@@ -82,6 +82,7 @@ impl TestHarness {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         })
         .expect("mock provider must always succeed");
 

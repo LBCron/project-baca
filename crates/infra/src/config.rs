@@ -160,6 +160,9 @@ pub struct EmailConfig {
     pub smtp_from_email: String,
     pub smtp_from_name: String,
     pub smtp_security: SmtpSecurity,
+    /// Signup mails allowed per hour across every address; past it signup
+    /// answers 503. Zero turns the ceiling off (development only).
+    pub otp_hourly_budget: u32,
 }
 
 impl Default for EmailConfig {
@@ -172,6 +175,7 @@ impl Default for EmailConfig {
             smtp_from_email: "no-reply@projectbaca.local".to_string(),
             smtp_from_name: "Project Baca".to_string(),
             smtp_security: SmtpSecurity::StartTls,
+            otp_hourly_budget: 0,
         }
     }
 }
@@ -183,6 +187,9 @@ pub struct AiConfig {
     pub api_key: String,
     pub model_name: String,
     pub dimension: usize,
+    /// Embedding-backed requests allowed per day across every reader; past
+    /// it they answer 429. Zero turns the ceiling off (development only).
+    pub daily_budget: u32,
 }
 
 impl Default for AiConfig {
@@ -192,6 +199,7 @@ impl Default for AiConfig {
             api_key: String::new(),
             model_name: "gemini-embedding-2".to_string(),
             dimension: 768,
+            daily_budget: 0,
         }
     }
 }
@@ -347,6 +355,11 @@ impl AppConfig {
             Err(_) => default_email.smtp_security,
         };
 
+        let otp_hourly_budget = env::var("OTP_HOURLY_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_email.otp_hourly_budget);
+
         let email = EmailConfig {
             smtp_host,
             smtp_port,
@@ -355,6 +368,7 @@ impl AppConfig {
             smtp_from_email,
             smtp_from_name,
             smtp_security,
+            otp_hourly_budget,
         };
 
         let ai_provider = env::var("EMBEDDING_PROVIDER")
@@ -372,11 +386,16 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_ai.dimension);
 
+        let ai_daily_budget = env::var("AI_DAILY_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_ai.daily_budget);
         let ai = AiConfig {
             provider: ai_provider,
             api_key: ai_api_key,
             model_name: ai_model_name,
             dimension: ai_dimension,
+            daily_budget: ai_daily_budget,
         };
 
         let config = Self {
@@ -411,11 +430,16 @@ impl AppConfig {
             ));
         }
         if self.is_production()
-            && self.server.public_rate_limit_per_minute > 0
-            && !self.server.trust_proxy_headers
+            && (!self.server.trust_proxy_headers || self.server.trusted_ip_header.is_empty())
         {
             return Err(AppError::ValidationError(
-                "PUBLIC_RATE_LIMIT_PER_MINUTE needs TRUST_PROXY_HEADERS=true in production: without the edge address every reader shares one bucket".to_string(),
+                "TRUST_PROXY_HEADERS=true and TRUSTED_IP_HEADER are required in production: without the edge address every client shares one rate-limit bucket and anyone can lock auth for everyone".to_string(),
+            ));
+        }
+        if self.is_production() && (self.email.otp_hourly_budget == 0 || self.ai.daily_budget == 0)
+        {
+            return Err(AppError::ValidationError(
+                "OTP_HOURLY_BUDGET and AI_DAILY_BUDGET must be above 0 in production: they cap what abuse past the per-client limits can cost".to_string(),
             ));
         }
         Ok(())
@@ -502,6 +526,8 @@ mod tests {
         config.server.trust_proxy_headers = true;
         config.server.public_rate_limit_per_minute = 600;
         config.auth.jwt_secret = "a".repeat(48);
+        config.email.otp_hourly_budget = 100;
+        config.ai.daily_budget = 5000;
         config
     }
 
@@ -540,14 +566,33 @@ mod tests {
     }
 
     #[test]
-    fn public_limit_without_proxy_trust_is_refused_in_production() {
+    fn production_without_proxy_trust_is_refused() {
         let mut config = production();
         config.server.trust_proxy_headers = false;
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("TRUST_PROXY_HEADERS=true"), "{err}");
 
         config.server.public_rate_limit_per_minute = 0;
-        assert!(config.validate().is_ok(), "no public cap, nothing to share");
+        assert!(
+            config.validate().is_err(),
+            "auth limits share the bucket too"
+        );
+
+        let mut config = production();
+        config.server.trusted_ip_header = String::new();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn production_without_spend_ceilings_is_refused() {
+        let mut config = production();
+        config.email.otp_hourly_budget = 0;
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("OTP_HOURLY_BUDGET"), "{err}");
+
+        let mut config = production();
+        config.ai.daily_budget = 0;
+        assert!(config.validate().is_err());
     }
 
     #[test]
