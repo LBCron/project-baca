@@ -212,6 +212,39 @@ impl TestHarness {
     }
 }
 
+/// Code a test swaps in for the one mailed to a registration.
+#[allow(dead_code)]
+pub const KNOWN_OTP: &str = "424242";
+
+/// The registration id a signup answered with.
+#[allow(dead_code)]
+pub fn registration_of(signup_body: &serde_json::Value) -> Uuid {
+    signup_body["data"]["registration_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("signup answers with a registration id")
+}
+
+/// Replaces the mailed code of a pending registration with `otp`, keeping
+/// the password and name its registrant chose.
+#[allow(dead_code)]
+pub async fn plant_known_otp(
+    redis_conn: &mut infra::RedisConn,
+    email: &str,
+    registration_id: Uuid,
+    otp: &str,
+) {
+    let key = infra::registration_key(email, registration_id);
+    let record: String = redis_conn.get(&key).await.expect("pending registration");
+    let mut registration: infra::PendingRegistration =
+        serde_json::from_str(&record).expect("registration record");
+    registration.code_hash = infra::hash_otp(otp);
+    let _: () = redis_conn
+        .set_ex(&key, serde_json::to_string(&registration).unwrap(), 600)
+        .await
+        .unwrap();
+}
+
 /// Password of every account [`provision_verified_user`] creates.
 #[allow(dead_code)]
 pub const PROVISIONED_PASSWORD: &str = "Adversarial123!";
@@ -240,16 +273,10 @@ pub async fn provision_verified_user(
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
-    let (resp, _) = harness.send_json_request(req).await;
+    let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let known_otp = "424242";
-    let record_json =
-        serde_json::json!({ "hash": infra::hash_otp(known_otp), "attempts": 0 }).to_string();
-    let _: () = redis_conn
-        .set_ex(format!("otp:{email}"), record_json, 600)
-        .await
-        .unwrap();
+    let registration_id = registration_of(&body);
+    plant_known_otp(redis_conn, &email, registration_id, KNOWN_OTP).await;
 
     let req = Request::builder()
         .method("POST")
@@ -259,7 +286,8 @@ pub async fn provision_verified_user(
         .body(Body::from(
             serde_json::to_vec(&VerifyOtpRequest {
                 email: email.clone(),
-                otp: known_otp.to_string(),
+                registration_id,
+                otp: KNOWN_OTP.to_string(),
             })
             .unwrap(),
         ))

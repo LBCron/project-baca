@@ -4,6 +4,12 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Changed
+- `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
+
+### Security
+- Signup cannot hold or hijack someone else's address: registrations for one address live side by side, each holding its own password, and a code only activates the registration it was mailed for. Codes mailed to one address are capped at 3 per hour and 10 per day (the 60-second cooldown is gone), and guesses are capped at 10 per address per day across every code, so asking for a new code never buys more attempts.
+
 ### Fixed
 - Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
 - Queued progress belongs to the account that wrote it: signing out (or a refused session) drops that account's unsent writes, and a drain sends only the signed-in account's writes, so a shared device never moves one reader's position into another's shelf.

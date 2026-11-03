@@ -62,42 +62,36 @@ pub async fn create_inactive_user(
     })
 }
 
-/// Updates credentials of an inactive user re-requesting registration.
-pub async fn update_inactive_credentials(
+/// Creates the account a verified registration asked for, with that
+/// registration's name and password. A row left inactive by an older signup
+/// takes them over; an address already active is a conflict.
+pub async fn activate_registration(
     db: &DatabaseConnection,
-    user: users::Model,
+    email: &str,
     display_name: &str,
     password_hash: &str,
 ) -> Result<users::Model, AppError> {
-    let mut active: users::ActiveModel = user.into();
-    active.display_name = Set(display_name.to_string());
-    active.password_hash = Set(Some(password_hash.to_string()));
-    active.updated_at = Set(Utc::now().into());
-
-    active
-        .update(db)
-        .await
-        .map_err(|e| AppError::Database(format!("Failed to update inactive user credentials: {e}")))
-}
-
-/// Activates a user upon successful OTP verification.
-pub async fn activate_user_by_email(
-    db: &DatabaseConnection,
-    email: &str,
-) -> Result<users::Model, AppError> {
-    let user = users::Entity::find()
+    let existing = users::Entity::find()
         .filter(users::Column::Email.eq(email))
         .one(db)
         .await
-        .map_err(|e| AppError::Database(format!("Failed to query user for activation: {e}")))?
-        .ok_or_else(|| AppError::NotFound("User record not found".to_string()))?;
-
-    let mut active: users::ActiveModel = user.into();
-    active.is_active = Set(true);
-    active.updated_at = Set(Utc::now().into());
-
-    active
-        .update(db)
+        .map_err(|e| AppError::Database(format!("Failed to query user for activation: {e}")))?;
+    let mut user: users::ActiveModel = match existing {
+        Some(user) if user.is_active => {
+            return Err(AppError::Conflict(
+                "An account with this email is already registered".to_string(),
+            ))
+        }
+        Some(user) => user.into(),
+        None => create_inactive_user(db, email, display_name, password_hash)
+            .await?
+            .into(),
+    };
+    user.display_name = Set(display_name.to_string());
+    user.password_hash = Set(Some(password_hash.to_string()));
+    user.is_active = Set(true);
+    user.updated_at = Set(Utc::now().into());
+    user.update(db)
         .await
         .map_err(|e| AppError::Database(format!("Failed to activate user: {e}")))
 }

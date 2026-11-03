@@ -14,21 +14,21 @@ use axum::{
 };
 use chrono::Utc;
 use infra::{
-    activate_user_by_email, blacklist_access_token, create_inactive_user, delete_user_by_id,
-    entities::users, find_user_by_email, find_user_by_id, generate_and_store_otp,
+    activate_registration, blacklist_access_token, claim_code_quota, delete_user_by_id,
+    ensure_guesses_left, entities::users, find_user_by_email, find_user_by_id,
     generate_refresh_token, hash_password_async, hit_window, issue_access_token, list_sessions,
-    otp_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
-    revoke_refresh_token, revoke_session, send_otp_email, store_refresh_token, touch_session,
-    update_inactive_credentials, update_user_password, update_user_profile,
-    validate_and_rotate_refresh_token, verify_access_token, verify_and_consume_otp,
-    verify_password_async, RefreshOutcome, SessionMeta, DUMMY_ARGON2_HASH,
+    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_sessions_keeping,
+    revoke_refresh_token, revoke_session, send_otp_email, start_registration, store_refresh_token,
+    touch_session, update_user_password, update_user_profile, validate_and_rotate_refresh_token,
+    verify_access_token, verify_password_async, verify_registration, RefreshOutcome, SessionMeta,
+    DUMMY_ARGON2_HASH,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
 use shared::{
     ApiResponse, AppError, ChangePasswordRequest, ErrorPayload, LoginRequest, PasswordChangedDto,
-    RefreshTokenRequest, SessionDto, SignupRequest, TokenResponse, UpdateProfileRequest,
-    UserProfileDto, VerifyOtpRequest,
+    RefreshTokenRequest, RegistrationStartedDto, SessionDto, SignupRequest, TokenResponse,
+    UpdateProfileRequest, UserProfileDto, VerifyOtpRequest,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -160,8 +160,9 @@ fn user_to_dto(user: &users::Model) -> UserProfileDto {
     path = "/api/v1/auth/signup",
     request_body = SignupRequest,
     responses(
-        (status = 201, description = "Verification OTP sent to email", body = ApiResponse<serde_json::Value>),
-        (status = 409, description = "Email already registered", body = ApiResponse<ErrorPayload>)
+        (status = 201, description = "Verification OTP sent to email", body = ApiResponse<RegistrationStartedDto>),
+        (status = 409, description = "Email already registered", body = ApiResponse<ErrorPayload>),
+        (status = 429, description = "Signup cap for this network, codes for this address, or guesses for it spent; Retry-After says when", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
 )]
@@ -173,15 +174,6 @@ pub async fn signup(
     req.validate().map_err(HttpError::from)?;
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
-
-    // Anti-Email-Bombing: 60-second cooldown per target email
-    let cooldown_key = format!("otp:cooldown:{}", req.email);
-    let in_cooldown: bool = redis_conn.exists(&cooldown_key).await.unwrap_or(false);
-    if in_cooldown {
-        let ttl: i64 = redis_conn.ttl(&cooldown_key).await.unwrap_or(60);
-        let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
-        return Err(HttpError(AppError::RateLimited { retry_after }));
-    }
 
     // Per-IP signup cap: rotating the local part cannot bypass this, so one
     // client cannot burn SMTP quota or sender reputation at will.
@@ -199,73 +191,48 @@ pub async fn signup(
     let existing_user = find_user_by_email(&state.db, &req.email)
         .await
         .map_err(HttpError::from)?;
-
-    match existing_user {
-        Some(user) if user.is_active => {
-            return Err(HttpError(AppError::Conflict(
-                "An account with this email is already registered".to_string(),
-            )));
-        }
-        Some(user) => {
-            // While a code is pending, only whoever chose the password may ask
-            // for a fresh one; anyone else would plant their own password and
-            // wait for the owner to type the code that arrives.
-            let pending_secs: i64 = redis_conn
-                .ttl(otp_key(&req.email))
-                .await
-                .map_err(redis_unavailable)?;
-            if pending_secs > 0 {
-                let same_registrant = match &user.password_hash {
-                    Some(hash) => verify_password_async(req.password.clone(), hash.clone())
-                        .await
-                        .map_err(HttpError::from)?,
-                    None => false,
-                };
-                if !same_registrant {
-                    return Err(HttpError(AppError::RateLimited {
-                        retry_after: pending_secs as u64,
-                    }));
-                }
-            } else {
-                let password_hash = hash_password_async(req.password.clone())
-                    .await
-                    .map_err(HttpError::from)?;
-                update_inactive_credentials(&state.db, user, &req.display_name, &password_hash)
-                    .await
-                    .map_err(HttpError::from)?;
-            }
-        }
-        None => {
-            let password_hash = hash_password_async(req.password.clone())
-                .await
-                .map_err(HttpError::from)?;
-            create_inactive_user(&state.db, &req.email, &req.display_name, &password_hash)
-                .await
-                .map_err(HttpError::from)?;
-        }
+    if existing_user.is_some_and(|user| user.is_active) {
+        return Err(HttpError(AppError::Conflict(
+            "An account with this email is already registered".to_string(),
+        )));
     }
 
-    let otp = generate_and_store_otp(&mut redis_conn, &req.email)
+    // Registrations for one address live side by side, so nobody can hold
+    // the address of someone else; what stays bounded is the mail sent to
+    // it and the guesses spent on it.
+    ensure_guesses_left(&mut redis_conn, &req.email)
+        .await
+        .map_err(HttpError::from)?;
+    claim_code_quota(&mut redis_conn, &req.email)
         .await
         .map_err(HttpError::from)?;
 
-    // Set 60-second cooldown for subsequent OTP requests for this email
-    let _: Result<(), _> = redis_conn.set_ex(&cooldown_key, "1", 60).await;
+    let password_hash = hash_password_async(req.password.clone())
+        .await
+        .map_err(HttpError::from)?;
+    let (registration_id, otp) = start_registration(
+        &mut redis_conn,
+        &req.email,
+        &req.display_name,
+        &password_hash,
+    )
+    .await
+    .map_err(HttpError::from)?;
 
     // Fail closed: a 201 without a deliverable code strands the user at the
-    // OTP step, and the cooldown must not block an immediate retry.
+    // OTP step.
     if let Err(e) = send_otp_email(&state.config.email, &req.email, &otp).await {
-        let _: Result<(), _> = redis_conn.del(&cooldown_key).await;
         tracing::warn!(target: "server::auth", error = %e, "OTP email delivery failed");
         return Err(HttpError(e));
     }
 
     Ok((
         StatusCode::CREATED,
-        Json(ApiResponse::success(serde_json::json!({
-            "message": "Verification OTP sent to email",
-            "email": req.email
-        }))),
+        Json(ApiResponse::success(RegistrationStartedDto {
+            message: "Verification OTP sent to email".to_string(),
+            email: req.email,
+            registration_id,
+        })),
     )
         .into_response())
 }
@@ -278,7 +245,8 @@ pub async fn signup(
     responses(
         (status = 200, description = "Verification successful, JWT tokens issued", body = ApiResponse<TokenResponse>),
         (status = 400, description = "Invalid or expired OTP", body = ApiResponse<ErrorPayload>),
-        (status = 429, description = "Code locked after three misses; Retry-After says when to try again", body = ApiResponse<ErrorPayload>)
+        (status = 409, description = "The address was verified by another registration first", body = ApiResponse<ErrorPayload>),
+        (status = 429, description = "Code locked after three misses, or the address spent its daily guesses; Retry-After says when to try again", body = ApiResponse<ErrorPayload>)
     ),
     tag = "Authentication"
 )]
@@ -291,22 +259,26 @@ pub async fn verify_otp(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let is_valid = verify_and_consume_otp(&mut redis_conn, &req.email, &req.otp)
-        .await
-        .map_err(HttpError::from)?;
+    let registration =
+        verify_registration(&mut redis_conn, &req.email, req.registration_id, &req.otp)
+            .await
+            .map_err(HttpError::from)?
+            .ok_or_else(|| {
+                HttpError(AppError::ValidationError(
+                    "Invalid or expired OTP".to_string(),
+                ))
+            })?;
 
-    if !is_valid {
-        return Err(HttpError(AppError::ValidationError(
-            "Invalid or expired OTP".to_string(),
-        )));
-    }
+    let user = activate_registration(
+        &state.db,
+        &req.email,
+        &registration.display_name,
+        &registration.password_hash,
+    )
+    .await
+    .map_err(HttpError::from)?;
 
-    let updated_user = activate_user_by_email(&state.db, &req.email)
-        .await
-        .map_err(HttpError::from)?;
-
-    let response =
-        issue_token_pair(&state, &mut redis_conn, &updated_user, now_secs(), &headers).await?;
+    let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 

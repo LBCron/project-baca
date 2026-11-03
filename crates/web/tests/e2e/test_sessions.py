@@ -36,9 +36,9 @@ def test_authed_autosave_shelf_cleanup(clean_page: Page, book_with_chapters: str
     page.keyboard.press("Escape")
 
     email = f"e2e-{int(time.time())}@example.com"
-    _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    started = _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
     otp = _mailpit_otp(email)
-    tokens = _post("/auth/verify-otp", {"email": email, "otp": otp})
+    tokens = _post("/auth/verify-otp", {"email": email, "registration_id": started["registration_id"], "otp": otp})
     assert tokens.get("access_token"), "OTP verify must issue tokens"
 
     page.evaluate(
@@ -181,10 +181,11 @@ def _sign_in_storage(tokens: dict) -> str:
     )
 
 
-def test_signup_inside_the_cooldown_stays_on_the_form(clean_page: Page):
+def test_signup_past_the_mail_cap_stays_on_the_form(clean_page: Page):
     page = clean_page
     email = f"e2e-cooldown-{int(time.time() * 1000)}@example.com"
-    _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    for _ in range(3):
+        _post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
     goto(page, "/me")
     page.click(".guest-shelf .btn-primary")
     page.click(".sheet [role='tab']:has-text('Register')")

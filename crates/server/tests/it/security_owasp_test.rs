@@ -169,7 +169,7 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
 }
 
 #[tokio::test]
-async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
+async fn test_owasp_otp_email_bombing_is_capped_per_recipient() {
     let harness = TestHarness::new().await;
     let _ = harness
         .live_only()
@@ -184,33 +184,27 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
         password: "ValidPassword123!".to_string(),
     };
     let client_ip = unique_test_ip();
+    let signup = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header(common::CLIENT_IP_HEADER, &client_ip)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+            .unwrap()
+    };
 
-    // First signup: Success (201 Created)
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/signup")
-        .header(common::CLIENT_IP_HEADER, &client_ip)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
-        .unwrap();
+    // Three codes an hour reach one address, whoever asks for them.
+    for _ in 0..3 {
+        let (resp, body) = harness.send_json_request(signup()).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(body["success"], true);
+    }
 
-    let (resp, body) = harness.send_json_request(req).await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    assert_eq!(body["success"], true);
-
-    // Immediate second signup for the same email: Throttled (429 Too Many Requests)
-    let req2 = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/signup")
-        .header(common::CLIENT_IP_HEADER, &client_ip)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
-        .unwrap();
-
-    let (resp2, body2) = harness.send_json_request(req2).await;
-    assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(body2["error"]["code"], "RATE_LIMITED");
-    assert!(resp2.headers().contains_key(header::RETRY_AFTER));
+    let (resp, body) = harness.send_json_request(signup()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
     harness.cleanup().await;
 }
 

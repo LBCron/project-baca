@@ -104,6 +104,7 @@ impl AppState {
             ErrorPayload,
             SignupRequest,
             VerifyOtpRequest,
+            RegistrationStartedDto,
             LoginRequest,
             RefreshTokenRequest,
             TokenResponse,

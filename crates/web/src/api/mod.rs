@@ -441,11 +441,12 @@ pub async fn chapter_recap(
     get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
 }
 
-/// Registers and sends the code; a cooldown (429), relay outage (502), or
-/// Redis outage (503) comes back as an error so the sheet stays on the form.
-pub async fn signup(req: &SignupRequest) -> Result<(), String> {
-    let _: serde_json::Value = post_once("/auth/signup", req).await?;
-    Ok(())
+/// Registers and sends the code, returning the registration the code must
+/// come back with; a spent cap (429), relay outage (502), or Redis outage
+/// (503) comes back as an error so the sheet stays on the form.
+pub async fn signup(req: &SignupRequest) -> Result<uuid::Uuid, String> {
+    let started: shared::RegistrationStartedDto = post_once("/auth/signup", req).await?;
+    Ok(started.registration_id)
 }
 
 pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String> {

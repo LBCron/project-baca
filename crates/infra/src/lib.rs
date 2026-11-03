@@ -40,18 +40,18 @@ pub use repositories::{
         SavedQuoteDto,
     },
     user_repository::{
-        activate_user_by_email, create_inactive_user, delete_user_by_id, find_user_by_email,
-        find_user_by_id, update_inactive_credentials, update_user_password, update_user_profile,
+        activate_registration, create_inactive_user, delete_user_by_id, find_user_by_email,
+        find_user_by_id, update_user_password, update_user_profile,
     },
 };
 pub use security::{
-    blacklist_access_token, generate_access_token, generate_access_token_issued_at,
-    generate_and_store_otp, generate_refresh_token, hash_otp, hash_password, hash_password_async,
-    invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked, otp_key,
-    revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
-    revoke_refresh_token, rotation_grace_key, store_refresh_token,
-    validate_and_rotate_refresh_token, verify_access_token, verify_and_consume_otp,
-    verify_password, verify_password_async, Claims, RefreshOutcome, DUMMY_ARGON2_HASH,
+    blacklist_access_token, claim_code_quota, ensure_guesses_left, generate_access_token,
+    generate_access_token_issued_at, generate_refresh_token, hash_otp, hash_password,
+    hash_password_async, invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked,
+    registration_key, revoke_all_user_sessions, revoke_family_on_reuse, revoke_other_user_sessions,
+    revoke_refresh_token, rotation_grace_key, start_registration, store_refresh_token,
+    validate_and_rotate_refresh_token, verify_access_token, verify_password, verify_password_async,
+    verify_registration, Claims, PendingRegistration, RefreshOutcome, DUMMY_ARGON2_HASH,
     ROTATION_GRACE_SECS,
 };
 pub use security::{
