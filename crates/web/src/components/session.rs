@@ -21,6 +21,13 @@ impl Session {
         };
         provide_context(session);
         session.refresh();
+        // Writes queued while the API was unreachable (not only while
+        // offline) go out on the next start instead of waiting for `online`.
+        if api::is_authed() {
+            spawn_local(async {
+                api::drain_pending().await;
+            });
+        }
         session
     }
 

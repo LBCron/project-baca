@@ -1,4 +1,5 @@
 """Authed flow: OTP via Mailpit, automatic progress save, shelf, cleanup."""
+import base64
 import json
 import time
 import urllib.request
@@ -162,6 +163,17 @@ def test_guest_quote_merges_on_register(clean_page: Page, book_with_chapters: st
     assert_no_page_errors(page)
 
 
+def _owner(tokens: dict) -> str:
+    payload = tokens["access_token"].split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+
+
+def _active_progress(tokens: dict):
+    req = urllib.request.Request(f"{API}/progress/active", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)["data"]
+
+
 def _sign_in_storage(tokens: dict) -> str:
     return (
         f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
@@ -257,7 +269,11 @@ def test_drain_keeps_writes_queued_meanwhile_and_never_doubles(browser: Browser,
     )
 
     def op(anchor: str) -> dict:
-        return {"book_id": book_id, "update": {"chapter_id": chapter["id"], "last_anchor_cfi": anchor, "completion_percentage": 5.0}}
+        return {
+            "book_id": book_id,
+            "update": {"chapter_id": chapter["id"], "last_anchor_cfi": anchor, "completion_percentage": 5.0},
+            "user_id": _owner(tokens),
+        }
 
     try:
         page.goto(f"{WEB}/read/{book_id}?chapter={chapter['chapter_number']}", wait_until="domcontentloaded")
@@ -273,6 +289,46 @@ def test_drain_keeps_writes_queued_meanwhile_and_never_doubles(browser: Browser,
         page.wait_for_timeout(1500)
         assert sent.count("p-901") == 1, f"replayed once, sent {sent}"
         assert "p-902" in page.evaluate(QUEUED_ANCHORS, PENDING_STORE), "a write queued during the drain stays queued"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_queued_progress_never_reaches_the_next_account(browser: Browser, book_with_chapters: str):
+    book_id = book_with_chapters
+    chapter = api_get(f"/books/{book_id}")["chapters"][0]
+    first, second = register_reader("queue-a"), register_reader("queue-b")
+    context = browser.new_context(color_scheme="dark", reduced_motion="reduce")
+    install_fetch_shim(context, chapters=1)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        goto(page, "/")
+        page.evaluate(_sign_in_storage(first))
+        page.goto(f"{WEB}/read/{book_id}?chapter={chapter['chapter_number']}", wait_until="domcontentloaded")
+        page.wait_for_selector(".chapter-body")
+        page.wait_for_timeout(600)
+        page.route(f"{API}/progress/**", lambda route: route.abort())
+        page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(1700)
+        assert page.evaluate(QUEUED_ANCHORS, PENDING_STORE), "the first account's page waits in the queue"
+        page.unroute(f"{API}/progress/**")
+        _put_local_quote(page, book_id, chapter["id"])
+
+        goto(page, "/me")
+        page.get_by_role("button", name="Sign out", exact=True).last.click()
+        page.wait_for_timeout(800)
+        assert page.evaluate(QUEUED_ANCHORS, PENDING_STORE) == [], "signing out drops the account's unsent writes"
+        assert _count_local_quotes(page) == 1, "data kept for the guest stays"
+
+        # A record from before writes carried their owner is never sent either.
+        page.evaluate(QUEUE_WRITE, [PENDING_STORE, {"book_id": book_id, "update": {"chapter_id": chapter["id"], "last_anchor_cfi": "p-7", "completion_percentage": 40.0}}])
+        page.evaluate(_sign_in_storage(second))
+        goto(page, "/me")
+        page.wait_for_timeout(1500)
+        assert page.evaluate(QUEUED_ANCHORS, PENDING_STORE) == []
+        assert _active_progress(second) is None, "nothing of the first account reaches the second"
         assert errors == [], errors[:3]
     finally:
         context.close()

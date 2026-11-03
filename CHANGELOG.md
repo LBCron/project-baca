@@ -4,6 +4,11 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Fixed
+- Reader: a chapter that fails to load no longer moves the chapter number, the URL or the saved position; the reader stays on the chapter on screen and says "Bab ini belum bisa dimuat", and a book that never loaded cannot reach the finale. Progress queued while the API was unreachable goes out when the app starts signed in.
+- Queued progress belongs to the account that wrote it: signing out (or a refused session) drops that account's unsent writes, and a drain sends only the signed-in account's writes, so a shared device never moves one reader's position into another's shelf.
+- Reader: resizing the window or rotating the phone keeps the paragraph being read on screen; the position is held as a paragraph and the share of it already read, applied once the new column width is laid out, instead of drifting back about a page per change.
+
 ## [0.1.0] — 2026-11-03
 
 First release: the reader, the curator desk, the ingestion worker, and the deployment stack as they stand on this date. A 0.y version is initial development under semantic versioning; the public launch waits on the launch gate (staging domain, live email, trademark search).

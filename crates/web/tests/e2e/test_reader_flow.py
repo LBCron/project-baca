@@ -126,11 +126,15 @@ def _guest_record(page: Page, book_id: str) -> dict | None:
     return next((r for r in page.evaluate(GUEST_PROGRESS) if r["book_id"] == book_id), None)
 
 
-def _account_anchor(token: str, book_id: str) -> str | None:
+def _account_progress(token: str, book_id: str) -> dict | None:
     req = urllib.request.Request(f"{API}/progress/active", headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req) as r:
         active = json.load(r)["data"]
-    return active["last_anchor_cfi"] if active and active["book_id"] == book_id else None
+    return active if active and active["book_id"] == book_id else None
+
+
+def _account_anchor(token: str, book_id: str) -> str | None:
+    return (_account_progress(token, book_id) or {}).get("last_anchor_cfi")
 
 
 def _reopens_saved_page(page: Page, book_id: str, saved_anchor) -> None:
@@ -174,6 +178,16 @@ def test_account_reopens_saved_page_when_position_is_slow(new_context, book_with
         context.close()
 
 
+def test_guest_reopens_saved_page_when_chapter_is_slow(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context, delay=[f"/books/{book_id}/chapters/1"])
+    try:
+        _reopens_saved_page(page, book_id, lambda: (_guest_record(page, book_id) or {}).get("last_anchor_cfi"))
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     chapters = api_get(f"/books/{book_id}")["chapters"]
@@ -182,7 +196,7 @@ def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
         _open(page, book_id)
         page.keyboard.press("End")
         page.wait_for_timeout(250)
-        _turn(page, "ArrowRight")
+        _turn(page, "ArrowRight", 2)
         _turn(page, "ArrowLeft")
         page.wait_for_timeout(600)
         page.evaluate("() => window.__release()")
@@ -209,6 +223,126 @@ def test_leaving_inside_the_debounce_saves_the_new_page(new_context, book_with_c
         page.wait_for_timeout(1000)
         assert "/book/" in page.url
         assert (_guest_record(page, book_id) or {}).get("last_anchor_cfi") == expected
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+VISIBLE_PARAGRAPHS = """() => {
+  const v = document.querySelector('.reader-viewport');
+  const box = v.getBoundingClientRect();
+  return [...v.querySelectorAll('.chapter-body p')].flatMap((p, i) =>
+    [...p.getClientRects()].some(r => r.width > 0 && r.right > box.left + 1 && r.left < box.right - 1) ? [i + 1] : []);
+}"""
+
+
+def _resize(page: Page, width: int, height: int) -> list[int]:
+    page.set_viewport_size({"width": width, "height": height})
+    page.wait_for_timeout(500)
+    return page.evaluate(VISIBLE_PARAGRAPHS)
+
+
+def test_resizing_keeps_the_paragraph_being_read(new_context, book_with_chapters: str):
+    context = new_context(viewport={"width": 1280, "height": 800}, reduced_motion="reduce")
+    install_fetch_shim(context, chapters=3)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        _open(page, book_with_chapters)
+        _turn(page, "ArrowRight", 3)
+        reading = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        for width, height in [(800, 1100), (1280, 800), (390, 844), (1280, 800), (1024, 768), (1280, 800)]:
+            shown = _resize(page, width, height)
+        assert reading in shown, f"p-{reading} left the screen, now {shown}"
+
+        _resize(page, 390, 844)
+        _turn(page, "ArrowRight", 2)
+        first = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        _resize(page, 844, 390)
+        assert abs(_resize(page, 390, 844)[0] - first) <= 1, "one rotation and back keeps the paragraph"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_unknown_book_end_never_shows_the_finale(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context)
+    try:
+        page.route(f"{API}/books/{book_id}", lambda route: route.abort())
+        _open(page, book_id)
+        page.keyboard.press("End")
+        _turn(page, "ArrowRight", 2)
+        expect(page.locator(".finale")).to_have_count(0)
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+PENDING_SYNC = """
+() => new Promise(resolve => {
+  const open = indexedDB.open('project_baca_db');
+  open.onsuccess = () => {
+    const db = open.result;
+    if (!db.objectStoreNames.contains('pending_sync_queue')) { resolve([]); return; }
+    const all = db.transaction('pending_sync_queue', 'readonly').objectStore('pending_sync_queue').getAll();
+    all.onsuccess = () => resolve(all.result.map(op => op.update));
+  };
+  open.onerror = () => resolve([]);
+})
+"""
+
+
+def test_unreachable_chapter_is_never_skipped_or_synced(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    chapters = api_get(f"/books/{book_id}")["chapters"]
+    ceiling = 100 / len(chapters) + 0.01
+    tokens = register_reader("unreachable")
+    context, page, errors = _reader_context(new_context)
+    context.add_init_script(
+        f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
+        f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
+    )
+    try:
+        _open(page, book_id)
+        page.route(f"{API}/**", lambda route: route.abort())
+        page.keyboard.press("End")
+        page.wait_for_timeout(250)
+        _turn(page, "ArrowRight", 4)
+        page.wait_for_timeout(1700)
+        assert "chapter=1" in page.url
+        assert "Bab 1 paragraf" in page.inner_text(".chapter-body")
+        expect(page.locator(".reader-title .kicker")).to_have_text("Chapter I")
+        expect(page.locator(".reader .toast")).to_contain_text("could not be loaded")
+        expect(page.locator(".finale:not(.chapter-end)")).to_have_count(0)
+        queued = page.evaluate(PENDING_SYNC)
+        assert queued, "the last page of chapter 1 waits in the queue"
+        assert all(u["chapter_id"] == chapters[0]["id"] and u["completion_percentage"] <= ceiling for u in queued), queued
+
+        page.unroute(f"{API}/**")
+        page.goto(f"{WEB}/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        assert page.evaluate(PENDING_SYNC) == [], "the queue drains when the app opens signed in"
+        saved = _account_progress(tokens["access_token"], book_id)
+        assert saved and saved["chapter_id"] == chapters[0]["id"], saved
+        assert saved["completion_percentage"] <= ceiling and not saved["is_finished"], saved
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("case", ["unknown-book", "api-down"])
+def test_book_that_fails_to_load_never_shows_the_finale(new_context, book_with_chapters: str, case: str):
+    context, page, errors = _reader_context(new_context)
+    try:
+        book_id = "a0000000-0000-4000-8000-0000000000ff" if case == "unknown-book" else book_with_chapters
+        if case == "api-down":
+            page.route(f"{API}/**", lambda route: route.abort())
+        page.goto(f"{WEB}/read/{book_id}?chapter=1", wait_until="domcontentloaded")
+        page.wait_for_selector(".reader-end")
+        _turn(page, "ArrowRight", 2)
+        expect(page.locator(".finale")).to_have_count(0)
         assert errors == [], errors[:3]
     finally:
         context.close()
