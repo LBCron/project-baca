@@ -1072,3 +1072,27 @@ async fn test_catalog_page_plan_reads_the_index_without_a_sort() {
     }
     harness.cleanup().await;
 }
+
+/// Words only the description holds are found: the query is parsed with
+/// the same `simple` config the index uses, not the database's `english`.
+#[tokio::test]
+async fn test_catalog_search_finds_words_only_in_the_description() {
+    let harness = TestHarness::new().await;
+    let theme = format!("Keyset {}", Uuid::new_v4().simple());
+    let book_id =
+        seed_dated_book(&harness, &theme, None, "The running stories of the harbour").await;
+    let req = Request::builder()
+        .uri("/api/v1/books/search?q=running%20stories")
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    assert!(ids.contains(&book_id.to_string().as_str()), "{json}");
+    harness.cleanup().await;
+}

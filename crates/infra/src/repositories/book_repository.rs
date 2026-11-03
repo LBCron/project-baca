@@ -247,7 +247,7 @@ pub async fn search_books(
               OR author %> $1
               OR title % $1
               OR author % $1
-              OR to_tsvector('simple', title || ' ' || author || ' ' || description) @@ plainto_tsquery($1)
+              OR to_tsvector('simple', title || ' ' || author || ' ' || description) @@ plainto_tsquery('simple', $1)
           )
         ORDER BY score DESC, title ASC
         LIMIT $3;
