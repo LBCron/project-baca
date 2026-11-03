@@ -156,3 +156,52 @@ fn test_english_counts_take_the_singular_for_one() {
     assert_eq!(Lang::Id.text_n("chapters_count", 1), "1 bab");
     assert_eq!(Lang::Id.text_n("streak_days", 1), "1 hari berturut-turut");
 }
+
+/// The profile shelf lists every book in progress, newest first, then
+/// downloads not yet started, and never one book twice.
+#[test]
+fn test_shelf_lists_reading_then_downloads_once() {
+    use crate::pages::profile::shelf_entries;
+    use shared::{ActiveProgressDto, BookDetailDto};
+    let (a, b, c) = (
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4(),
+    );
+    let reading = |id: uuid::Uuid, percent: f32| -> ActiveProgressDto {
+        serde_json::from_value(serde_json::json!({
+            "book_id": id, "book_title": "R", "book_author": "", "book_cover_url": "",
+            "chapter_id": uuid::Uuid::new_v4(), "chapter_number": 1, "chapter_title": "",
+            "last_anchor_cfi": "", "completion_percentage": percent, "is_finished": false,
+            "last_read_at": "2026-11-03T00:00:00Z"
+        }))
+        .expect("progress")
+    };
+    let download = |id: uuid::Uuid| -> BookDetailDto {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "title": "D", "author": "", "language": "id", "primary_theme": "",
+            "sub_theme": null, "description": "", "cover_url": "", "total_words": 0,
+            "estimated_reading_minutes": 0, "source_name": "", "source_url": null,
+            "license": "", "publication_year": null, "status": "published", "tags": [],
+            "chapters": []
+        }))
+        .expect("book")
+    };
+    let entries = shelf_entries(
+        &[reading(a, 40.0), reading(b, 10.0)],
+        &[download(b), download(c)],
+    );
+    let shape: Vec<_> = entries
+        .iter()
+        .map(|e| (e.id, e.percent, e.offline))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (a, Some(40.0), false),
+            (b, Some(10.0), true),
+            (c, None, true)
+        ]
+    );
+    assert!(shelf_entries(&[], &[]).is_empty());
+}

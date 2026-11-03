@@ -73,6 +73,7 @@ impl AppState {
         routes::auth::change_password,
         routes::auth::delete_me,
         routes::progress::get_active_progress,
+        routes::progress::list_reading,
         routes::progress::update_progress,
         routes::progress::merge_guest_progress,
         routes::books::list_books,

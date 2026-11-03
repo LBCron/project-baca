@@ -427,6 +427,10 @@ pub async fn active_progress() -> Result<Option<ActiveProgressDto>, String> {
     get("/progress/active").await
 }
 
+pub async fn reading_progress() -> Result<Vec<ActiveProgressDto>, String> {
+    get("/progress/reading").await
+}
+
 pub async fn merge_guest_progress(req: &GuestMergeRequest) -> Result<(), String> {
     let _: serde_json::Value = post("/progress/merge", req).await?;
     Ok(())

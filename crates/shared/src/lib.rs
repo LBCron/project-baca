@@ -610,6 +610,15 @@ pub struct ReadingHeartbeatResponse {
     pub total_xp: i32,
     pub xp_earned: i32,
     pub streak_incremented: bool,
+    /// False when the heartbeat came inside the per-reader interval (two
+    /// open tabs): nothing was logged and the standing is returned as is.
+    /// Absent from a server older than the field, where every 200 credited.
+    #[serde(default = "credited_by_default")]
+    pub credited: bool,
+}
+
+fn credited_by_default() -> bool {
+    true
 }
 
 /// Current streak standing for the profile page; zeros before the first

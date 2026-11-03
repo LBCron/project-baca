@@ -22,7 +22,7 @@ pub fn cover_tint(title: &str) -> &'static str {
 pub fn Cover(
     #[prop(into)] title: String,
     #[prop(into)] cover_url: String,
-    #[prop(optional)] badge: Option<String>,
+    #[prop(default = None)] badge: Option<String>,
 ) -> impl IntoView {
     let tint = cover_tint(&title);
     // The typographic plate always renders beneath the artwork. A CSS

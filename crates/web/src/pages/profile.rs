@@ -3,6 +3,7 @@
 use crate::api;
 use crate::components::auth::friendly_error;
 use crate::components::book_card::Cover;
+use crate::components::confirm::use_confirm;
 use crate::components::icons;
 use crate::components::progress::ProgressBar;
 use crate::components::session::use_session;
@@ -12,7 +13,8 @@ use crate::storage;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{
-    BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDto, SAVED_QUOTES_PAGE,
+    ActiveProgressDto, BookDetailDto, ReadingStreakDto, SavedQuoteResponseDto, UserBadgeDto,
+    SAVED_QUOTES_PAGE,
 };
 
 #[component]
@@ -99,13 +101,15 @@ fn StreakCard(streak: ReadingStreakDto) -> impl IntoView {
     }
 }
 
+/// `version` bumps when something else (a password change) may have signed
+/// devices out, so the list never shows sessions that are gone.
 #[component]
-fn DeviceList() -> impl IntoView {
+fn DeviceList(version: ReadSignal<u32>) -> impl IntoView {
     let (lang, _) = use_lang();
     let session = use_session();
     let toasts = use_toasts();
     let (devices, set_devices) = signal(Vec::<shared::SessionDto>::new());
-    let (others_armed, set_others_armed) = signal(false);
+    let others = use_confirm();
     let reload = move || {
         spawn_local(async move {
             if let Ok(list) = api::my_sessions().await {
@@ -113,7 +117,10 @@ fn DeviceList() -> impl IntoView {
             }
         });
     };
-    reload();
+    Effect::new(move || {
+        version.track();
+        reload();
+    });
     let revoke = move |id: String, current: bool| {
         spawn_local(async move {
             match api::revoke_session(&id).await {
@@ -133,11 +140,9 @@ fn DeviceList() -> impl IntoView {
         });
     };
     let revoke_others = move |_| {
-        if !others_armed.get_untracked() {
-            set_others_armed.set(true);
+        if !others.press() {
             return;
         }
-        set_others_armed.set(false);
         spawn_local(async move {
             match api::revoke_all(true).await {
                 Ok(_) => {
@@ -153,8 +158,8 @@ fn DeviceList() -> impl IntoView {
             <div class="section-head compact">
                 <h3 class="section-title small">{move || lang.get().text("devices")}</h3>
                 {move || (devices.get().len() > 1).then(|| view! {
-                    <button class="btn btn-ghost" on:click=revoke_others>
-                        {move || if others_armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_others_now") }}
+                    <button class="btn btn-ghost" node_ref=others.node on:click=revoke_others>
+                        {move || if others.armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_others_now") }}
                     </button>
                 })}
             </div>
@@ -198,7 +203,8 @@ fn SessionsPanel() -> impl IntoView {
     let (new_pw, set_new_pw) = signal(String::new());
     let (revoke_others, set_revoke_others) = signal(true);
     let (busy, set_busy) = signal(false);
-    let (revoke_armed, set_revoke_armed) = signal(false);
+    let revoke_everywhere = use_confirm();
+    let (devices_version, set_devices_version) = signal(0u32);
     let (password_error, set_password_error) = signal(None::<String>);
 
     let change_password = move |ev: leptos::ev::SubmitEvent| {
@@ -216,6 +222,7 @@ fn SessionsPanel() -> impl IntoView {
                     toasts.info(lang.get_untracked().text("password_changed"));
                     set_current_pw.set(String::new());
                     set_new_pw.set(String::new());
+                    set_devices_version.update(|v| *v += 1);
                 }
                 Err(e) => {
                     let lang = lang.get_untracked();
@@ -231,11 +238,9 @@ fn SessionsPanel() -> impl IntoView {
     };
 
     let revoke_all = move |_| {
-        if !revoke_armed.get_untracked() {
-            set_revoke_armed.set(true);
+        if !revoke_everywhere.press() {
             return;
         }
-        set_revoke_armed.set(false);
         spawn_local(async move {
             match api::revoke_all(false).await {
                 Ok(_) => {
@@ -253,7 +258,7 @@ fn SessionsPanel() -> impl IntoView {
     view! {
         <section id="akun" class="card settings-list">
             <h2 class="section-title">{move || lang.get().text("sessions")}</h2>
-            <DeviceList/>
+            <DeviceList version=devices_version/>
             <form class="settings-list" on:submit=change_password>
                 <label class="field">
                     <span>{move || lang.get().text("current_password")}</span>
@@ -274,13 +279,48 @@ fn SessionsPanel() -> impl IntoView {
                 </div>
             </form>
             <div class="sheet-actions">
-                <button class="btn btn-ghost" on:click=revoke_all>
-                    {move || if revoke_armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_all") }}
+                <button class="btn btn-ghost" node_ref=revoke_everywhere.node on:click=revoke_all>
+                    {move || if revoke_everywhere.armed.get() { lang.get().text("confirm_again") } else { lang.get().text("revoke_all") }}
                 </button>
                 <button class="btn btn-ghost" on:click=move |_| session.sign_out()>{move || lang.get().text("sign_out")}</button>
             </div>
         </section>
     }
+}
+
+/// One book on the profile shelf.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShelfEntry {
+    pub id: uuid::Uuid,
+    pub title: String,
+    pub cover_url: String,
+    /// Reading progress, when the book is in progress.
+    pub percent: Option<f32>,
+    /// Downloaded to this device.
+    pub offline: bool,
+}
+
+/// Books in progress, most recently read first, then downloads not yet
+/// started; a book both in progress and downloaded appears once.
+pub fn shelf_entries(reading: &[ActiveProgressDto], offline: &[BookDetailDto]) -> Vec<ShelfEntry> {
+    let in_progress = reading.iter().map(|p| ShelfEntry {
+        id: p.book_id,
+        title: p.book_title.clone(),
+        cover_url: p.book_cover_url.clone(),
+        percent: Some(p.completion_percentage),
+        offline: offline.iter().any(|b| b.id == p.book_id),
+    });
+    let downloads_only = offline
+        .iter()
+        .filter(|b| !reading.iter().any(|p| p.book_id == b.id))
+        .map(|b| ShelfEntry {
+            id: b.id,
+            title: b.title.clone(),
+            cover_url: b.cover_url.clone(),
+            percent: None,
+            offline: true,
+        });
+    in_progress.chain(downloads_only).collect()
 }
 
 fn badge_title(badge: &UserBadgeDto, lang: Lang) -> String {
@@ -309,7 +349,7 @@ pub fn ProfilePage() -> impl IntoView {
     let (quotes_more, set_quotes_more) = signal(false);
     let (quotes_loading, set_quotes_loading) = signal(false);
     let (offline_books, set_offline_books) = signal(Vec::<BookDetailDto>::new());
-    let (active, set_active) = signal(None::<(uuid::Uuid, f32)>);
+    let (reading, set_reading) = signal(Vec::<ActiveProgressDto>::new());
     let (loaded, set_loaded) = signal(false);
 
     Effect::new(move || {
@@ -327,8 +367,8 @@ pub fn ProfilePage() -> impl IntoView {
                 set_quotes_more.set(saved.len() as u64 >= SAVED_QUOTES_PAGE);
                 set_quotes.set(saved);
             }
-            if let Ok(Some(progress)) = api::active_progress().await {
-                set_active.set(Some((progress.book_id, progress.completion_percentage)));
+            if let Ok(list) = api::reading_progress().await {
+                set_reading.set(list);
             }
             set_loaded.set(true);
         });
@@ -410,35 +450,39 @@ pub fn ProfilePage() -> impl IntoView {
                                 <h2 id="shelf-title" class="section-title">{move || lang.get().text("shelf_title")}</h2>
                                 <span class="form-hint">{move || lang.get().text_with("saved_count", "n", &offline_books.get().len().to_string())}</span>
                             </div>
-                            {move || if !loaded.get() {
-                                view! { <div class="skeleton skeleton-card" aria-busy="true"></div> }.into_any()
-                            } else if offline_books.get().is_empty() {
-                                view! {
-                                    <div class="empty-state compact">
-                                        <img src="/assets/admin-sorting-pigeonholes.webp" alt="" width="640" height="640"/>
-                                        <p class="section-title">{move || lang.get().text("shelf_empty_title")}</p>
-                                        <p>{move || lang.get().text("shelf_empty_body")}</p>
-                                        <a href="/" class="btn btn-primary">{move || lang.get().text("browse_catalog")}</a>
-                                    </div>
-                                }.into_any()
-                            } else {
-                                view! {
-                                    <div class="shelf-grid">
-                                        {offline_books.get().into_iter().map(|b| {
-                                            let href = format!("/book/{}", b.id);
-                                            let book_id = b.id;
-                                            let percent = move || active.get().filter(|(id, _)| *id == book_id).map(|(_, p)| p);
-                                            view! {
-                                                <a href=href class="shelf-item" aria-label=b.title.clone()>
-                                                    <Cover title=b.title.clone() cover_url=b.cover_url.clone() badge=lang.get_untracked().text("saved_offline")/>
-                                                    {move || percent().map(|p| view! {
-                                                        <ProgressBar percent=Signal::derive(move || p) label=Signal::derive(move || lang.get().text("reading_progress")) thin=true/>
-                                                    })}
-                                                </a>
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </div>
-                                }.into_any()
+                            {move || {
+                                let entries = reading.with(|r| offline_books.with(|o| shelf_entries(r, o)));
+                                if !loaded.get() {
+                                    view! { <div class="skeleton skeleton-card" aria-busy="true"></div> }.into_any()
+                                } else if entries.is_empty() && !quotes.with(|q| q.is_empty()) {
+                                    view! { <p class="form-hint">{move || lang.get().text("shelf_none_reading")}</p> }.into_any()
+                                } else if entries.is_empty() {
+                                    view! {
+                                        <div class="empty-state compact">
+                                            <img src="/assets/admin-sorting-pigeonholes.webp" alt="" width="640" height="640"/>
+                                            <p class="section-title">{move || lang.get().text("shelf_empty_title")}</p>
+                                            <p>{move || lang.get().text("shelf_empty_body")}</p>
+                                            <a href="/" class="btn btn-primary">{move || lang.get().text("browse_catalog")}</a>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="shelf-grid">
+                                            {entries.into_iter().map(|b| {
+                                                let href = format!("/book/{}", b.id);
+                                                let badge = b.offline.then(|| lang.get_untracked().text("saved_offline"));
+                                                view! {
+                                                    <a href=href class="shelf-item" aria-label=b.title.clone()>
+                                                        <Cover title=b.title.clone() cover_url=b.cover_url.clone() badge=badge/>
+                                                        {b.percent.map(|p| view! {
+                                                            <ProgressBar percent=Signal::derive(move || p) label=Signal::derive(move || lang.get().text("reading_progress")) thin=true/>
+                                                        })}
+                                                    </a>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    }.into_any()
+                                }
                             }}
                         </section>
 

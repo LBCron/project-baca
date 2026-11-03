@@ -33,7 +33,10 @@ pub use repositories::{
         get_chapter_number, get_offline_bundle, is_fully_ingested, list_books,
         list_books_for_admin, quote_in_text, search_book_text, search_books, set_book_status,
     },
-    progress_repository::{get_active_progress, get_streak, record_heartbeat, update_progress},
+    progress_repository::{
+        get_active_progress, get_streak, heartbeat_standing, list_active_progress,
+        record_heartbeat, update_progress, READING_SHELF_LIMIT,
+    },
     quote_repository::{
         get_chapter_recap, get_saved_quote_by_id, get_tldr_cache, list_saved_quotes, save_quote,
         save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome, QuoteSearchRow,
