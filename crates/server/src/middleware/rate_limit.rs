@@ -45,9 +45,10 @@ pub const AUTH_POLICY: RateLimitPolicy = RateLimitPolicy {
     exhausted_event: None,
 };
 
-/// Refresh and logout per refresh token, revoke-all per account: readers
-/// behind one CGNAT address each have their own bucket, while one session
-/// still cannot hammer the token endpoints.
+/// Refresh and logout per presented refresh token, revoke-all per account:
+/// readers behind one CGNAT address each have their own bucket. Rotation
+/// hands out a new token each time, so the per-address ceiling is what
+/// bounds a single client.
 pub const TOKEN_POLICY: RateLimitPolicy = RateLimitPolicy {
     key_prefix: "rate_limit:token",
     max_requests: 10,
@@ -295,9 +296,9 @@ pub async fn rate_limit_middleware(
     enforce(&state, &[(AUTH_POLICY, subject)], req, next).await
 }
 
-/// Caps refresh, logout and revoke-all by the session they act on (the hash of
-/// the refresh token in the body, or the account of the bearer token), under
-/// a loose per-address ceiling. A body without either counts by address.
+/// Caps refresh, logout and revoke-all by the refresh token in the body (its
+/// hash), or else the account of the bearer token, under a loose per-address
+/// ceiling. A request with neither counts by address.
 pub async fn token_rate_limit_middleware(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,

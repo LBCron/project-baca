@@ -84,8 +84,8 @@ async fn test_auth_full_lifecycle() {
     let (resp, wrong_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     // Named as the otp field, so the client says the code is wrong.
-    assert!(
-        wrong_body["error"]["details"]["otp"].is_array(),
+    assert_eq!(
+        wrong_body["error"]["details"]["otp"][0]["code"], "otp_invalid",
         "{wrong_body}"
     );
 
@@ -2526,7 +2526,7 @@ async fn test_readers_behind_one_address_refresh_without_draining_login() {
 }
 
 #[tokio::test]
-async fn test_one_session_cannot_hammer_refresh() {
+async fn test_one_refresh_token_cannot_hammer_refresh() {
     let harness = TestHarness::new().await;
     let ip = common::unique_ip("198.18");
     let token = infra::generate_refresh_token();
@@ -2609,5 +2609,53 @@ async fn test_access_token_from_before_the_deploy_still_works() {
     assert_eq!(resp.status(), StatusCode::OK);
     let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
     assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    harness.cleanup().await;
+}
+
+/// A session near its absolute end rotates with a short TTL; the reader's
+/// family set must still outlive every other device's token, or revoke-all
+/// and a password change would miss those devices once the set expires.
+#[tokio::test]
+async fn test_short_lived_successor_keeps_the_family_set_alive() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, refresh) = provision_verified_user(&harness, &mut redis, "family", &ip).await;
+    let user_id = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sub;
+    let other_device = infra::generate_refresh_token();
+    infra::store_refresh_token(
+        &mut redis,
+        &other_device,
+        user_id,
+        harness.state.config.auth.refresh_expiry_days,
+        infra::SessionMeta {
+            sid: Uuid::new_v4(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let max_days = harness.state.config.auth.session_max_days as i64;
+    age_session(&mut redis, &refresh, max_days - 1).await;
+
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let family_ttl: i64 = redis
+        .ttl(format!("user_refresh_tokens:{user_id}"))
+        .await
+        .unwrap();
+    let other_ttl: i64 = redis
+        .ttl(format!(
+            "refresh_token:{}",
+            infra::session_id(&other_device)
+        ))
+        .await
+        .unwrap();
+    assert!(
+        family_ttl >= other_ttl - 5,
+        "family set {family_ttl}s dies before the other device's token {other_ttl}s"
+    );
     harness.cleanup().await;
 }

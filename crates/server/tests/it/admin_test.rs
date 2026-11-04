@@ -1355,6 +1355,9 @@ async fn test_upload_measures_titles_in_characters_and_names_the_field() {
         .expect("body");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(json["error"]["code"], "VALIDATION_FAILED", "{json}");
-    assert!(json["error"]["details"]["title"].is_array(), "{json}");
+    assert_eq!(
+        json["error"]["details"]["title"][0]["code"], "length",
+        "{json}"
+    );
     harness.cleanup().await;
 }

@@ -29,6 +29,15 @@ impl From<sea_orm::DbErr> for HttpError {
     }
 }
 
+/// One refused field, shaped like the validator's refusals: the field holds
+/// a list of `{code, message}` so clients choose copy by `code`.
+pub fn field_refusal(field: &str, code: &str, message: String) -> HttpError {
+    HttpError(AppError::ValidationDetailed {
+        details: serde_json::json!({ field: [{ "code": code, "message": message }] }),
+        message,
+    })
+}
+
 impl From<validator::ValidationErrors> for HttpError {
     fn from(err: validator::ValidationErrors) -> Self {
         let mut field_map = serde_json::Map::new();

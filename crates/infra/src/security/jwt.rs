@@ -122,12 +122,13 @@ pub fn verify_access_token(token: &str, secret: &str) -> Result<Claims, AppError
     // shortcut: "JWT" and a missing aud are the tokens issued before typ and
     // aud existed; drop both once every such token has expired (one access
     // lifetime after the deploy).
-    match header.typ.as_deref() {
-        Some(ACCESS_TOKEN_TYPE) | Some("JWT") => {}
-        other => return Err(refuse(format!("unexpected typ {other:?}"))),
-    }
     let mut validation = Validation::default();
     validation.set_audience(&[ACCESS_AUDIENCE]);
+    match header.typ.as_deref() {
+        Some(ACCESS_TOKEN_TYPE) => validation.set_required_spec_claims(&["exp", "aud"]),
+        Some("JWT") => {}
+        other => return Err(refuse(format!("unexpected typ {other:?}"))),
+    }
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -274,10 +275,15 @@ async fn write_session_record(
     record: &SessionRecord,
     ttl_seconds: u64,
 ) {
+    // The record carries the session's sign-in time, which bounds its
+    // lifetime; a lost write is logged, the token itself stays valid.
     if let Ok(json) = serde_json::to_string(record) {
-        let _: Result<(), _> = redis
+        let written: Result<(), _> = redis
             .set_ex(session_key(token_hash), json, ttl_seconds)
             .await;
+        if let Err(e) = written {
+            tracing::warn!(target: "infra::jwt", error = %e, "Session record not written");
+        }
     }
 }
 
@@ -498,7 +504,11 @@ redis.call('SET', 'rotated_refresh_token:' .. ARGV[1], owner, 'EX', ARGV[4])
 redis.call('SET', 'rotation_grace:' .. ARGV[1], ARGV[2], 'EX', ARGV[5])
 redis.call('SET', 'refresh_token:' .. ARGV[3], owner, 'EX', ARGV[4])
 redis.call('SADD', family, ARGV[3])
-redis.call('EXPIRE', family, ARGV[4])
+-- A successor capped by its session's absolute lifetime must not shorten the
+-- set that every other device of the reader is listed in.
+if redis.call('TTL', family) < tonumber(ARGV[4]) then
+  redis.call('EXPIRE', family, ARGV[4])
+end
 if ARGV[6] ~= '' then
   redis.call('SET', 'session:' .. ARGV[3], ARGV[6], 'EX', ARGV[4])
 end
@@ -828,6 +838,8 @@ mod tests {
             ..Header::default()
         };
         assert!(verify_access_token(&signed(&id_token, Some(ACCESS_AUDIENCE)), SECRET).is_err());
+        // Only the legacy "JWT" type may lack an audience.
+        assert!(verify_access_token(&signed(&typed, None), SECRET).is_err());
     }
 
     #[test]
