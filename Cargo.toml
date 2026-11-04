@@ -14,7 +14,8 @@ exclude = ["apps/tauri"]
 version = "0.1.1"
 edition = "2021"
 authors = ["Project Baca Contributors"]
-license = "MIT OR Apache-2.0"
+license-file = "LICENSE"
+publish = false
 repository = "https://github.com/aprxty3/project-baca"
 
 [workspace.dependencies]

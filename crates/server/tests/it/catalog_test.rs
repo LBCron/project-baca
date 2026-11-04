@@ -1336,3 +1336,77 @@ async fn test_reading_shelf_lists_every_unfinished_book() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     harness.cleanup().await;
 }
+
+/// The public book page is plain HTML with the title, author and synopsis,
+/// escaped, never cached without revalidation, and gone once the book is
+/// archived.
+#[tokio::test]
+async fn test_book_page_serves_html_until_archived() {
+    let harness = TestHarness::new().await;
+    let id = common::seed_book(&harness, "published").await;
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::Title,
+            sea_orm::sea_query::Expr::value("Surat <dari> Pelabuhan"),
+        )
+        .col_expr(
+            books::Column::Description,
+            sea_orm::sea_query::Expr::value("Sinopsis \"lengkap\" & jujur"),
+        )
+        .filter(books::Column::Id.eq(id))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+
+    let get_page = || {
+        Request::builder()
+            .uri(format!("/book/{id}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = harness.send_request(get_page()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["cache-control"], "no-cache");
+    assert!(resp.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/html"));
+    let html = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        html.contains("<h1>Surat &lt;dari&gt; Pelabuhan</h1>"),
+        "{html}"
+    );
+    assert!(html.contains("<p>Probe</p>"), "{html}");
+    assert!(
+        html.contains("content=\"Sinopsis &quot;lengkap&quot; &amp; jujur\""),
+        "{html}"
+    );
+    assert!(!html.contains("<dari>"), "{html}");
+
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::Status,
+            sea_orm::sea_query::Expr::value("archived"),
+        )
+        .filter(books::Column::Id.eq(id))
+        .exec(&harness.state.db)
+        .await
+        .unwrap();
+    let resp = harness.send_request(get_page()).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let html = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!html.contains("Pelabuhan"), "{html}");
+    harness.cleanup().await;
+}
