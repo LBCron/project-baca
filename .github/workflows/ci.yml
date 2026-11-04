@@ -60,7 +60,7 @@ jobs:
       - name: Load and stress
         run: make test-load-stress
       - name: Worker unit and live tests
-        run: make worker-install worker-test worker-test-live
+        run: make worker-test worker-test-live
 
   web:
     name: Release bundle and browser tests
