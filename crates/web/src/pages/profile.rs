@@ -217,7 +217,11 @@ fn SessionsPanel() -> impl IntoView {
                 new_password: new_pw.get_untracked(),
                 revoke_other_sessions: Some(revoke_others.get_untracked()),
             };
-            match api::change_password(&req).await {
+            let outcome = match api::common_password_refusal("new_password", &req.new_password) {
+                Some(refusal) => Err(refusal),
+                None => api::change_password(&req).await,
+            };
+            match outcome {
                 Ok(_) => {
                     toasts.info(lang.get_untracked().text("password_changed"));
                     set_current_pw.set(String::new());

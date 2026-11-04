@@ -4,6 +4,32 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-11-05
+
+### Added
+- `GET /book/{id}` on the API origin answers the book page as plain HTML (title, author, year, synopsis) for crawlers and readers without JavaScript; it is rendered per request with `Cache-Control: no-cache`, so an archived book answers 404 on the next request. The edge does not route to it yet.
+- `make prod-migrate` and `make prod-migrate-status` apply and list migrations on the production stack through a one-off `migrate` service. Each migration file runs in one transaction with its `schema_migrations` row under an advisory lock: a file that fails halfway leaves nothing behind, and two runs at once apply each file once. `scripts/migrate.sh` talks to `MIGRATE_DATABASE_URL` when it is set; `make migrate-up` on the dev stack is unchanged.
+
+### Changed
+- The production compose runs the GHCR release images of `ROTARIA_VERSION` for server and worker (`make prod-pull`, no login while the packages are public), so a host can roll back to the previous version; `make prod-build` still builds them from the checkout. Redis keeps an append-only file, so a restart no longer drops recent sessions and refresh tokens; server and worker get 30 s to finish in-flight work on stop instead of 10 s; every service logs through Docker's rotating `local` driver. The bundled MinIO moves behind the `minio` profile. `.env.production.example` gains `ROTARIA_VERSION` and `CLOUDFLARE_TUNNEL_TOKEN`.
+- Object storage moves to Cloudflare R2 with a token that may only read and write objects in `baca-epubs` and `baca-covers`: at boot the server lists one key of each bucket instead of creating it, and creates a bucket only when it is missing. With `APP_ENV=production` the server exits non-zero when a bucket does not answer (for example a wrong secret, logged with the bucket and HTTP status) instead of booting with uploads and covers broken. The worker signs storage requests for `S3_REGION`.
+- CI runs its heavy jobs only where a change needs them: a pull request's merge commit is not tested twice, documentation-only changes skip build and browser jobs, the browser job runs only when the web bundle can change, and a nightly run covers `develop` in full when it moved (`scripts/ci_scope.py`, GUIDE section 5).
+- The home page promises no ads on the reading page instead of no ads at all; ads may appear outside the reader (home, Articles).
+- The code is now proprietary, all rights reserved (`LICENSE`); `LICENSE-MIT` and `LICENSE-APACHE` are gone, every crate is `publish = false`, and the OpenAPI document, release image labels, Tauri bundle, and home footer say so. Versions 0.1.1 and earlier stay under MIT OR Apache-2.0.
+- A session ends at most 90 days after sign-in however often it is used (`SESSION_MAX_DAYS`): a refresh past it answers 401 and the app returns to the guest view, and a rotated refresh token never lives past that point. A session already older than 90 days ends at its first refresh after the upgrade.
+- `/auth/refresh`, `/auth/logout` and `/auth/revoke-all` no longer share the 20-per-minute login bucket: each refresh token (or, for revoke-all, each account) gets 10 per minute under a 300-per-minute ceiling per client, so many readers behind one address refresh without 429.
+- Each field in a validation error's `details` (including a wrong sign-up code, `otp_invalid`, and an overlong curator field, `length`) is a list of `{ "code", "message" }` instead of messages, so a client can choose copy by reason (`common_password`, `length`, `email`). The OpenAPI document gives `PUT /me/password` 403 for a wrong current password, as the server answers, instead of 401.
+
+### Security
+- jsonwebtoken moves from 9.3.1 to 10.4 on the aws-lc-rs backend rustls already links (GHSA-h395-gr6q-cpjc, type confusion on `exp` and `nbf`); a token whose `exp` is not a number is refused.
+- The release bundle's strict-CSP check now catches `<SCRIPT>` in any letter case and an end tag with whitespace (`</script >`), which it used to let through.
+- Release images carry an SBOM and SLSA build provenance, and a GitHub artifact attestation that `gh attestation verify` checks against this repository.
+- CI fails on a new RustSEC advisory, a yanked crate, an unknown source, a non-permissive licence (`cargo deny`, both Cargo workspaces), or a vulnerable worker dependency (`pip-audit`); `make audit` runs the same locally. Dependabot opens weekly grouped updates against `develop`, CodeQL scans Actions, JavaScript, Python, and Rust, and `yoke-derive` moves off a yanked 0.8.3.
+- Vulnerabilities are reported privately through GitHub (`SECURITY.md`, with response and fix targets); the issue chooser points there. Dependabot alerts and security updates are on. Rulesets keep `main` behind a green pull request, stop force pushes and deletion of `main` and `develop`, and let only the owner create release tags, which can never move.
+- CI and release workflows run only third-party actions pinned to a commit SHA, checkouts keep no credentials, and a `zizmor` job fails CI on a medium or high finding. The Trunk download is verified against a pinned SHA-256 per architecture in CI and in the edge image, base images and production compose services are pinned by digest, and two pushes of one release tag no longer run at once.
+- Access tokens carry `typ: at+jwt` and `aud: rotaria-api`; a token for another audience or of another type is refused. Tokens issued before the change keep working until they expire. Every refused access token answers the same 401 message instead of naming the library error (`ExpiredSignature`, `InvalidSignature`).
+- Signup and password change refuse a password from the 10,000 most common (SecLists, any letter case) with 400 `VALIDATION_FAILED`; the web forms refuse it before sending and say "Kata sandi itu terlalu umum dan mudah ditebak", from the server too.
+
 ## [0.1.1] — 2026-11-04
 
 ### Added

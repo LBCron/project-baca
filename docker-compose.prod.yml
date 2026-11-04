@@ -1,14 +1,20 @@
 # ==============================================================================
 # Project Baca — production compose (staging/prod).
 # Usage: cp .env.production.example .env.production
-#        docker compose --env-file .env.production -f docker-compose.prod.yml up --build -d
+#        make prod-pull prod-up      (release images, ROTARIA_VERSION)
+#        make prod-build prod-up     (images built from this checkout)
 # Dev stack stays in docker-compose.yml (host ports 5433/6380/9005/9006).
 # ==============================================================================
 
+# The default json-file driver never rotates, so a small VPS disk fills up.
+x-logging: &logging
+  driver: local
+
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
     restart: always
+    logging: *logging
     environment:
       POSTGRES_USER: baca_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
@@ -21,9 +27,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-off migration runner (make prod-migrate): the migrations and the
+  # runner of the checked-out tag, mounted read-only.
+  migrate:
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+    profiles: ["ops"]
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /work
+    entrypoint: ["bash", "scripts/migrate.sh"]
+    command: ["up"]
+    environment:
+      MIGRATE_DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+    volumes:
+      - ./migrations:/work/migrations:ro
+      - ./scripts/migrate.sh:/work/scripts/migrate.sh:ro
+
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: always
+    logging: *logging
+    # Refresh tokens and sessions live here; RDB alone loses the minutes
+    # since the last snapshot on a restart.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
       - redisdata_prod:/data
     healthcheck:
@@ -32,9 +60,13 @@ services:
       timeout: 5s
       retries: 5
 
+  # Bundled store for a host without R2 (`--profile minio`, with
+  # S3_ENDPOINT=http://minio:9000).
   minio:
-    image: cgr.dev/chainguard/minio:latest
+    profiles: ["minio"]
+    image: cgr.dev/chainguard/minio:latest@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
     restart: always
+    logging: *logging
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:?set S3 keys}
@@ -43,10 +75,15 @@ services:
       - miniodata_prod:/data
 
   server:
+    image: ghcr.io/aprxty3/project-baca/server:${ROTARIA_VERSION:?set ROTARIA_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.server
     restart: always
+    # Compose sends SIGKILL after the grace period (10 s by default); Axum
+    # drains in-flight requests, so a 50 MB admin upload gets 30 s.
+    stop_grace_period: 30s
+    logging: *logging
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,10 +133,13 @@ services:
       start_period: 30s
 
   worker:
+    image: ghcr.io/aprxty3/project-baca/worker:${ROTARIA_VERSION:?set ROTARIA_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.worker
     restart: always
+    stop_grace_period: 30s
+    logging: *logging
     # tini as PID 1 forwards SIGTERM to the worker, which releases its job.
     init: true
     # A runaway parse is killed inside its own cgroup, never Postgres by the
@@ -129,6 +169,7 @@ services:
       args:
         API_BASE_URL: ${API_BASE_URL:-/api/v1}
     restart: always
+    logging: *logging
     depends_on:
       - server
     ports:

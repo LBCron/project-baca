@@ -275,7 +275,7 @@ def test_curator_errors_read_in_the_readers_language(clean_page: Page, tmp_path)
     page.add_init_script("localStorage.setItem('rotaria_lang', 'ID')")
     answers = [
         (400, {"code": "BAD_REQUEST", "message": "Uploaded file is not a ZIP-based EPUB (missing PK signature)"}),
-        (400, {"code": "VALIDATION_FAILED", "message": "Field 'title' exceeds 255 characters", "details": {"title": ["Field 'title' exceeds 255 characters"]}}),
+        (400, {"code": "VALIDATION_FAILED", "message": "Field 'title' exceeds 255 characters", "details": {"title": [{"code": "length", "message": "Field 'title' exceeds 255 characters"}]}}),
         (429, {"code": "RATE_LIMITED", "message": "Rate limit exceeded: at most 5 uploads per 15 minutes. Try again in 857 seconds"}),
     ]
     page.route("**/api/**/admin/books**", lambda r: r.fulfill(

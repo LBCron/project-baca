@@ -274,6 +274,47 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
     );
 }
 
+/// A production process whose object store refuses its credentials exits
+/// non-zero instead of booting with uploads and covers silently broken.
+#[tokio::test]
+async fn test_production_boot_with_wrong_storage_secret_exits_nonzero() {
+    let live = AppConfig::from_env().expect("dev config");
+    let run = tokio::process::Command::new(env!("CARGO_BIN_EXE_server"))
+        .current_dir(std::env::temp_dir())
+        .env_clear()
+        .env("APP_ENV", "production")
+        .env("APP_HOST", "127.0.0.1")
+        .env("APP_PORT", "0")
+        .env("DATABASE_URL", &live.database.url)
+        .env("REDIS_URL", &live.redis.url)
+        .env("S3_ENDPOINT", &live.storage.endpoint)
+        .env("S3_ACCESS_KEY_ID", &live.storage.access_key_id)
+        .env("S3_SECRET_ACCESS_KEY", "not-the-secret")
+        .env("JWT_SECRET", "p".repeat(48))
+        .env("SMTP_SECURITY", "starttls")
+        .env("TRUST_PROXY_HEADERS", "true")
+        .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
+        .env("OTP_HOURLY_BUDGET", "100")
+        .env("AI_DAILY_BUDGET", "5000")
+        .env("RUST_LOG", "server=info")
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("server must exit instead of serving without storage")
+        .expect("server binary must start");
+    assert!(!output.status.success(), "exit status {:?}", output.status);
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        log.contains("Object storage unavailable in production") && log.contains("HTTP 403"),
+        "unexpected boot log: {log}"
+    );
+}
+
 /// An object store that accepts the connection and never answers fails the
 /// cover request within the operation timeout instead of holding it open.
 #[tokio::test]

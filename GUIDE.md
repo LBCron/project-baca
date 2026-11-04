@@ -32,7 +32,7 @@ Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](AR
 | MinIO | `cgr.dev/chainguard/minio` | 9005 (S3 API), 9006 (console) |
 | Mailpit | `axllent/mailpit` | 1025 (SMTP), 8025 (web UI) |
 
-Credentials and bucket names are in `.env.example`. The server creates the buckets at boot.
+Credentials and bucket names are in `.env.example`. At boot the server checks both buckets with a one-key listing and creates one only when it is missing.
 
 ## 3. Configuration (`.env`)
 
@@ -47,6 +47,7 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 | `ARGON2_MAX_CONCURRENCY` | cores, at most 8 | Argon2 hashes and verifies run at once (19 MiB each); a login or signup that waits 2 s for a slot answers 503; 0 is refused |
 | `OTP_HOURLY_BUDGET`, `AI_DAILY_BUDGET` | `0` (off) | ceilings across every client: signup mail per hour (past it signup answers 503 and logs `otp_budget_exhausted` once) and semantic searches per day (past it 429 `AI_RATE_LIMITED` and `ai_budget_exhausted`; guests share a fifth); a value that is not a whole number stops the boot; production compose sets 100 and 5000, and production refuses to boot with either at 0 or without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
+| `SESSION_MAX_DAYS` | `90` | absolute session lifetime from sign-in; refresh past it answers 401 and the reader signs in again |
 | `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS`, `DATABASE_STATEMENT_TIMEOUT_MS` | dev URL, `20`, `5`, `10`, `300`, `5000` | SeaORM pool; Postgres cancels an API statement past the timeout |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `S3_FORCE_PATH_STYLE` | MinIO dev values | any S3-compatible store |
@@ -66,7 +67,9 @@ make worker            # after make worker-install
 
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
-- Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
+- Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`. Each file and its `schema_migrations` row run in one transaction under an advisory lock, so a failed file leaves nothing and two runs at once apply each file once (`make test-migrate`). With `MIGRATE_DATABASE_URL` set, `scripts/migrate.sh` talks to that database with a local `psql` instead of the dev compose service.
+- Production: `make prod-migrate` (and `make prod-migrate-status`) runs the `migrate` service of the `ops` profile, which mounts `migrations/` and the runner of the checked-out tag read-only; check out the release tag first. Run it before the new server takes traffic.
+- Expand/contract: every migration must keep working with the server release before it (add a column nullable or with a default, backfill, and drop the old one only in a later release). Roll back by rolling forward with a new migration; the pre-migration dump is the emergency path. A statement that cannot run inside a transaction (`CREATE INDEX CONCURRENTLY`, which fails under `psql -1`) goes in its own file outside the runner, applied by hand with `psql -f` and recorded with `INSERT INTO schema_migrations`; none exists yet.
 - Paragraph index and quote anchors for books ingested before them: `make backfill-paragraphs` (production `make prod-backfill-paragraphs`), one book per transaction, idempotent, no embeddings paid. Run it after migrating and before the new server takes traffic, or in-book search finds nothing in those books.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
 
@@ -85,6 +88,7 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | Target | Scope | Needs |
 |---|---|---|
 | `make check` | `cargo check` native and wasm, clippy with `-D warnings`, `fmt --check` | nothing |
+| `make audit` | `cargo deny` (advisories, bans, sources, licences per `deny.toml`) on both Cargo workspaces, `pip-audit` on the worker | `cargo-deny`, `uv` |
 | `make test-domain` | 16 pure domain tests | nothing |
 | `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (31 + 6) | nothing |
 | `make test-<module>` | one module of `crates/server/tests/it`: smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability | `db-up` |
@@ -96,6 +100,17 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | `make test-web` | `cargo test -p web --lib` plus Playwright e2e, component, integration | `db-up`, API on :8080, web on :3000, Mailpit |
 | `make test-web-full` | builds the release bundle into `target/web-release` (size budget, no inline script), then adds visual goldens, axe a11y, and Firefox smoke | same; serve the release bundle with `make dev-web-release` |
 | `make test-all` | `cargo test --workspace` (includes performance and load) | `db-up` |
+
+When CI runs the heavy jobs (`check`, `backend`, `web`; decided by `scripts/ci_scope.py`, whose `--self-test` runs first in the `changes` job):
+
+| Run | Heavy jobs |
+|---|---|
+| Pull request to `main`, push to `main`, manual run | all |
+| Pull request to `develop`, direct push to `develop` | `check` and `backend` unless only `*.md` changed; `web` only when `crates/web`, `crates/shared`, `Cargo.toml`, `Cargo.lock`, `.github/`, `Makefile`, or `scripts/trunk.sha256` changed |
+| Push to `develop` of a pull request's merge commit | none (the pull request already ran them) |
+| Nightly 02:00 WIB on `develop` | all, when `develop` moved in the last 25 hours |
+
+`zizmor`, `audit`, and `changes` run every time. Skipped jobs report as skipped, which satisfies required checks.
 
 Notes:
 
@@ -109,7 +124,7 @@ Notes:
 
 - Port collisions: the dev stack uses 5433, 6380, 9005, 9006, 1025, 8025.
 - OTP mail never arrives: set `SMTP_SECURITY=none`; signup answers 502 while SMTP is unreachable.
-- Uploads fail with 500: MinIO is unreachable; buckets are created at boot.
+- Uploads fail with 500: object storage is unreachable. In development the server boots without it; in production it refuses to boot and logs `Object storage unavailable in production` with the bucket and HTTP status (403: wrong key or a token without access to that bucket; a missing bucket is created only when the key may create buckets, which an R2 Object Read and Write token may not).
 - Worker never consumes: check `XINFO GROUPS stream:epub_ingestion`; the group is created when the worker starts.
 - Frontend change not visible: Trunk watches `src`, `style`, `index.html`, `sw.js`, `boot.js`, the manifest, `icons`, and `fonts` of `crates/web`; a `crates/shared` change needs a Trunk restart.
 
@@ -125,8 +140,15 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 | Workflow | Trigger | Runs |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
-| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests, nightly, manual (heavy jobs per section 5) | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
+| `.github/workflows/codeql.yml` | pull requests to `main` or `develop`, push to `main`, Mondays, manual | CodeQL for Actions, JavaScript, Python, and Rust (`build-mode: none`); the generated Kotlin of the Tauri Android shell is left out because it cannot be built on the runner |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+
+Production host: a shallow clone of the deployed tag in `/srv/rotaria/repo` (`git clone --depth 1 --branch vX.Y.Z https://github.com/aprxty3/project-baca.git /srv/rotaria/repo`) holds the compose file, `migrations/`, and `.env.production` with `ROTARIA_VERSION=X.Y.Z`. Deploy: check out the new tag (`git fetch --depth 1 origin tag vX.Y.Z && git checkout vX.Y.Z`), set `ROTARIA_VERSION`, then `make prod-pull prod-migrate prod-up`. Roll back by setting the previous tag and version and running `make prod-pull prod-up`; migrations are expand/contract, so the older server runs on the newer schema. The repository and the GHCR packages are public, so clone and pull need no credentials. When the repository turns private before the beta, the host gets a read-only deploy key for the clone and `docker login ghcr.io` with a `read:packages` token used only by that host, and the packages are republished as private. `make prod-build` builds the same images from the checkout instead, tagged with `ROTARIA_VERSION`.
+
+Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and third-party production `image:` carries an `@sha256:` digest (the project's own images go by release tag). Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
+
+Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, Dependabot version updates open one grouped minor-and-patch pull request per ecosystem against `develop` each Monday (releases at least 7 days old), CodeQL (`.github/workflows/codeql.yml`: Actions, JavaScript, Python, Rust without a build; on pull requests, pushes to `main`, and Mondays) uploads to the Security tab, and an advisory exception in `deny.toml` carries its reason and review date, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).
 
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
@@ -142,7 +164,16 @@ Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y`
 Cutting a release:
 
 1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
-2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
+2. `python3 scripts/release_notes.py --check-version`, then a pull request from `develop` to `main`, merged once CI is green.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+Verifying a released image (anonymous pull works while the packages are public; ADR-40):
+
+```bash
+gh attestation verify oci://ghcr.io/aprxty3/project-baca/server:X.Y.Z -R aprxty3/project-baca
+docker buildx imagetools inspect ghcr.io/aprxty3/project-baca/server:X.Y.Z --format '{{json .SBOM}}'
+```
+
+Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.
 
 The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.

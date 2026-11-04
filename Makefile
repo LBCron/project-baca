@@ -77,6 +77,10 @@ migrate-status:
 	@echo "Checking database migration history..."
 	@./scripts/migrate.sh status
 
+# Failed, concurrent and repeated runs of the migration runner on a throwaway database.
+test-migrate:
+	@./scripts/test_migrate.sh
+
 # Test suites
 test: test-all
 
@@ -171,6 +175,13 @@ check:
 	@echo "Checking formatting..."
 	@cargo fmt --check
 
+# Supply chain: advisories, bans, sources, and licences of both Cargo
+# workspaces (deny.toml), then the worker's Python dependencies.
+audit:
+	@cargo deny check advisories bans sources licenses
+	@cargo deny --manifest-path apps/tauri/Cargo.toml --config deny.toml check advisories bans sources licenses
+	@uvx pip-audit -r python_worker/requirements.txt
+
 # Ingestion worker
 worker-install:
 	@echo "Creating worker venv and installing dependencies..."
@@ -247,6 +258,10 @@ prod-build:
 	@echo "Building production images..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml build
 
+# Server and worker images of ROTARIA_VERSION from GHCR (public, no login).
+prod-pull:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml pull
+
 prod-up:
 	@echo "Starting production stack..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d
@@ -254,6 +269,14 @@ prod-up:
 prod-down:
 	@echo "Stopping production stack..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml down
+
+# Pending migrations against the production database, each in its own
+# transaction under an advisory lock; safe to rerun and to run twice at once.
+prod-migrate:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate up
+
+prod-migrate-status:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate status
 
 prod-logs:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml logs -f
@@ -281,5 +304,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

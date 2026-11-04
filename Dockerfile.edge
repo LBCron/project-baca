@@ -3,15 +3,21 @@
 # The API shares the site's origin, so the default relative base lets one
 # image serve any DOMAIN; override with --build-arg API_BASE_URL=... when the
 # API lives elsewhere.
-FROM rust:1.94-bookworm AS webbuild
+FROM rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS webbuild
 # Prebuilt Trunk, pinned like CI (.github/workflows/ci.yml): compiling the
-# latest one needs a newer rustc than this image and takes minutes.
+# latest one needs a newer rustc than this image and takes minutes. The
+# tarball is checked against scripts/trunk.sha256 for either build arch.
 ARG TRUNK_VERSION=v0.22.1
+COPY scripts/trunk.sha256 /tmp/trunk/
 RUN apt-get update && apt-get install -y --no-install-recommends brotli \
     && rm -rf /var/lib/apt/lists/* \
     && rustup target add wasm32-unknown-unknown \
-    && curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-$(uname -m)-unknown-linux-gnu.tar.gz" \
-       | tar -xz -C /usr/local/bin
+    && cd /tmp/trunk \
+    && tarball="trunk-$(uname -m)-unknown-linux-gnu.tar.gz" \
+    && curl -sSfLO "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/${tarball}" \
+    && grep -F "  ${tarball}" trunk.sha256 | sha256sum -c - \
+    && tar -xzf "${tarball}" -C /usr/local/bin \
+    && rm -rf /tmp/trunk
 WORKDIR /app
 COPY Cargo.toml Cargo.lock Makefile ./
 COPY crates ./crates
@@ -21,6 +27,6 @@ ARG API_BASE_URL=/api/v1
 ENV API_BASE_URL=$API_BASE_URL
 RUN make build-web-edge
 
-FROM caddy:2-alpine
+FROM caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
 COPY Caddyfile.prod /etc/caddy/Caddyfile
 COPY --from=webbuild /app/crates/web/dist /srv/web

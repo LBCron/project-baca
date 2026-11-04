@@ -170,7 +170,10 @@ pub struct SignupRequest {
     #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
-    #[validate(length(min = 8, max = 128, message = "Password must be at least 8 characters"))]
+    #[validate(
+        length(min = 8, max = 128, message = "Password must be at least 8 characters"),
+        custom(function = "validate_not_common_password")
+    )]
     #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub password: String,
 }
@@ -278,17 +281,39 @@ pub fn validate_avatar_url(url: &str) -> Result<(), validator::ValidationError> 
     Ok(())
 }
 
+/// The SecLists 10k most common passwords (MIT), lowercased and sorted, kept
+/// to those of 8 characters or more: shorter ones already fail the length rule.
+const COMMON_PASSWORDS: &str = include_str!("common_passwords.txt");
+
+/// Validator code of a password found in the common list; clients choose
+/// their copy by it.
+pub const COMMON_PASSWORD: &str = "common_password";
+
+/// Refuses a password from the common list, whatever its case.
+pub fn validate_not_common_password(password: &str) -> Result<(), validator::ValidationError> {
+    let lowered = password.to_lowercase();
+    if COMMON_PASSWORDS.lines().any(|common| common == lowered) {
+        let mut err = validator::ValidationError::new(COMMON_PASSWORD);
+        err.message = Some("Password is too common".into());
+        return Err(err);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChangePasswordRequest {
     #[validate(length(min = 1, message = "Current password is required"))]
     #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub current_password: String,
-    #[validate(length(
-        min = 8,
-        max = 128,
-        message = "New password must be at least 8 characters"
-    ))]
+    #[validate(
+        length(
+            min = 8,
+            max = 128,
+            message = "New password must be at least 8 characters"
+        ),
+        custom(function = "validate_not_common_password")
+    )]
     #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub new_password: String,
     #[serde(default)]
@@ -955,5 +980,43 @@ mod tests {
             text_hit_snippet("  satu \n\n  dua   tiga ", "dua").as_deref(),
             Some("satu dua tiga")
         );
+    }
+
+    #[test]
+    fn common_passwords_are_refused_in_any_case() {
+        for password in ["password", "12345678", "qwerty123", "PassWord", "QWERTY123"] {
+            let err = validate_not_common_password(password).unwrap_err();
+            assert_eq!(err.code, COMMON_PASSWORD, "{password}");
+        }
+        assert!(validate_not_common_password("pelabuhan teluk senja").is_ok());
+    }
+
+    #[test]
+    fn signup_and_password_change_name_the_common_password_code() {
+        let signup = SignupRequest {
+            display_name: "Pembaca".into(),
+            email: "pembaca@example.com".into(),
+            password: "Password".into(),
+        };
+        let errors = signup.validate().unwrap_err();
+        assert_eq!(errors.field_errors()["password"][0].code, COMMON_PASSWORD);
+        let change = ChangePasswordRequest {
+            current_password: "lama sekali".into(),
+            new_password: "qwerty123".into(),
+            revoke_other_sessions: None,
+        };
+        let errors = change.validate().unwrap_err();
+        assert_eq!(
+            errors.field_errors()["new_password"][0].code,
+            COMMON_PASSWORD
+        );
+    }
+
+    #[test]
+    fn the_common_list_is_lowercase_sorted_and_long_enough() {
+        let list: Vec<&str> = COMMON_PASSWORDS.lines().collect();
+        assert!(list.len() > 2000);
+        assert!(list.windows(2).all(|w| w[0] < w[1]));
+        assert!(list.iter().all(|p| p.len() >= 8 && *p == p.to_lowercase()));
     }
 }

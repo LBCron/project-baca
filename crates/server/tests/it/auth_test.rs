@@ -84,8 +84,8 @@ async fn test_auth_full_lifecycle() {
     let (resp, wrong_body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     // Named as the otp field, so the client says the code is wrong.
-    assert!(
-        wrong_body["error"]["details"]["otp"].is_array(),
+    assert_eq!(
+        wrong_body["error"]["details"]["otp"][0]["code"], "otp_invalid",
         "{wrong_body}"
     );
 
@@ -2381,5 +2381,281 @@ async fn test_wrong_current_password_is_403_and_keeps_the_session() {
     assert_eq!(counted, 1);
     let resp = harness.send_request(me_req(&access)).await;
     assert_eq!(resp.status(), StatusCode::OK, "the session is untouched");
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_common_new_password_is_refused_and_keeps_the_old_one() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "pwdcommon", &ip).await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "current_password": "NotMyPassword123!", "new_password": "PassWord" })
+                .to_string(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+    assert_eq!(
+        body["error"]["details"]["new_password"][0]["code"],
+        "common_password"
+    );
+    let resp = harness.send_request(me_req(&access)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "the session is untouched");
+    harness.cleanup().await;
+}
+
+/// Moves the sign-in time of the session behind `refresh` back by `days`,
+/// keeping the record's TTL.
+async fn age_session(redis: &mut infra::RedisConn, refresh: &str, days: i64) {
+    let key = format!("session:{}", infra::session_id(refresh));
+    let json: String = redis.get(&key).await.expect("session record");
+    let mut record: Value = serde_json::from_str(&json).unwrap();
+    let created = record["created_at"].as_i64().unwrap();
+    record["created_at"] = Value::from(created - days * 86_400);
+    let _: () = redis::cmd("SET")
+        .arg(&key)
+        .arg(record.to_string())
+        .arg("KEEPTTL")
+        .query_async(redis)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_refresh_past_the_absolute_lifetime_ends_the_session() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (_, refresh) = provision_verified_user(&harness, &mut redis, "maxage", &ip).await;
+    let max_days = harness.state.config.auth.session_max_days as i64;
+    age_session(&mut redis, &refresh, max_days + 1).await;
+
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{body}");
+    let live: bool = redis
+        .exists(format!("session:{}", infra::session_id(&refresh)))
+        .await
+        .unwrap();
+    assert!(!live, "the session record is gone");
+    let (resp, _) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "no second chance");
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_successor_never_outlives_the_absolute_lifetime() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (_, refresh) = provision_verified_user(&harness, &mut redis, "maxttl", &ip).await;
+    let max_days = harness.state.config.auth.session_max_days as i64;
+    // One day of the absolute lifetime left, far less than a refresh lifetime.
+    age_session(&mut redis, &refresh, max_days - 1).await;
+
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let successor = body["data"]["refresh_token"].as_str().unwrap();
+    let hash = infra::session_id(successor);
+    for key in [format!("refresh_token:{hash}"), format!("session:{hash}")] {
+        let ttl: i64 = redis.ttl(&key).await.unwrap();
+        assert!(ttl > 0 && ttl <= 86_400, "{key} TTL {ttl}");
+    }
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_readers_behind_one_address_refresh_without_draining_login() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "cgnat", &ip).await;
+    let user_id = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sub;
+    let shared_ip = common::unique_ip("198.18");
+    for n in 0..100 {
+        let token = infra::generate_refresh_token();
+        infra::store_refresh_token(
+            &mut redis,
+            &token,
+            user_id,
+            14,
+            infra::SessionMeta {
+                sid: Uuid::new_v4(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (resp, body) = harness
+            .send_json_request(refresh_req(&token, &shared_ip))
+            .await;
+        assert_eq!(resp.status(), StatusCode::OK, "refresh {n}: {body}");
+    }
+    for n in 1..=21 {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(common::CLIENT_IP_HEADER, &shared_ip)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "email": format!("nobody_{}@example.com", Uuid::new_v4()),
+                    "password": "WrongGuess123!"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let resp = harness.send_request(req).await;
+        let expected = if n <= 20 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::TOO_MANY_REQUESTS
+        };
+        assert_eq!(resp.status(), expected, "login {n}");
+    }
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_one_refresh_token_cannot_hammer_refresh() {
+    let harness = TestHarness::new().await;
+    let ip = common::unique_ip("198.18");
+    let token = infra::generate_refresh_token();
+    let mut last = StatusCode::OK;
+    for _ in 0..11 {
+        last = harness
+            .send_request(refresh_req(&token, &ip))
+            .await
+            .status();
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+    let fresh_ip = common::unique_ip("198.18");
+    let other = harness
+        .send_request(refresh_req(&infra::generate_refresh_token(), &fresh_ip))
+        .await;
+    assert_eq!(
+        other.status(),
+        StatusCode::UNAUTHORIZED,
+        "another session is unaffected"
+    );
+}
+
+#[tokio::test]
+async fn test_access_token_for_another_audience_gets_a_generic_401() {
+    let harness = TestHarness::new().await;
+    let now = chrono::Utc::now().timestamp() as usize;
+    let claims = infra::Claims {
+        sub: Uuid::new_v4(),
+        email: "reader@example.com".into(),
+        role: "reader".into(),
+        exp: now + 600,
+        iat: now,
+        jti: Uuid::new_v4(),
+        sid: Some(Uuid::new_v4()),
+        aud: Some("another-api".into()),
+    };
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(harness.state.config.jwt_secret().as_bytes()),
+    )
+    .unwrap();
+    let (resp, body) = harness.send_json_request(me_req(&token)).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["message"], "Invalid or expired access token");
+    let expired = infra::generate_access_token_issued_at(
+        Uuid::new_v4(),
+        "reader@example.com",
+        "reader",
+        harness.state.config.jwt_secret(),
+        1,
+        now - 3600,
+    )
+    .unwrap();
+    let (_, body) = harness.send_json_request(me_req(&expired)).await;
+    assert!(
+        !body.to_string().contains("ExpiredSignature"),
+        "the library error stays in the log: {body}"
+    );
+}
+
+/// An access token issued before tokens carried `aud` and `typ` keeps
+/// working until it expires, so a deploy signs no reader out.
+#[tokio::test]
+async fn test_access_token_from_before_the_deploy_still_works() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, refresh) = provision_verified_user(&harness, &mut redis, "legacy", &ip).await;
+    let mut claims =
+        infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
+    claims.aud = None;
+    let legacy = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(harness.state.config.jwt_secret().as_bytes()),
+    )
+    .unwrap();
+    let resp = harness.send_request(me_req(&legacy)).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    harness.cleanup().await;
+}
+
+/// A session near its absolute end rotates with a short TTL; the reader's
+/// family set must still outlive every other device's token, or revoke-all
+/// and a password change would miss those devices once the set expires.
+#[tokio::test]
+async fn test_short_lived_successor_keeps_the_family_set_alive() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, refresh) = provision_verified_user(&harness, &mut redis, "family", &ip).await;
+    let user_id = infra::verify_access_token(&access, harness.state.config.jwt_secret())
+        .unwrap()
+        .sub;
+    let other_device = infra::generate_refresh_token();
+    infra::store_refresh_token(
+        &mut redis,
+        &other_device,
+        user_id,
+        harness.state.config.auth.refresh_expiry_days,
+        infra::SessionMeta {
+            sid: Uuid::new_v4(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let max_days = harness.state.config.auth.session_max_days as i64;
+    age_session(&mut redis, &refresh, max_days - 1).await;
+
+    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let family_ttl: i64 = redis
+        .ttl(format!("user_refresh_tokens:{user_id}"))
+        .await
+        .unwrap();
+    let other_ttl: i64 = redis
+        .ttl(format!(
+            "refresh_token:{}",
+            infra::session_id(&other_device)
+        ))
+        .await
+        .unwrap();
+    assert!(
+        family_ttl >= other_ttl - 5,
+        "family set {family_ttl}s dies before the other device's token {other_ttl}s"
+    );
     harness.cleanup().await;
 }

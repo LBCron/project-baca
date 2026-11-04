@@ -1,11 +1,18 @@
 //! JWT token creation, verification, and Redis refresh token rotation.
 
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{decode, decode_header, encode, DecodingKey, EncodingKey, Header, Validation};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use shared::AppError;
 use uuid::Uuid;
+
+/// Audience of every access token this API issues and accepts.
+pub const ACCESS_AUDIENCE: &str = "rotaria-api";
+
+/// JOSE `typ` of an access token (RFC 9068), so it cannot pass for another
+/// kind of JWT signed with the same key.
+pub const ACCESS_TOKEN_TYPE: &str = "at+jwt";
 
 /// JWT token payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +33,9 @@ pub struct Claims {
     /// device out revokes every access token carrying it.
     #[serde(default)]
     pub sid: Option<Uuid>,
+    /// [`ACCESS_AUDIENCE`]; absent only on tokens issued before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
 }
 
 /// Generates a signed JWT access token with the specified expiration in minutes
@@ -84,10 +94,15 @@ pub fn issue_access_token(
         iat: issued_at,
         jti,
         sid: Some(sid),
+        aud: Some(ACCESS_AUDIENCE.to_string()),
+    };
+    let header = Header {
+        typ: Some(ACCESS_TOKEN_TYPE.to_string()),
+        ..Header::default()
     };
 
     encode(
-        &Header::default(),
+        &header,
         &claims,
         &EncodingKey::from_secret(secret.as_bytes()),
     )
@@ -95,15 +110,32 @@ pub fn issue_access_token(
     .map_err(|e| AppError::Internal(format!("Failed to sign JWT access token: {e}")))
 }
 
-/// Verifies and decodes a signed JWT access token
+/// Verifies and decodes a signed JWT access token. A wrong `aud` or `typ` is
+/// refused; the client hears one generic reason and the library's detail
+/// stays in the debug log.
 pub fn verify_access_token(token: &str, secret: &str) -> Result<Claims, AppError> {
+    let refuse = |reason: String| {
+        tracing::debug!(target: "infra::jwt", reason, "Access token refused");
+        AppError::Unauthorized("Invalid or expired access token".to_string())
+    };
+    let header = decode_header(token).map_err(|e| refuse(e.to_string()))?;
+    // shortcut: "JWT" and a missing aud are the tokens issued before typ and
+    // aud existed; drop both once every such token has expired (one access
+    // lifetime after the deploy).
+    let mut validation = Validation::default();
+    validation.set_audience(&[ACCESS_AUDIENCE]);
+    match header.typ.as_deref() {
+        Some(ACCESS_TOKEN_TYPE) => validation.set_required_spec_claims(&["exp", "aud"]),
+        Some("JWT") => {}
+        other => return Err(refuse(format!("unexpected typ {other:?}"))),
+    }
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::default(),
+        &validation,
     )
     .map(|data| data.claims)
-    .map_err(|e| AppError::Unauthorized(format!("Invalid or expired access token: {e}")))
+    .map_err(|e| refuse(e.to_string()))
 }
 
 /// Blacklists an access token by its JTI in Redis until expiration
@@ -243,10 +275,15 @@ async fn write_session_record(
     record: &SessionRecord,
     ttl_seconds: u64,
 ) {
+    // The record carries the session's sign-in time, which bounds its
+    // lifetime; a lost write is logged, the token itself stays valid.
     if let Ok(json) = serde_json::to_string(record) {
-        let _: Result<(), _> = redis
+        let written: Result<(), _> = redis
             .set_ex(session_key(token_hash), json, ttl_seconds)
             .await;
+        if let Err(e) = written {
+            tracing::warn!(target: "infra::jwt", error = %e, "Session record not written");
+        }
     }
 }
 
@@ -303,13 +340,21 @@ pub async fn store_refresh_token(
 }
 
 /// Points the session record of a refresh token at the access token just
-/// issued with it and marks it seen now.
-pub async fn touch_session(redis: &mut crate::RedisConn, token: &str, jti: Uuid, expiry_days: u64) {
+/// issued with it and marks it seen now. The record keeps its TTL, which
+/// rotation already capped at the session's absolute lifetime.
+pub async fn touch_session(redis: &mut crate::RedisConn, token: &str, jti: Uuid) {
     let hash = token_hash(token);
     if let Some(mut record) = read_session_record(redis, &hash).await {
         record.jti = jti;
         record.last_seen_at = Utc::now().timestamp();
-        write_session_record(redis, &hash, &record, expiry_days * 86400).await;
+        if let Ok(json) = serde_json::to_string(&record) {
+            let _: Result<(), _> = redis::cmd("SET")
+                .arg(session_key(&hash))
+                .arg(json)
+                .arg("KEEPTTL")
+                .query_async(redis)
+                .await;
+        }
     }
 }
 
@@ -395,6 +440,12 @@ pub async fn revoke_other_sessions_keeping(
     Ok(revoked)
 }
 
+/// Id of the session a refresh token belongs to (its SHA-256), as the
+/// session list names it; also keys the session record and rate limits.
+pub fn session_id(token: &str) -> String {
+    token_hash(token)
+}
+
 fn token_hash(token: &str) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(token.as_bytes())
@@ -435,6 +486,9 @@ pub enum RefreshOutcome {
     },
     /// A token rotated out before the grace window was presented again.
     Replayed { user_id: Uuid },
+    /// A live token whose session is older than the absolute lifetime; it was
+    /// not rotated and the caller ends the session.
+    Expired { user_id: Uuid },
 }
 
 /// Consumes the old token and stores its successor, with the successor's
@@ -450,7 +504,11 @@ redis.call('SET', 'rotated_refresh_token:' .. ARGV[1], owner, 'EX', ARGV[4])
 redis.call('SET', 'rotation_grace:' .. ARGV[1], ARGV[2], 'EX', ARGV[5])
 redis.call('SET', 'refresh_token:' .. ARGV[3], owner, 'EX', ARGV[4])
 redis.call('SADD', family, ARGV[3])
-redis.call('EXPIRE', family, ARGV[4])
+-- A successor capped by its session's absolute lifetime must not shorten the
+-- set that every other device of the reader is listed in.
+if redis.call('TTL', family) < tonumber(ARGV[4]) then
+  redis.call('EXPIRE', family, ARGV[4])
+end
 if ARGV[6] ~= '' then
   redis.call('SET', 'session:' .. ARGV[3], ARGV[6], 'EX', ARGV[4])
 end
@@ -476,24 +534,38 @@ pub async fn validate_and_rotate_refresh_token(
     redis: &mut crate::RedisConn,
     old_token: &str,
     expiry_days: u64,
+    session_max_days: u64,
 ) -> Result<RefreshOutcome, AppError> {
     let old_hash = token_hash(old_token);
     let new_token = generate_refresh_token();
     let new_hash = token_hash(&new_token);
-    let ttl_seconds = expiry_days * 86400;
+    let previous = read_session_record(redis, &old_hash).await;
+    let now = Utc::now().timestamp();
+    let session_left = previous
+        .as_ref()
+        .map(|record| record.created_at + (session_max_days * 86400) as i64 - now);
+    if let (Some(record), Some(left)) = (&previous, session_left) {
+        if left <= 0 {
+            return Ok(RefreshOutcome::Expired {
+                user_id: record.user_id,
+            });
+        }
+    }
+    // A successor never outlives the session's absolute lifetime.
+    let ttl_seconds = session_left.map_or(expiry_days * 86400, |left| {
+        (expiry_days * 86400).min(left as u64)
+    });
     // The device and its session stay the same across a rotation; only the
     // token changes.
-    let successor = read_session_record(redis, &old_hash)
-        .await
-        .map(|previous| SessionRecord {
-            last_seen_at: Utc::now().timestamp(),
-            sid: if previous.sid.is_nil() {
-                Uuid::new_v4()
-            } else {
-                previous.sid
-            },
-            ..previous
-        });
+    let successor = previous.map(|previous| SessionRecord {
+        last_seen_at: Utc::now().timestamp(),
+        sid: if previous.sid.is_nil() {
+            Uuid::new_v4()
+        } else {
+            previous.sid
+        },
+        ..previous
+    });
     let successor_json = successor
         .as_ref()
         .and_then(|record| serde_json::to_string(record).ok())
@@ -718,5 +790,129 @@ mod tests {
         let token = generate_refresh_token();
         assert!(token.starts_with("rt_"));
         assert!(token.len() > 30);
+    }
+
+    const SECRET: &str = "super-secret-test-jwt-key-minimum-32-chars!";
+
+    fn signed(header: &Header, aud: Option<&str>) -> String {
+        let now = Utc::now().timestamp() as usize;
+        let claims = Claims {
+            sub: Uuid::new_v4(),
+            email: "reader@example.com".into(),
+            role: "reader".into(),
+            exp: now + 600,
+            iat: now,
+            jti: Uuid::new_v4(),
+            sid: Some(Uuid::new_v4()),
+            aud: aud.map(str::to_string),
+        };
+        encode(
+            header,
+            &claims,
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn access_tokens_carry_audience_and_type() {
+        let token =
+            generate_access_token(Uuid::new_v4(), "r@example.com", "reader", SECRET, 15).unwrap();
+        assert_eq!(
+            decode_header(&token).unwrap().typ.as_deref(),
+            Some(ACCESS_TOKEN_TYPE)
+        );
+        let claims = verify_access_token(&token, SECRET).unwrap();
+        assert_eq!(claims.aud.as_deref(), Some(ACCESS_AUDIENCE));
+    }
+
+    #[test]
+    fn a_token_for_another_audience_or_type_is_refused() {
+        let typed = Header {
+            typ: Some(ACCESS_TOKEN_TYPE.into()),
+            ..Header::default()
+        };
+        assert!(verify_access_token(&signed(&typed, Some("other-api")), SECRET).is_err());
+        let id_token = Header {
+            typ: Some("id+jwt".into()),
+            ..Header::default()
+        };
+        assert!(verify_access_token(&signed(&id_token, Some(ACCESS_AUDIENCE)), SECRET).is_err());
+        // Only the legacy "JWT" type may lack an audience.
+        assert!(verify_access_token(&signed(&typed, None), SECRET).is_err());
+    }
+
+    #[test]
+    fn a_token_issued_before_audience_existed_still_verifies() {
+        assert!(verify_access_token(&signed(&Header::default(), None), SECRET).is_ok());
+    }
+
+    #[test]
+    fn a_token_whose_exp_is_not_a_number_is_refused() {
+        // A non-numeric exp must never read as "absent", and a non-numeric
+        // nbf must not rescue an expired token, for both header types. nbf
+        // itself is not validated: no token here carries one.
+        let now = Utc::now().timestamp();
+        let sign = |header: &Header, extra: serde_json::Value| {
+            let mut claims = serde_json::json!({
+                "sub": Uuid::new_v4(), "email": "r@example.com", "role": "reader",
+                "iat": now, "jti": Uuid::new_v4(), "aud": ACCESS_AUDIENCE,
+            });
+            claims
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            encode(
+                header,
+                &claims,
+                &EncodingKey::from_secret(SECRET.as_bytes()),
+            )
+            .unwrap()
+        };
+        let typed = Header {
+            typ: Some(ACCESS_TOKEN_TYPE.into()),
+            ..Header::default()
+        };
+        for header in [Header::default(), typed] {
+            for extra in [
+                serde_json::json!({ "exp": "9999999999" }),
+                serde_json::json!({ "exp": now - 3600, "nbf": "0" }),
+            ] {
+                assert!(
+                    verify_access_token(&sign(&header, extra.clone()), SECRET).is_err(),
+                    "{extra}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_no_library_error() {
+        let expired = {
+            let now = Utc::now().timestamp() as usize;
+            issue_access_token(
+                Uuid::new_v4(),
+                "r@example.com",
+                "reader",
+                SECRET,
+                0,
+                now - 3600,
+                Uuid::new_v4(),
+            )
+            .unwrap()
+            .0
+        };
+        for token in [
+            expired,
+            "not.a.jwt".to_string(),
+            signed(&Header::default(), Some("x")),
+        ] {
+            match verify_access_token(&token, SECRET) {
+                Err(AppError::Unauthorized(message)) => {
+                    assert_eq!(message, "Invalid or expired access token")
+                }
+                other => panic!("expected a generic 401, got {other:?}"),
+            }
+        }
     }
 }

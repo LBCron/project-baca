@@ -105,11 +105,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Object storage (MinIO/S3). Optional: uploads fail closed when unreachable.
+    // Object storage (R2/MinIO). Production refuses to boot without it, since
+    // uploads and covers would fail silently; development keeps running.
     let storage = match infra::StorageService::init(&config.storage).await {
         Ok(service) => {
             tracing::info!("Object storage initialized");
             Some(Arc::new(service))
+        }
+        Err(e) if config.is_production() => {
+            tracing::error!("Object storage unavailable in production ({e}). Refusing to boot.");
+            return Err(e.into());
         }
         Err(e) => {
             tracing::warn!("Object storage unavailable ({e}). Admin upload disabled.");

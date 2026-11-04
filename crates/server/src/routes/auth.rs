@@ -327,11 +327,11 @@ pub async fn verify_otp(
             .await
             .map_err(HttpError::from)?
             .ok_or_else(|| {
-                let message = "Invalid or expired OTP".to_string();
-                HttpError(AppError::ValidationDetailed {
-                    details: serde_json::json!({ "otp": [message.clone()] }),
-                    message,
-                })
+                crate::error::field_refusal(
+                    "otp",
+                    "otp_invalid",
+                    "Invalid or expired OTP".to_string(),
+                )
             })?;
 
     let user = activate_registration(
@@ -439,6 +439,7 @@ pub async fn refresh(
         &mut redis_conn,
         &req.refresh_token,
         state.config.auth.refresh_expiry_days,
+        state.config.auth.session_max_days,
     )
     .await
     .map_err(HttpError::from)?;
@@ -454,6 +455,16 @@ pub async fn refresh(
         RefreshOutcome::Replayed { user_id } => {
             let access_ttl = state.config.auth.access_expiry_minutes * 60;
             let _ = revoke_family_on_reuse(&mut redis_conn, user_id, access_ttl).await;
+            return Err(HttpError(AppError::Unauthorized(
+                "Invalid or expired refresh token".to_string(),
+            )));
+        }
+        // Past its absolute lifetime the session ends like a logout: the
+        // reader signs in again.
+        RefreshOutcome::Expired { user_id } => {
+            let access_ttl = state.config.auth.access_expiry_minutes * 60;
+            let _ = revoke_refresh_token(&mut redis_conn, &req.refresh_token, access_ttl).await;
+            tracing::info!(target: "server::auth", %user_id, "Session reached its absolute lifetime");
             return Err(HttpError(AppError::Unauthorized(
                 "Invalid or expired refresh token".to_string(),
             )));
@@ -494,13 +505,7 @@ pub async fn refresh(
         sid,
     )
     .map_err(HttpError::from)?;
-    touch_session(
-        &mut redis_conn,
-        &new_refresh_token,
-        jti,
-        state.config.auth.refresh_expiry_days,
-    )
-    .await;
+    touch_session(&mut redis_conn, &new_refresh_token, jti).await;
 
     let response = TokenResponse {
         access_token,
@@ -636,7 +641,7 @@ pub async fn update_me(
     request_body = ChangePasswordRequest,
     responses(
         (status = 200, description = "Password changed; carries a fresh token pair when other sessions were revoked", body = ApiResponse<PasswordChangedDto>),
-        (status = 401, description = "Invalid current password", body = ApiResponse<ErrorPayload>)
+        (status = 403, description = "Invalid current password", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
     tag = "User Management"
@@ -920,12 +925,18 @@ pub async fn revoke_my_session(
         .into_response())
 }
 
-/// Assembles public authentication and user management routes
-pub fn auth_routes() -> Router<Arc<AppState>> {
+/// Routes that take credentials: signup, its code, and login.
+pub fn credential_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/signup", post(signup))
         .route("/verify-otp", post(verify_otp))
         .route("/login", post(login))
+}
+
+/// Routes that act on an existing session; limited per session, not per
+/// address like the credential routes.
+pub fn token_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
         .route("/revoke-all", post(revoke_all))

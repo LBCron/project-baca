@@ -802,6 +802,19 @@ def epub_with_cover(epub: bytes, href: str, media_type: str, cover: bytes) -> by
     return out.getvalue()
 
 
+class StorageClientTest(unittest.TestCase):
+    def test_the_client_signs_for_the_configured_region(self):
+        settings = worker.Settings(
+            s3_endpoint="https://acct.r2.cloudflarestorage.com", s3_region="auto"
+        )
+        with mock.patch("minio.Minio") as minio_cls:
+            worker.make_minio(settings)
+        args, kwargs = minio_cls.call_args
+        self.assertEqual(args, ("acct.r2.cloudflarestorage.com",))
+        self.assertEqual(kwargs["region"], "auto")
+        self.assertTrue(kwargs["secure"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

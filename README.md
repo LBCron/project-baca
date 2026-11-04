@@ -10,7 +10,7 @@ Open-access e-reader for public-domain literature: a paginated reader that turns
 | Web | Rust, Leptos 0.7 client-side WebAssembly built by Trunk; PWA with service worker and IndexedDB (`crates/web`) |
 | Worker | Python 3.11 Redis Streams consumer: EPUB parsing, chunking, Gemini embeddings and summaries (`python_worker`) |
 | Data | PostgreSQL 17 with pgvector and pg_trgm, Redis 7, MinIO or any S3 |
-| Edge | Caddy: TLS, HTTP/3, static shell, security headers (`Caddyfile`, `Caddyfile.prod`) |
+| Edge | Caddy: static shell, security headers, API proxy (`Caddyfile`, `Caddyfile.prod`); TLS and HTTP/3 locally, Cloudflare Tunnel in front in production |
 
 ## Routes
 
@@ -36,4 +36,4 @@ make worker-install worker      # optional: ingestion worker for EPUB uploads
 
 ## Content and license
 
-Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain; fonts are under the SIL Open Font License. The source code is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Attribution and third-party licenses: [NOTICE.md](NOTICE.md).
+Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain; fonts are under the SIL Open Font License. The source code is proprietary, all rights reserved ([LICENSE](LICENSE)); versions 0.1.1 and earlier stay under MIT OR Apache-2.0. Attribution and third-party licenses: [NOTICE.md](NOTICE.md).
