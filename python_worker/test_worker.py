@@ -335,12 +335,13 @@ class LimitsTest(unittest.TestCase):
             f"sys.path.insert(0, {here!r})\n"
             "import worker\n"
             f"data = open({bomb.name!r}, 'rb').read()\n"
+            "before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss\n"
             "try:\n"
             "    worker.parse_epub(data)\n"
             "    print('parsed')\n"
             "except worker.RejectedEpub as exc:\n"
             "    print('rejected')\n"
-            "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
+            "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before)\n"
         )
         try:
             out = subprocess.run(
@@ -349,7 +350,10 @@ class LimitsTest(unittest.TestCase):
         finally:
             os.unlink(bomb.name)
         self.assertEqual(out[0], "rejected")
-        self.assertLess(int(out[1]) // 1024, 150, f"peak RSS {int(out[1]) // 1024} MB")
+        # Measured past the imports and the file read, whose size differs
+        # between machines (162 MB on a CI runner, under 150 MB here).
+        grown = int(out[1]) // 1024
+        self.assertLess(grown, 50, f"refusing grew peak RSS by {grown} MB")
 
     def test_past_the_chunk_limit_fails_before_any_embedding(self):
         cursor = FakeCursor("draft")
