@@ -127,8 +127,10 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 | Workflow | Trigger | Runs |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
+| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `zizmor`: workflow audit, red on a medium or high finding. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
 | `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+
+Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and production `image:` carries an `@sha256:` digest. Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
