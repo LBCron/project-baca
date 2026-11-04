@@ -32,7 +32,7 @@ Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](AR
 | MinIO | `cgr.dev/chainguard/minio` | 9005 (S3 API), 9006 (console) |
 | Mailpit | `axllent/mailpit` | 1025 (SMTP), 8025 (web UI) |
 
-Credentials and bucket names are in `.env.example`. The server creates the buckets at boot.
+Credentials and bucket names are in `.env.example`. At boot the server checks both buckets with a one-key listing and creates one only when it is missing.
 
 ## 3. Configuration (`.env`)
 
@@ -124,7 +124,7 @@ Notes:
 
 - Port collisions: the dev stack uses 5433, 6380, 9005, 9006, 1025, 8025.
 - OTP mail never arrives: set `SMTP_SECURITY=none`; signup answers 502 while SMTP is unreachable.
-- Uploads fail with 500: MinIO is unreachable; buckets are created at boot.
+- Uploads fail with 500: object storage is unreachable. In development the server boots without it; in production it refuses to boot and logs `Object storage unavailable in production` with the bucket and HTTP status (403: wrong key or a token without access to that bucket; a missing bucket is created only when the key may create buckets, which an R2 Object Read and Write token may not).
 - Worker never consumes: check `XINFO GROUPS stream:epub_ingestion`; the group is created when the worker starts.
 - Frontend change not visible: Trunk watches `src`, `style`, `index.html`, `sw.js`, `boot.js`, the manifest, `icons`, and `fonts` of `crates/web`; a `crates/shared` change needs a Trunk restart.
 
@@ -144,7 +144,9 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 | `.github/workflows/codeql.yml` | pull requests to `main` or `develop`, push to `main`, Mondays, manual | CodeQL for Actions, JavaScript, Python, and Rust (`build-mode: none`); the generated Kotlin of the Tauri Android shell is left out because it cannot be built on the runner |
 | `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
 
-Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and production `image:` carries an `@sha256:` digest. Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
+Production host: a shallow clone of the deployed tag in `/srv/rotaria/repo` (`git clone --depth 1 --branch vX.Y.Z https://github.com/aprxty3/project-baca.git /srv/rotaria/repo`) holds the compose file, `migrations/`, and `.env.production` with `ROTARIA_VERSION=X.Y.Z`. Deploy: check out the new tag (`git fetch --depth 1 origin tag vX.Y.Z && git checkout vX.Y.Z`), set `ROTARIA_VERSION`, then `make prod-pull prod-migrate prod-up`. Roll back by setting the previous tag and version and running `make prod-pull prod-up`; migrations are expand/contract, so the older server runs on the newer schema. The repository and the GHCR packages are public, so clone and pull need no credentials. When the repository turns private before the beta, the host gets a read-only deploy key for the clone and `docker login ghcr.io` with a `read:packages` token used only by that host, and the packages are republished as private. `make prod-build` builds the same images from the checkout instead, tagged with `ROTARIA_VERSION`.
+
+Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and third-party production `image:` carries an `@sha256:` digest (the project's own images go by release tag). Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
 Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, Dependabot version updates open one grouped minor-and-patch pull request per ecosystem against `develop` each Monday (releases at least 7 days old), CodeQL (`.github/workflows/codeql.yml`: Actions, JavaScript, Python, Rust without a build; on pull requests, pushes to `main`, and Mondays) uploads to the Security tab, and an advisory exception in `deny.toml` carries its reason and review date, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).
 
