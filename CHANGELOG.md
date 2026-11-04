@@ -4,6 +4,8 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-11-05
+
 ### Added
 - `GET /book/{id}` on the API origin answers the book page as plain HTML (title, author, year, synopsis) for crawlers and readers without JavaScript; it is rendered per request with `Cache-Control: no-cache`, so an archived book answers 404 on the next request. The edge does not route to it yet.
 - `make prod-migrate` and `make prod-migrate-status` apply and list migrations on the production stack through a one-off `migrate` service. Each migration file runs in one transaction with its `schema_migrations` row under an advisory lock: a file that fails halfway leaves nothing behind, and two runs at once apply each file once. `scripts/migrate.sh` talks to `MIGRATE_DATABASE_URL` when it is set; `make migrate-up` on the dev stack is unchanged.

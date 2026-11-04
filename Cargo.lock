@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "pretty_assertions",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "infra"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3884,7 +3884,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "chrono",
@@ -4027,7 +4027,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -5203,7 +5203,7 @@ dependencies = [
 
 [[package]]
 name = "web"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "console_error_panic_hook",
