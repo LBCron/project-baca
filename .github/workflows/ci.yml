@@ -67,6 +67,8 @@ jobs:
         with:
           python-version: "3.12"
       - uses: ./.github/actions/dev-stack
+      - name: Migration runner (failed, concurrent, repeated runs)
+        run: make test-migrate
       - name: Domain, infra, and server unit tests
         run: |
           make test-domain

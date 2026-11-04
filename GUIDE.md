@@ -66,7 +66,9 @@ make worker            # after make worker-install
 
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
-- Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
+- Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`. Each file and its `schema_migrations` row run in one transaction under an advisory lock, so a failed file leaves nothing and two runs at once apply each file once (`make test-migrate`). With `MIGRATE_DATABASE_URL` set, `scripts/migrate.sh` talks to that database with a local `psql` instead of the dev compose service.
+- Production: `make prod-migrate` (and `make prod-migrate-status`) runs the `migrate` service of the `ops` profile, which mounts `migrations/` and the runner of the checked-out tag read-only; check out the release tag first. Run it before the new server takes traffic.
+- Expand/contract: every migration must keep working with the server release before it (add a column nullable or with a default, backfill, and drop the old one only in a later release). Roll back by rolling forward with a new migration; the pre-migration dump is the emergency path. A statement that cannot run inside a transaction (`CREATE INDEX CONCURRENTLY`, which fails under `psql -1`) goes in its own file outside the runner, applied by hand with `psql -f` and recorded with `INSERT INTO schema_migrations`; none exists yet.
 - Paragraph index and quote anchors for books ingested before them: `make backfill-paragraphs` (production `make prod-backfill-paragraphs`), one book per transaction, idempotent, no embeddings paid. Run it after migrating and before the new server takes traffic, or in-book search finds nothing in those books.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
 

@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Added
+- `make prod-migrate` and `make prod-migrate-status` apply and list migrations on the production stack through a one-off `migrate` service. Each migration file runs in one transaction with its `schema_migrations` row under an advisory lock: a file that fails halfway leaves nothing behind, and two runs at once apply each file once. `scripts/migrate.sh` talks to `MIGRATE_DATABASE_URL` when it is set; `make migrate-up` on the dev stack is unchanged.
+
 ### Security
 - CI and release workflows run only third-party actions pinned to a commit SHA, checkouts keep no credentials, and a `zizmor` job fails CI on a medium or high finding. The Trunk download is verified against a pinned SHA-256 per architecture in CI and in the edge image, base images and production compose services are pinned by digest, and two pushes of one release tag no longer run at once.
 

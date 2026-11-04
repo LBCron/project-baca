@@ -77,6 +77,10 @@ migrate-status:
 	@echo "Checking database migration history..."
 	@./scripts/migrate.sh status
 
+# Failed, concurrent and repeated runs of the migration runner on a throwaway database.
+test-migrate:
+	@./scripts/test_migrate.sh
+
 # Test suites
 test: test-all
 
@@ -255,6 +259,14 @@ prod-down:
 	@echo "Stopping production stack..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml down
 
+# Pending migrations against the production database, each in its own
+# transaction under an advisory lock; safe to rerun and to run twice at once.
+prod-migrate:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate up
+
+prod-migrate-status:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate status
+
 prod-logs:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml logs -f
 
@@ -281,5 +293,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
