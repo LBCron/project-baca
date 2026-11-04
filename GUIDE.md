@@ -133,6 +133,8 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and production `image:` carries an `@sha256:` digest. Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
+Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).
+
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
 Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y` means a break, so additions and fixes raise `z`. One release per milestone or batch of work, not per merge.
@@ -147,7 +149,7 @@ Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y`
 Cutting a release:
 
 1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
-2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
+2. `python3 scripts/release_notes.py --check-version`, then a pull request from `develop` to `main`, merged once CI is green.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.
