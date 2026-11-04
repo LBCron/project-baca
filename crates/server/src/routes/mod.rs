@@ -10,7 +10,7 @@ pub mod progress;
 pub mod quotes;
 
 pub use admin::{admin_routes, dropoff_analytics, ingestion_status, upload_book};
-pub use auth::{auth_routes, user_routes};
+pub use auth::{credential_routes, token_routes, user_routes};
 pub use books::{
     book_text_search_routes, books_routes, get_book, get_chapter, get_offline_bundle, list_books,
     search_books,

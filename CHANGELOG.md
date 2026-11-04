@@ -8,10 +8,13 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `make prod-migrate` and `make prod-migrate-status` apply and list migrations on the production stack through a one-off `migrate` service. Each migration file runs in one transaction with its `schema_migrations` row under an advisory lock: a file that fails halfway leaves nothing behind, and two runs at once apply each file once. `scripts/migrate.sh` talks to `MIGRATE_DATABASE_URL` when it is set; `make migrate-up` on the dev stack is unchanged.
 
 ### Changed
+- A session ends at most 90 days after sign-in however often it is used (`SESSION_MAX_DAYS`): a refresh past it answers 401 and the app returns to the guest view, and a rotated refresh token never lives past that point.
+- `/auth/refresh`, `/auth/logout` and `/auth/revoke-all` no longer share the 20-per-minute login bucket: each refresh token (or, for revoke-all, each account) gets 10 per minute under a 300-per-minute ceiling per client, so many readers behind one address refresh without 429.
 - Each field in a validation error's `details` is a list of `{ "code", "message" }` instead of messages, so a client can choose copy by reason (`common_password`, `length`, `email`). The OpenAPI document gives `PUT /me/password` 403 for a wrong current password, as the server answers, instead of 401.
 
 ### Security
 - CI and release workflows run only third-party actions pinned to a commit SHA, checkouts keep no credentials, and a `zizmor` job fails CI on a medium or high finding. The Trunk download is verified against a pinned SHA-256 per architecture in CI and in the edge image, base images and production compose services are pinned by digest, and two pushes of one release tag no longer run at once.
+- Access tokens carry `typ: at+jwt` and `aud: rotaria-api`; a token for another audience or of another type is refused. Tokens issued before the change keep working until they expire. Every refused access token answers the same 401 message instead of naming the library error (`ExpiredSignature`, `InvalidSignature`).
 - Signup and password change refuse a password from the 10,000 most common (SecLists, any letter case) with 400 `VALIDATION_FAILED`; the web forms refuse it before sending and say "Kata sandi itu terlalu umum dan mudah ditebak", from the server too.
 
 ## [0.1.1] — 2026-11-04
