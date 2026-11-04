@@ -25,9 +25,9 @@ pub const S3_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 const S3_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 impl StorageService {
-    /// Builds the service from [`StorageConfig`], creating both buckets when
-    /// absent (idempotent; concurrent creates resolve to success or
-    /// already-owned).
+    /// Builds the service from [`StorageConfig`], checking that both buckets
+    /// answer with these credentials and creating one only when it is absent
+    /// (idempotent; concurrent creates resolve to success or already-owned).
     pub async fn init(config: &StorageConfig) -> Result<Self, AppError> {
         let service = Self::connect(config);
         service.ensure_bucket(&service.bucket_epubs).await?;
@@ -66,6 +66,28 @@ impl StorageService {
     }
 
     async fn ensure_bucket(&self, bucket: &str) -> Result<(), AppError> {
+        // An R2 Object Read and Write token may list objects but not create
+        // buckets, and may be refused HeadBucket, so a one-key listing is the
+        // probe and CreateBucket is sent only for a bucket that is missing.
+        let probe = self
+            .client
+            .list_objects_v2()
+            .bucket(bucket)
+            .max_keys(1)
+            .send()
+            .await;
+        let Err(e) = probe else {
+            return Ok(());
+        };
+        let status = e.raw_response().map(|r| r.status().as_u16());
+        let service_error = e.into_service_error();
+        if !service_error.is_no_such_bucket() {
+            return Err(AppError::Internal(format!(
+                "Storage bucket '{bucket}' is not accessible with the configured credentials \
+                 (HTTP {}): {service_error:?}",
+                status.map_or_else(|| "no response".to_string(), |s| s.to_string())
+            )));
+        }
         match self.client.create_bucket().bucket(bucket).send().await {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -179,5 +201,54 @@ impl StorageService {
             .await
             .map(|data| data.into_bytes().to_vec())
             .map_err(|e| AppError::Internal(format!("Storage body read failed: {e:?}")))
+    }
+}
+
+/// Live against the dev MinIO (`make db-up`).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_buckets(tag: &str) -> StorageConfig {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        StorageConfig {
+            bucket_epubs: format!("test-{tag}-e-{}", &id[..12]),
+            bucket_covers: format!("test-{tag}-c-{}", &id[..12]),
+            ..StorageConfig::default()
+        }
+    }
+
+    async fn drop_buckets(service: &StorageService) {
+        for bucket in [&service.bucket_epubs, &service.bucket_covers] {
+            let _ = service.client.delete_bucket().bucket(bucket).send().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn init_creates_missing_buckets_and_accepts_existing_ones() {
+        let config = config_with_buckets("init");
+        let service = StorageService::init(&config)
+            .await
+            .expect("missing buckets are created");
+        let again = StorageService::init(&config).await;
+        drop_buckets(&service).await;
+        again.expect("existing buckets are accepted without a create");
+    }
+
+    #[tokio::test]
+    async fn init_with_a_wrong_secret_fails_with_the_bucket_and_status() {
+        let config = StorageConfig {
+            secret_access_key: "not-the-secret".to_string(),
+            ..StorageConfig::default()
+        };
+        let err = StorageService::init(&config)
+            .await
+            .expect_err("a wrong secret must not pass init");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("Storage bucket '{}'", config.bucket_epubs))
+                && msg.contains("HTTP 403"),
+            "{msg}"
+        );
     }
 }

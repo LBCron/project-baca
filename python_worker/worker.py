@@ -634,6 +634,9 @@ def make_minio(settings: Settings):
         access_key=settings.s3_access_key,
         secret_key=settings.s3_secret_key,
         secure=secure,
+        # Without a region the client asks the store for one first; R2
+        # expects requests signed for `auto`.
+        region=settings.s3_region,
     )
 
 

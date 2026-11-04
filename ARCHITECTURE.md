@@ -5,7 +5,7 @@
 ```text
 crates/domain    pure rules, no I/O: Percentage, BookStatus lifecycle, streak, badges, progress merge
 crates/shared    DTOs, validation, error contract; compiled native and to WebAssembly
-crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, MinIO, SMTP (lettre), Gemini client
+crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, S3 storage (R2, MinIO), SMTP (lettre), Gemini client
 crates/server    Axum router, middleware, handlers, OpenAPI (utoipa)
 crates/web       Leptos 0.7 client-side app, Trunk build, service worker
 python_worker    ingestion consumer (section 6)
@@ -125,7 +125,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 - `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, server, worker, and edge (Caddy on 80 and 443 TCP and UDP), all on the default compose network, plus MinIO behind the `minio` profile for a host without R2; least-privilege roles, keys, and networks are issue #47. Server and worker run the GHCR release images of `ROTARIA_VERSION` (`build:` stays for `make prod-build`) and get 30 s to drain on stop; Redis writes an append-only file (`everysec`); every service logs through the rotating `local` driver. Targets: `make prod-pull`, `prod-build`, `prod-up`, `prod-down`, `prod-logs`.
 - `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. Release builds minify HTML, CSS, and the glue. The edge image runs `make build-web-edge`, the same build plus brotli 11 and gzip copies (`scripts/precompress.py`) that Caddy sends as they are (`file_server { precompressed br gzip }`); the Tauri bundle leaves them out.
 - Server and worker images run as uid 10001; the dev compose binds every port to `127.0.0.1`, and `Caddyfile.prod` drops the `Server` banner on every response, errors included.
-- With `APP_ENV=production` the server exits non-zero when Postgres or Redis is unreachable at boot, and `restart: always` retries; development keeps running without them.
+- With `APP_ENV=production` the server exits non-zero when Postgres, Redis, or either storage bucket is unreachable at boot, and `restart: always` retries; development keeps running without them. Storage is R2 (`apac`) with an Object Read and Write token scoped to the two buckets: boot probes each bucket with a one-key listing (such a token may be refused HeadBucket) and sends CreateBucket only for a missing one.
 - The server healthcheck hits `/health`; `scripts/pg_backup.sh` dumps Postgres.
 - Observability: tracing with `x-request-id` on every span; `LOG_FORMAT=json` for NDJSON.
 

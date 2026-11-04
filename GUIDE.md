@@ -32,7 +32,7 @@ Build, run, and test Project Baca locally. Deployment is in [ARCHITECTURE.md](AR
 | MinIO | `cgr.dev/chainguard/minio` | 9005 (S3 API), 9006 (console) |
 | Mailpit | `axllent/mailpit` | 1025 (SMTP), 8025 (web UI) |
 
-Credentials and bucket names are in `.env.example`. The server creates the buckets at boot.
+Credentials and bucket names are in `.env.example`. At boot the server checks both buckets with a one-key listing and creates one only when it is missing.
 
 ## 3. Configuration (`.env`)
 
@@ -112,7 +112,7 @@ Notes:
 
 - Port collisions: the dev stack uses 5433, 6380, 9005, 9006, 1025, 8025.
 - OTP mail never arrives: set `SMTP_SECURITY=none`; signup answers 502 while SMTP is unreachable.
-- Uploads fail with 500: MinIO is unreachable; buckets are created at boot.
+- Uploads fail with 500: object storage is unreachable. In development the server boots without it; in production it refuses to boot and logs `Object storage unavailable in production` with the bucket and HTTP status (403: wrong key or a token without access to that bucket; a missing bucket is created only when the key may create buckets, which an R2 Object Read and Write token may not).
 - Worker never consumes: check `XINFO GROUPS stream:epub_ingestion`; the group is created when the worker starts.
 - Frontend change not visible: Trunk watches `src`, `style`, `index.html`, `sw.js`, `boot.js`, the manifest, `icons`, and `fonts` of `crates/web`; a `crates/shared` change needs a Trunk restart.
 
