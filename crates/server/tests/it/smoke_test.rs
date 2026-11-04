@@ -25,6 +25,7 @@ async fn test_smoke_health_endpoint() {
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["status"], "healthy");
     assert_eq!(body["data"]["service"], "project-baca-server");
+    assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(resp.headers().contains_key("x-request-id"));
     harness.cleanup().await;
 }
@@ -88,7 +89,7 @@ async fn test_smoke_openapi_json_spec() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(spec["info"]["title"], "Project Baca REST API");
-    assert_eq!(spec["info"]["version"], "0.1.0");
+    assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(spec["paths"]["/health"].is_object());
     assert!(spec["paths"]["/api/v1/health"].is_object());
     harness.cleanup().await;

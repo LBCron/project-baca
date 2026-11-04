@@ -17,6 +17,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `GET /admin/dlq` returns `{ total, entries }`; each entry adds `book_title`. A refused status change reads "A book that is archived cannot become draft".
 - `GET /quotes` returns one page, newest first: `limit` (default 50, at most 100) and `cursor` (the id of the last quote of the previous page). The profile loads further pages with "Muat lebih banyak".
 - `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
+- `/health` and the OpenAPI document report the workspace version instead of a fixed `0.1.0`.
 
 ### Security
 - Rust dependencies patched: rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11, tokio 1.54.1, ctutils 0.4.8. The S3 client drops its legacy connector (rustls 0.21, hyper 0.14, h2 0.3) and SigV4a, so the server carries one TLS stack. `cargo audit` leaves only rsa, which is in the lockfile through sqlx-mysql but compiled into nothing, plus unmaintained (paste, proc-macro-error2) and yanked (yoke-derive 0.8.3) notices.
