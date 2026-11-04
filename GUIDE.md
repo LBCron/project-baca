@@ -101,6 +101,17 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | `make test-web-full` | builds the release bundle into `target/web-release` (size budget, no inline script), then adds visual goldens, axe a11y, and Firefox smoke | same; serve the release bundle with `make dev-web-release` |
 | `make test-all` | `cargo test --workspace` (includes performance and load) | `db-up` |
 
+When CI runs the heavy jobs (`check`, `backend`, `web`; decided by `scripts/ci_scope.py`, whose `--self-test` runs first in the `changes` job):
+
+| Run | Heavy jobs |
+|---|---|
+| Pull request to `main`, push to `main`, manual run | all |
+| Pull request to `develop`, direct push to `develop` | `check` and `backend` unless only `*.md` changed; `web` only when `crates/web`, `crates/shared`, `Cargo.toml`, `Cargo.lock`, `.github/`, `Makefile`, or `scripts/trunk.sha256` changed |
+| Push to `develop` of a pull request's merge commit | none (the pull request already ran them) |
+| Nightly 02:00 WIB on `develop` | all, when `develop` moved in the last 25 hours |
+
+`zizmor`, `audit`, and `changes` run every time. Skipped jobs report as skipped, which satisfies required checks.
+
 Notes:
 
 - Functional tests build the Axum app in-process against the shared dev services and delete every row they create (`TestHarness::track_*`, `harness.cleanup()`), so row counts match before and after a run.
@@ -129,7 +140,7 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 | Workflow | Trigger | Runs |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
+| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests, nightly, manual (heavy jobs per section 5) | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
 | `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
 
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and production `image:` carries an `@sha256:` digest. Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
