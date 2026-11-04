@@ -1,0 +1,36 @@
+# Supply-chain gate for both workspaces; CI runs
+#   cargo deny check advisories bans sources licenses
+#   cargo deny --manifest-path apps/tauri/Cargo.toml --config deny.toml check advisories bans sources licenses
+
+[advisories]
+yanked = "deny"
+# Every exception names why it stays and when to look again.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but sound; leptos 0.7 macros pull it with no maintained drop-in. Review 2027-02-01 or at the next leptos minor." },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; compile-time only, pulled by leptos 0.7 macros. Review 2027-02-01 or at the next leptos minor." },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; compile-time only, pulled by glib-macros 0.18 under Tauri's Linux webview. Review 2027-02-01 or at the next Tauri minor." },
+]
+
+[bans]
+# Duplicate versions are common under leptos and Tauri and are not a risk.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[licenses]
+# Permissive licences only; the project's own crates are proprietary and unpublished.
+allow = [
+    "MIT", "MIT-0", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
+    "ISC", "Zlib", "Unicode-3.0", "CC0-1.0", "MPL-2.0", "BSL-1.0", "CDLA-Permissive-2.0", "OpenSSL", "0BSD",
+]
+# One list serves both workspaces, so a licence only one of them uses is expected.
+unused-allowed-license = "allow"
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
