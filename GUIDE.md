@@ -130,9 +130,18 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
+Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y` means a break, so additions and fixes raise `z`. One release per milestone or batch of work, not per merge.
+
+| Version | When |
+|---|---|
+| `0.1.z` | Each release before the public beta; API, web and app ship together, so no client breaks |
+| `0.2.0` | The public beta opens (M5 done, the launch checklist passes on the production domain) |
+| later `0.y.0` | A change readers feel as a new product step (M6), or an API change that breaks installed apps |
+| `1.0.0` | The owner declares the product stable and the API contract binding for installed apps |
+
 Cutting a release:
 
-1. Set `[workspace.package] version` in `Cargo.toml`, rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
+1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
 2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 

@@ -4,6 +4,8 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-04
+
 ### Added
 - `GET /progress/reading` lists every unfinished book, most recently read first (at most 100). The profile shelf shows them all with their progress next to downloads, says "Belum ada buku yang sedang kamu baca" to a reader who has only quotes, and invites browsing the catalog only when there are no books, downloads, or quotes.
 - Curator desk: a dead letter names its book and can be dismissed for good (`DELETE /admin/dlq/{id}`), and the queue counter shows every dead letter in the stream, not the hundred on screen. An archived book can be published again ("Terbitkan lagi") when its ingestion had finished; one archived midway answers 409 and asks for a new upload. A book shows as Processing while its job runs and returns to Draft if the job fails for good. After a queued upload the form clears and the manuscript list reloads.
