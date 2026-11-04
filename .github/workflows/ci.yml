@@ -34,6 +34,19 @@ jobs:
           min-severity: medium
           version: 1.32.0
 
+  audit:
+    name: Supply chain (cargo-deny, pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
+        with:
+          tool: cargo-deny
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: make audit
+
   check:
     name: Format, lint, native and wasm build
     runs-on: ubuntu-latest
