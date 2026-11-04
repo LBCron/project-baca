@@ -399,11 +399,11 @@ pub async fn upload_book(
     // is told which one to shorten.
     let check_len = |name: &str, value: &str, max: usize| {
         if value.chars().count() > max {
-            let message = format!("Field '{name}' exceeds {max} characters");
-            return Err(HttpError(AppError::ValidationDetailed {
-                details: serde_json::json!({ name: [message.clone()] }),
-                message,
-            }));
+            return Err(crate::error::field_refusal(
+                name,
+                "length",
+                format!("Field '{name}' exceeds {max} characters"),
+            ));
         }
         Ok(())
     };
