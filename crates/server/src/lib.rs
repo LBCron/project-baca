@@ -165,7 +165,6 @@ impl AppState {
     ),
     info(
         title = "Project Baca REST API",
-        version = "0.1.0",
         description = "Public Domain Classic E-Reader & Atomic Insights API.",
         license(name = "MIT OR Apache-2.0")
     )
@@ -383,7 +382,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
         Json(ApiResponse::success(serde_json::json!({
             "service": "project-baca-server",
             "status": status,
-            "version": "0.1.0"
+            "version": env!("CARGO_PKG_VERSION")
         }))),
     )
 }

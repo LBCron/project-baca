@@ -4,6 +4,8 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-04
+
 ### Added
 - `GET /progress/reading` lists every unfinished book, most recently read first (at most 100). The profile shelf shows them all with their progress next to downloads, says "Belum ada buku yang sedang kamu baca" to a reader who has only quotes, and invites browsing the catalog only when there are no books, downloads, or quotes.
 - Curator desk: a dead letter names its book and can be dismissed for good (`DELETE /admin/dlq/{id}`), and the queue counter shows every dead letter in the stream, not the hundred on screen. An archived book can be published again ("Terbitkan lagi") when its ingestion had finished; one archived midway answers 409 and asks for a new upload. A book shows as Processing while its job runs and returns to Draft if the job fails for good. After a queued upload the form clears and the manuscript list reloads.
@@ -17,6 +19,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `GET /admin/dlq` returns `{ total, entries }`; each entry adds `book_title`. A refused status change reads "A book that is archived cannot become draft".
 - `GET /quotes` returns one page, newest first: `limit` (default 50, at most 100) and `cursor` (the id of the last quote of the previous page). The profile loads further pages with "Muat lebih banyak".
 - `POST /auth/signup` answers with a `registration_id`, and `POST /auth/verify-otp` requires it next to the email and code. A signup no longer writes an account row; the account is created when the code comes back.
+- `/health` and the OpenAPI document report the workspace version instead of a fixed `0.1.0`.
 
 ### Security
 - Rust dependencies patched: rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11, tokio 1.54.1, ctutils 0.4.8. The S3 client drops its legacy connector (rustls 0.21, hyper 0.14, h2 0.3) and SigV4a, so the server carries one TLS stack. `cargo audit` leaves only rsa, which is in the lockfile through sqlx-mysql but compiled into nothing, plus unmaintained (paste, proc-macro-error2) and yanked (yoke-derive 0.8.3) notices.
