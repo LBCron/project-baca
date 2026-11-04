@@ -1156,6 +1156,31 @@ async fn heartbeat(
     (resp.status(), json)
 }
 
+/// The first minute of reading unlocks First Step on a database where no one
+/// has listed the badges yet, as on a fresh production install: the award
+/// must not depend on `GET /badges` having seeded the master rows.
+#[tokio::test]
+async fn test_first_minute_unlocks_a_badge_before_any_badge_listing() {
+    let harness = TestHarness::new().await;
+    let book = common::seed_book(&harness, "published").await;
+    harness.track_book(book);
+    let (user, token) = seed_reader(&harness).await;
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 60}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let unlocked = infra::list_user_badges(&harness.state.db, user)
+        .await
+        .expect("user badges");
+    assert!(
+        unlocked.iter().any(|b| b.badge_id == "first_step"),
+        "{unlocked:?}"
+    );
+}
+
 /// A streak day is the reader's own: reading is logged on their calendar
 /// day, a reader whose local yesterday counted reaches day two today, and an
 /// offset no clock uses is refused.
