@@ -637,7 +637,7 @@ pub fn HomePage() -> impl IntoView {
 
         <footer class="container site-footer">
             <span>{move || lang.get().text("footer")}</span>
-            <span>"MIT / Apache-2.0"</span>
+            <span>{move || lang.get().text("footer_rights")}</span>
         </footer>
     }
 }

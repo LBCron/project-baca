@@ -36,4 +36,4 @@ make worker-install worker      # optional: ingestion worker for EPUB uploads
 
 ## Content and license
 
-Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain; fonts are under the SIL Open Font License. The source code is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option. Attribution and third-party licenses: [NOTICE.md](NOTICE.md).
+Texts come from Standard Ebooks, Project Gutenberg, and Wikisource and are in the public domain; fonts are under the SIL Open Font License. The source code is proprietary, all rights reserved ([LICENSE](LICENSE)); versions 0.1.1 and earlier stay under MIT OR Apache-2.0. Attribution and third-party licenses: [NOTICE.md](NOTICE.md).

@@ -166,7 +166,7 @@ impl AppState {
     info(
         title = "Project Baca REST API",
         description = "Public Domain Classic E-Reader & Atomic Insights API.",
-        license(name = "MIT OR Apache-2.0")
+        license(name = "Proprietary, all rights reserved")
     )
 )]
 pub struct ApiDoc;

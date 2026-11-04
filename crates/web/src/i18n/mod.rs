@@ -191,6 +191,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Rotaria — sirkulasi buku domain publik. Sumber: Standard Ebooks, Project Gutenberg, Wikisource.",
         "Rotaria — public domain books in circulation. Sources: Standard Ebooks, Project Gutenberg, Wikisource.",
     ),
+    ("footer_rights", "Hak cipta dilindungi.", "All rights reserved."),
     ("auth_title_login", "Masuk ke Rotaria", "Sign in to Rotaria"),
     ("auth_title_register", "Buat akun", "Create an account"),
     ("auth_title_otp", "Periksa kotak masukmu", "Check your inbox"),
