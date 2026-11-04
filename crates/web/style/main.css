@@ -259,8 +259,8 @@ img {
 /* Shell */
 
 /* The static home shell (index.html) paints only where boot.js marked the
-   page as home, in the language boot.js chose. The app's first shell skips
-   its fade there, so the swap does not blink the heading. */
+   page as home, in the language boot.js chose. A session that opens on home
+   skips the shell fade, so the swap does not blink the heading. */
 #boot-shell,
 html[lang="id"] #boot-shell [lang="en"],
 html[lang="en"] #boot-shell [lang="id"] {
