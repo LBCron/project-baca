@@ -62,7 +62,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 ## 5. Web app (`crates/web`)
 
 - Routes: `/`, `/book/:id`, `/me`, `/admin`, and `/__gallery` (component stories for tests) under `ShellLayout` (header, phone tab bar, auth sheet, toasts); `/read/:id` renders without chrome; unknown paths show the 404 page.
-- Root contexts: language (`i18n::provide_lang`, table-driven ID/EN dictionary, browser default, persisted `rotaria_lang`), `Session` (tokens, profile, sheet state), `Toasts` (deduped, errors as `role=alert`), `ShellTheme` (follows the system scheme live until toggled, then `rotaria_theme`; the toggle's label names the theme it switches to; `theme-color` meta follows; `boot.js` applies it before first paint). Modal sheets keep Tab and Shift+Tab inside them; English counts take the singular for one (`Lang::text_n`).
+- Root contexts: language (`i18n::provide_lang`, table-driven ID/EN dictionary, browser default, persisted `rotaria_lang`), `Session` (tokens, profile, sheet state), `Toasts` (deduped, errors as `role=alert`), `ShellTheme` (follows the system scheme live until toggled, then `rotaria_theme`; the toggle's label names the theme it switches to; `theme-color` meta follows; `boot.js` applies it before first paint, along with the language and, on `/`, the static home shell). Modal sheets keep Tab and Shift+Tab inside them; English counts take the singular for one (`Lang::text_n`).
 - API client (`api/mod.rs`): gloo-net, 401 single-flight refresh (the rejected body is drained first so it cannot pin a connection; a refused refresh token, 401 or 400, clears the session, a network or server failure keeps it), offline detection, pending-write queue drained on `online` and login (single-flight, each replayed write deleted by its own key), signup errors surfaced instead of advancing to the code step, logout signs the device out before the best-effort server revoke, `asset_url` turns stored cover keys into `/api/v1/covers/{file}`.
 - Storage: IndexedDB through rexie, `project_baca_db` v3 (guest progress, offline books and chapters, pending sync, local quotes). Reader and shelf fall back to it offline.
 - Service worker (`sw.js`): `rotaria-shell-v3` holds one entry, `/`, refreshed by every navigation (network-first) and served for any route offline; `rotaria-assets-v3` is cache-first for content-hashed build output and the fonts (stale build files pruned after each shell fetch) and network-first for every other static file, so a deploy reaches returning readers on their next visit; `/api/*` and other origins are never cached. `Caddyfile.prod` marks only hashed files and `/fonts/*` immutable; the rest of the SPA revalidates (`no-cache`), and API responses keep the server's cache policy.
@@ -159,7 +159,17 @@ Web first load, Lighthouse 12.6 mobile (simulated slow 4G, 4x CPU), release bund
 | Book | score 67, LCP 5.88 s | score 73, LCP 4.96 s |
 | Reader | score 65, LCP 5.81 s | score 71, LCP 4.89 s |
 
-The largest paint on every route is text the WASM app draws (the hero heading, the synopsis, a paragraph), so first paint waits on the 1.6 MB WASM: 473 KB with brotli, about 2.5 s of the simulated link. CLS came from the phone picks rail appearing above the catalog; it now holds its size while the books load. A further cut needs a static first paint before the WASM, which is a prerender.
+The largest paint on every route is text the WASM app draws (the hero heading, the synopsis, a paragraph), so first paint waits on the 1.6 MB WASM: 473 KB with brotli, about 2.5 s of the simulated link. CLS came from the phone picks rail appearing above the catalog; it now holds its size while the books load.
+
+Static home shell, same setup, 2026-11-04, the same release bundle with and without it:
+
+| Route | Without | With |
+|---|---|---|
+| Home (5 runs) | score 74, LCP 4.47 s, FCP 4.47 s, TBT 31 ms, CLS 0.071 | score 75, LCP 2.77 s (-38%), FCP 1.60 s, TBT 690 ms, CLS 0.070 (every run) |
+| Book (3 runs) | score 70, LCP 5.15 s | score 69, LCP 5.18 s |
+| Reader (3 runs) | score 71, LCP 4.93 s | score 70, LCP 4.98 s |
+
+`index.html` holds the phone header and greeting heading in the app's classes, both languages; `boot.js` shows it on `/` only, in the language `Lang::load` will pick, and reveals the heading once both EB Garamond latin faces are in, at most 3 s: drawn in a fallback face, or with its italic half missing, it measures smaller than the app's heading, which would then become the largest paint again. The app removes it before mounting and skips its first fade on `/`. `test_boot_shell.py` holds the static heading to the app's words and box within 1 px. The wide hero centres against the plate and the search row, so it has no static copy. The fonts are preloaded by `boot.js` on `/` only: in the HTML they start 0.6 s sooner (home LCP 1.9 s) but cost book and reader 0.5 s, where nothing paints before the WASM. TBT rises because the WASM start now falls after the first paint; the work itself is unchanged.
 
 ## 10. Tests
 
