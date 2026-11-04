@@ -466,10 +466,15 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             REQUEST_ID_HEADER.clone(),
         ]);
 
-    let auth_router = routes::auth_routes().layer(axum_mw::from_fn_with_state(
-        state.clone(),
-        crate::middleware::rate_limit_middleware,
-    ));
+    let auth_router = routes::credential_routes()
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::rate_limit_middleware,
+        ))
+        .merge(routes::token_routes().layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::token_rate_limit_middleware,
+        )));
 
     // AI quote search endpoints: apply per-user AI rate limit (10 req/min via Redis)
     let quotes_router = routes::quotes_routes().layer(axum_mw::from_fn_with_state(

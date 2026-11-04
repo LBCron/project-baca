@@ -71,16 +71,21 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
         );
         spawn_local(async move {
             let result = match m {
-                Mode::Register => api::signup(&SignupRequest {
-                    display_name: n,
-                    email: e,
-                    password: p,
-                })
-                .await
-                .map(|id| {
-                    set_registration.set(Some(id));
-                    None
-                }),
+                Mode::Register => {
+                    let req = SignupRequest {
+                        display_name: n,
+                        email: e,
+                        password: p,
+                    };
+                    match api::common_password_refusal("password", &req.password) {
+                        Some(refusal) => Err(refusal),
+                        None => api::signup(&req).await,
+                    }
+                    .map(|id| {
+                        set_registration.set(Some(id));
+                        None
+                    })
+                }
                 Mode::Otp => api::verify_otp(&VerifyOtpRequest {
                     email: e,
                     registration_id: r,
@@ -234,9 +239,10 @@ async fn merge_local_quotes() {
 pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
     use shared::error_code as code;
     let (head, message) = raw.split_once(": ").unwrap_or((raw, ""));
-    let (error, field) = head
+    let (error, refused) = head
         .split_once('[')
         .map_or((head, ""), |(c, f)| (c, f.trim_end_matches(']')));
+    let (field, reason) = refused.split_once(':').unwrap_or((refused, ""));
     let wait = || {
         let seconds = message
             .split(|c: char| !c.is_ascii_digit())
@@ -251,9 +257,12 @@ pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
         code::AI_RATE_LIMITED => lang.text_with("err_ai_rate_limited", "t", &wait()),
         code::SERVICE_UNAVAILABLE => lang.text_with("err_service_unavailable", "t", &wait()),
         code::VALIDATION_FAILED => {
-            let key = format!("err_field_{field}");
-            if lang.has(&key) {
-                lang.text(&key)
+            let by_reason = format!("err_{reason}");
+            let by_field = format!("err_field_{field}");
+            if !reason.is_empty() && lang.has(&by_reason) {
+                lang.text(&by_reason)
+            } else if lang.has(&by_field) {
+                lang.text(&by_field)
             } else {
                 lang.text("err_validation_failed")
             }
@@ -303,6 +312,32 @@ mod tests {
         assert_eq!(
             friendly_error(unknown, Lang::En),
             Lang::En.text("err_validation_failed")
+        );
+    }
+
+    #[test]
+    fn a_common_password_is_named_whatever_field_refused_it() {
+        for field in ["password", "new_password"] {
+            let raw = format!("VALIDATION_FAILED[{field}:common_password]: Password is too common");
+            assert_eq!(
+                friendly_error(&raw, Lang::Id),
+                Lang::Id.text("err_common_password")
+            );
+        }
+        let length = "VALIDATION_FAILED[password:length]: Password must be at least 8 characters";
+        assert_eq!(
+            friendly_error(length, Lang::En),
+            Lang::En.text("err_field_password")
+        );
+    }
+
+    #[test]
+    fn a_form_refuses_a_common_password_before_sending() {
+        let refusal =
+            crate::api::common_password_refusal("password", "QWERTY123").expect("refused locally");
+        assert_eq!(
+            friendly_error(&refusal, Lang::Id),
+            Lang::Id.text("err_common_password")
         );
     }
 

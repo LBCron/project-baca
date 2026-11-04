@@ -107,6 +107,9 @@ pub struct AuthConfig {
     pub jwt_secret: String,
     pub access_expiry_minutes: u64,
     pub refresh_expiry_days: u64,
+    /// Absolute session lifetime: rotation never carries a session past this
+    /// many days after its sign-in, however often it is used.
+    pub session_max_days: u64,
 }
 
 impl Default for AuthConfig {
@@ -116,6 +119,7 @@ impl Default for AuthConfig {
                 .to_string(),
             access_expiry_minutes: 1440, // 24 hours / 1 day
             refresh_expiry_days: 14,     // 14 days
+            session_max_days: 90,
         }
     }
 }
@@ -353,10 +357,17 @@ impl AppConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default_auth.refresh_expiry_days);
 
+        let session_max_days = env::var("SESSION_MAX_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|days| *days > 0)
+            .unwrap_or(default_auth.session_max_days);
+
         let auth = AuthConfig {
             jwt_secret,
             access_expiry_minutes: access_expiry,
             refresh_expiry_days: refresh_expiry,
+            session_max_days,
         };
 
         let s3_endpoint = env::var("S3_ENDPOINT")
@@ -547,6 +558,7 @@ mod tests {
         assert_eq!(config.database.min_connections, 5);
         assert_eq!(config.auth.access_expiry_minutes, 1440);
         assert_eq!(config.auth.refresh_expiry_days, 14);
+        assert_eq!(config.auth.session_max_days, 90);
         assert_eq!(config.storage.bucket_epubs, "baca-epubs");
         assert_eq!(config.ai.provider, "gemini");
         assert_eq!(config.ai.dimension, 768);

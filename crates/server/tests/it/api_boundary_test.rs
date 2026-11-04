@@ -206,6 +206,33 @@ async fn test_api_boundary_password_min_length_validation() {
 }
 
 #[tokio::test]
+async fn test_api_boundary_common_passwords_refused_at_signup() {
+    let harness = TestHarness::new().await;
+    for (n, password) in ["password", "12345678", "QWERTY123"].iter().enumerate() {
+        let payload = serde_json::json!({
+            "display_name": "Common Pass User",
+            "email": format!("common_pass_{n}@example.com"),
+            "password": password
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header(common::CLIENT_IP_HEADER, common::unique_ip("10.9"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+            .unwrap();
+        let (resp, body) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{password}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+        assert_eq!(
+            body["error"]["details"]["password"][0]["code"], "common_password",
+            "{password}: {body}"
+        );
+    }
+    harness.cleanup().await;
+}
+
+#[tokio::test]
 async fn test_api_boundary_authorization_header_schemes() {
     let harness = TestHarness::new().await;
 
@@ -454,6 +481,11 @@ fn test_openapi_documents_errors_bounds_and_envelopes() {
             }
         }
     }
+    let change_password = &doc["paths"]["/api/v1/me/password"]["put"]["responses"];
+    assert_eq!(
+        change_password["403"]["description"], "Invalid current password",
+        "a wrong current password answers 403"
+    );
     let search = &doc["paths"]["/api/v1/books/search"]["get"]["parameters"];
     let q = search
         .as_array()

@@ -52,10 +52,11 @@ pub use security::{
     generate_access_token_issued_at, generate_refresh_token, hash_otp, hash_password,
     invalidate_user_tokens, is_token_blacklisted, is_user_token_revoked, registration_key,
     release_code_quota, revoke_all_user_sessions, revoke_family_on_reuse,
-    revoke_other_user_sessions, revoke_refresh_token, rotation_grace_key, start_registration,
-    store_refresh_token, validate_and_rotate_refresh_token, verify_access_token, verify_password,
-    verify_registration, Argon2Gate, Claims, PendingRegistration, RefreshOutcome,
-    DUMMY_ARGON2_HASH, ROTATION_GRACE_SECS,
+    revoke_other_user_sessions, revoke_refresh_token, rotation_grace_key, session_id,
+    start_registration, store_refresh_token, validate_and_rotate_refresh_token,
+    verify_access_token, verify_password, verify_registration, Argon2Gate, Claims,
+    PendingRegistration, RefreshOutcome, ACCESS_AUDIENCE, ACCESS_TOKEN_TYPE, DUMMY_ARGON2_HASH,
+    ROTATION_GRACE_SECS,
 };
 pub use security::{
     is_session_revoked, issue_access_token, list_sessions, revoke_other_sessions_keeping,

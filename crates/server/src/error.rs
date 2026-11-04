@@ -36,7 +36,9 @@ impl From<validator::ValidationErrors> for HttpError {
         let mut found_first = false;
 
         for (field, errors) in err.field_errors() {
-            let messages: Vec<String> = errors
+            // Each refusal carries the validator code so a client can choose
+            // its copy by reason (a common password, not its length).
+            let messages: Vec<serde_json::Value> = errors
                 .iter()
                 .map(|e| {
                     let msg = e
@@ -48,7 +50,7 @@ impl From<validator::ValidationErrors> for HttpError {
                         first_msg = msg.clone();
                         found_first = true;
                     }
-                    msg
+                    serde_json::json!({ "code": e.code, "message": msg })
                 })
                 .collect();
             field_map.insert(field.to_string(), serde_json::Value::from(messages));

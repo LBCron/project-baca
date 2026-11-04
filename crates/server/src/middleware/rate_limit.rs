@@ -45,6 +45,31 @@ pub const AUTH_POLICY: RateLimitPolicy = RateLimitPolicy {
     exhausted_event: None,
 };
 
+/// Refresh and logout per refresh token, revoke-all per account: readers
+/// behind one CGNAT address each have their own bucket, while one session
+/// still cannot hammer the token endpoints.
+pub const TOKEN_POLICY: RateLimitPolicy = RateLimitPolicy {
+    key_prefix: "rate_limit:token",
+    max_requests: 10,
+    window_seconds: 60,
+    error_code: shared::error_code::RATE_LIMITED,
+    subject_label: "requests",
+    window_label: "minute",
+    exhausted_event: None,
+};
+
+/// Loose per-address ceiling on the token endpoints, so a flood of made-up
+/// tokens from one client still stops.
+pub const TOKEN_IP_POLICY: RateLimitPolicy = RateLimitPolicy {
+    key_prefix: "rate_limit:token_ip",
+    max_requests: 300,
+    ..TOKEN_POLICY
+};
+
+/// Largest token request body read for its rate-limit key; a refresh token
+/// request is well under a kilobyte.
+const TOKEN_BODY_LIMIT: usize = 16 * 1024;
+
 /// Embedding-backed search: 10 req/min per user, or per IP for guests.
 pub const AI_POLICY: RateLimitPolicy = RateLimitPolicy {
     key_prefix: "rate_limit:ai",
@@ -268,6 +293,42 @@ pub async fn rate_limit_middleware(
 ) -> Response {
     let subject = extract_client_subject(&req, &state.config.server);
     enforce(&state, &[(AUTH_POLICY, subject)], req, next).await
+}
+
+/// Caps refresh, logout and revoke-all by the session they act on (the hash of
+/// the refresh token in the body, or the account of the bearer token), under
+/// a loose per-address ceiling. A body without either counts by address.
+pub async fn token_rate_limit_middleware(
+    State(state): State<Arc<AppState>>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let address = extract_client_subject(&req, &state.config.server);
+    let (parts, body) = req.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, TOKEN_BODY_LIMIT).await else {
+        return HttpError(AppError::PayloadTooLarge(
+            "Request body is too large".to_string(),
+        ))
+        .into_response();
+    };
+    let refresh_token = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("refresh_token")?.as_str().map(infra::session_id));
+    let subject = match refresh_token {
+        Some(session) => format!("session:{session}"),
+        None => match bearer_user(&state, &parts.headers).await {
+            Some(user) => format!("user:{user}"),
+            None => format!("address:{address}"),
+        },
+    };
+    let req = Request::from_parts(parts, Body::from(bytes));
+    enforce(
+        &state,
+        &[(TOKEN_POLICY, subject), (TOKEN_IP_POLICY, address)],
+        req,
+        next,
+    )
+    .await
 }
 
 /// Caps embedding-backed search: signed-in users by id, guests by IP. A
