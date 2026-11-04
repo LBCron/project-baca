@@ -251,6 +251,10 @@ prod-build:
 	@echo "Building production images..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml build
 
+# Server and worker images of ROTARIA_VERSION from GHCR (public, no login).
+prod-pull:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml pull
+
 prod-up:
 	@echo "Starting production stack..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d
@@ -293,5 +297,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
