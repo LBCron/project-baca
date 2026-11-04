@@ -130,7 +130,7 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 | Workflow | Trigger | Runs |
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
-| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
 
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and production `image:` carries an `@sha256:` digest. Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
@@ -152,5 +152,14 @@ Cutting a release:
 1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
 2. `python3 scripts/release_notes.py --check-version`, then a pull request from `develop` to `main`, merged once CI is green.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+Verifying a released image (anonymous pull works while the packages are public; ADR-40):
+
+```bash
+gh attestation verify oci://ghcr.io/aprxty3/project-baca/server:X.Y.Z -R aprxty3/project-baca
+docker buildx imagetools inspect ghcr.io/aprxty3/project-baca/server:X.Y.Z --format '{{json .SBOM}}'
+```
+
+Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.
 
 The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.

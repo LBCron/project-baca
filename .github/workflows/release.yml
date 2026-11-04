@@ -41,6 +41,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Sigstore signing and the attestation store, for provenance.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -71,7 +74,8 @@ jobs:
           labels: |
             org.opencontainers.image.title=Rotaria ${{ matrix.image }}
             org.opencontainers.image.licenses=MIT OR Apache-2.0
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -80,6 +84,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # mode=max records build args, so no secret may ever be one.
+          provenance: mode=max
+          sbom: true
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   publish:
     name: GitHub release
