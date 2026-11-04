@@ -19,8 +19,12 @@ import re
 import sys
 from pathlib import Path
 
-SCRIPT_RE = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.DOTALL)
-MODULE_RE = re.compile(r"""\btype\s*=\s*["']?module\b""")
+# HTML tag names are case-insensitive and an end tag may carry whitespace, so
+# the check must not miss `<SCRIPT>` or `</script >`.
+SCRIPT_RE = re.compile(
+    r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script[^>]*>", re.DOTALL | re.IGNORECASE
+)
+MODULE_RE = re.compile(r"""\btype\s*=\s*["']?module\b""", re.IGNORECASE)
 
 
 # `trunk serve` injects a live-reload script whose address placeholders
@@ -32,7 +36,7 @@ SERVE_ONLY_MARKER = "{{__trunk_"
 
 def _is_inline(match: re.Match) -> bool:
     body = match.group("body")
-    return "src=" not in match.group("attrs") and bool(body.strip()) and SERVE_ONLY_MARKER not in body.lower()
+    return "src=" not in match.group("attrs").lower() and bool(body.strip()) and SERVE_ONLY_MARKER not in body.lower()
 
 
 def externalize(dist: Path, public_url: str) -> int:
