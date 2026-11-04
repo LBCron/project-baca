@@ -8,6 +8,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `make prod-migrate` and `make prod-migrate-status` apply and list migrations on the production stack through a one-off `migrate` service. Each migration file runs in one transaction with its `schema_migrations` row under an advisory lock: a file that fails halfway leaves nothing behind, and two runs at once apply each file once. `scripts/migrate.sh` talks to `MIGRATE_DATABASE_URL` when it is set; `make migrate-up` on the dev stack is unchanged.
 
 ### Changed
+- The home page promises no ads on the reading page instead of no ads at all; ads may appear outside the reader (home, Articles).
 - The code is now proprietary, all rights reserved (`LICENSE`); `LICENSE-MIT` and `LICENSE-APACHE` are gone, every crate is `publish = false`, and the OpenAPI document, release image labels, Tauri bundle, and home footer say so. Versions 0.1.1 and earlier stay under MIT OR Apache-2.0.
 - A session ends at most 90 days after sign-in however often it is used (`SESSION_MAX_DAYS`): a refresh past it answers 401 and the app returns to the guest view, and a rotated refresh token never lives past that point. A session already older than 90 days ends at its first refresh after the upgrade.
 - `/auth/refresh`, `/auth/logout` and `/auth/revoke-all` no longer share the 20-per-minute login bucket: each refresh token (or, for revoke-all, each account) gets 10 per minute under a 300-per-minute ceiling per client, so many readers behind one address refresh without 429.

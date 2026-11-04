@@ -71,8 +71,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("hero_head_b", "dibaca dengan cara baru.", "read anew."),
     (
         "hero_desc",
-        "Tanpa iklan, tanpa linimasa. Kamu membuka halaman, membaca, dan melanjutkan kapan saja. Lupa alur setelah lama berhenti? Rotaria merangkum bab-bab sebelumnya tanpa membocorkan yang akan datang.",
-        "No ads, no feed. Open a page, read, and pick up whenever you like. Lost the thread after a long pause? Rotaria recaps the chapters behind you without revealing what lies ahead.",
+        "Halaman baca tanpa iklan, tanpa linimasa. Kamu membuka halaman, membaca, dan melanjutkan kapan saja. Lupa alur setelah lama berhenti? Rotaria merangkum bab-bab sebelumnya tanpa membocorkan yang akan datang.",
+        "No ads on the page you read, no feed. Open a page, read, and pick up whenever you like. Lost the thread after a long pause? Rotaria recaps the chapters behind you without revealing what lies ahead.",
     ),
     (
         "search_ph",
