@@ -19,6 +19,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - Each field in a validation error's `details` (including a wrong sign-up code, `otp_invalid`, and an overlong curator field, `length`) is a list of `{ "code", "message" }` instead of messages, so a client can choose copy by reason (`common_password`, `length`, `email`). The OpenAPI document gives `PUT /me/password` 403 for a wrong current password, as the server answers, instead of 401.
 
 ### Security
+- jsonwebtoken moves from 9.3.1 to 10.4 on the aws-lc-rs backend rustls already links (GHSA-h395-gr6q-cpjc, type confusion on `exp` and `nbf`); a token whose `exp` is not a number is refused.
 - The release bundle's strict-CSP check now catches `<SCRIPT>` in any letter case and an end tag with whitespace (`</script >`), which it used to let through.
 - Release images carry an SBOM and SLSA build provenance, and a GitHub artifact attestation that `gh attestation verify` checks against this repository.
 - CI fails on a new RustSEC advisory, a yanked crate, an unknown source, a non-permissive licence (`cargo deny`, both Cargo workspaces), or a vulnerable worker dependency (`pip-audit`); `make audit` runs the same locally. Dependabot opens weekly grouped updates against `develop`, CodeQL scans Actions, JavaScript, Python, and Rust, and `yoke-derive` moves off a yanked 0.8.3.

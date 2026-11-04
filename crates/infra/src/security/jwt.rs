@@ -848,6 +848,45 @@ mod tests {
     }
 
     #[test]
+    fn a_token_whose_exp_is_not_a_number_is_refused() {
+        // A non-numeric exp must never read as "absent", and a non-numeric
+        // nbf must not rescue an expired token, for both header types. nbf
+        // itself is not validated: no token here carries one.
+        let now = Utc::now().timestamp();
+        let sign = |header: &Header, extra: serde_json::Value| {
+            let mut claims = serde_json::json!({
+                "sub": Uuid::new_v4(), "email": "r@example.com", "role": "reader",
+                "iat": now, "jti": Uuid::new_v4(), "aud": ACCESS_AUDIENCE,
+            });
+            claims
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            encode(
+                header,
+                &claims,
+                &EncodingKey::from_secret(SECRET.as_bytes()),
+            )
+            .unwrap()
+        };
+        let typed = Header {
+            typ: Some(ACCESS_TOKEN_TYPE.into()),
+            ..Header::default()
+        };
+        for header in [Header::default(), typed] {
+            for extra in [
+                serde_json::json!({ "exp": "9999999999" }),
+                serde_json::json!({ "exp": now - 3600, "nbf": "0" }),
+            ] {
+                assert!(
+                    verify_access_token(&sign(&header, extra.clone()), SECRET).is_err(),
+                    "{extra}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_refusal_names_no_library_error() {
         let expired = {
             let now = Utc::now().timestamp() as usize;

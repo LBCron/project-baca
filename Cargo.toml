@@ -45,7 +45,8 @@ argon2 = "0.5"
 aws-credential-types = "1"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 sha2 = "0.10"
-jsonwebtoken = "9.3"
+# HS256 only, on the aws-lc-rs backend rustls already links.
+jsonwebtoken = { version = "10.3", default-features = false, features = ["aws_lc_rs"] }
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 # Same TLS stack as reqwest (rustls + webpki roots + ring), no OpenSSL.
