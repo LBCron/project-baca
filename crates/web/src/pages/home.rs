@@ -24,6 +24,9 @@ const CATALOG_PREVIEW_ROWS: usize = 2;
 const SHORT_READ_MINUTES: i32 = 120;
 const RAIL_SIZE: usize = 8;
 const THEME_CHIP_LIMIT: usize = 4;
+/// Read by boot.js: the static home heading greets a fresh visitor, so it
+/// stays off for a reader the app will greet with a book to resume.
+const RESUME_HINT_KEY: &str = "rotaria_resume_hint";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LanguageFilter {
@@ -421,6 +424,7 @@ pub fn HomePage() -> impl IntoView {
             } else {
                 latest_guest_resume().await
             };
+            remember_resume_hint(found.is_some());
             set_resume.set(found);
         });
     });
@@ -635,6 +639,16 @@ pub fn HomePage() -> impl IntoView {
             <span>{move || lang.get().text("footer")}</span>
             <span>"MIT / Apache-2.0"</span>
         </footer>
+    }
+}
+
+fn remember_resume_hint(has_resume: bool) {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = if has_resume {
+            storage.set_item(RESUME_HINT_KEY, "1")
+        } else {
+            storage.remove_item(RESUME_HINT_KEY)
+        };
     }
 }
 
