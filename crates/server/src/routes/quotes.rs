@@ -1,5 +1,6 @@
 //! Quote search, saved quotes, and vintage card endpoints.
 
+use crate::routes::pages::escape_html;
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
     extract::{Path, Query, State},
@@ -328,19 +329,9 @@ pub async fn handle_list_saved_quotes(
 // Vintage Quote Card Export (SVG)
 
 fn render_vintage_quote_svg(quote_text: &str, book_title: &str, author: &str) -> String {
-    let escaped_quote = quote_text
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;");
-    let escaped_title = book_title
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    let escaped_author = author
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
+    let escaped_quote = escape_html(quote_text);
+    let escaped_title = escape_html(book_title);
+    let escaped_author = escape_html(author);
 
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">

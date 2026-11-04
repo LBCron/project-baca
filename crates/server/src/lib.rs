@@ -538,6 +538,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             account_writes(routes::saved_quotes_routes()),
         )
         .nest("/api/v1/admin", routes::admin_routes())
+        .merge(public(routes::pages_routes()))
         .fallback(not_found_handler)
         .layer(axum_mw::from_fn(error::envelope_rejections))
         .layer(axum_mw::from_fn(security_headers_middleware))
