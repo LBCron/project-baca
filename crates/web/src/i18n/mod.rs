@@ -520,6 +520,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Your new password needs 8 to 128 characters.",
     ),
     (
+        "err_common_password",
+        "Kata sandi itu terlalu umum dan mudah ditebak. Pilih rangkaian yang hanya kamu tahu.",
+        "That password is too common and easy to guess. Choose one only you would know.",
+    ),
+    (
         "err_field_current_password",
         "Isi kata sandimu yang sekarang.",
         "Enter your current password.",

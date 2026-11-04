@@ -636,7 +636,7 @@ pub async fn update_me(
     request_body = ChangePasswordRequest,
     responses(
         (status = 200, description = "Password changed; carries a fresh token pair when other sessions were revoked", body = ApiResponse<PasswordChangedDto>),
-        (status = 401, description = "Invalid current password", body = ApiResponse<ErrorPayload>)
+        (status = 403, description = "Invalid current password", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
     tag = "User Management"

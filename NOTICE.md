@@ -24,6 +24,7 @@ Raw texts and typography are sourced from open literary preservation initiatives
 
 * **Rust Ecosystem:** Axum (MIT), Leptos (MIT/Apache-2.0), SeaORM (MIT/Apache-2.0), Tokio (MIT), lettre (MIT), utoipa (MIT/Apache-2.0).
 * **Database & Infrastructure:** PostgreSQL (PostgreSQL License), pgvector (PostgreSQL License), Redis (RSALv2/SSPLv1/BSD), MinIO (AGPLv3), Mailpit (MIT).
+* **Common password list:** SecLists `10k-most-common.txt` (MIT, Daniel Miessler), entries of 8 characters or more in `crates/shared/src/common_passwords.txt`.
 * **AI & Embeddings:** Google GenAI SDK (Apache-2.0), FastEmbed / ONNX Runtime (Apache-2.0/MIT).
 
 ## 4. Project License

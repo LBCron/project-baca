@@ -2383,3 +2383,31 @@ async fn test_wrong_current_password_is_403_and_keeps_the_session() {
     assert_eq!(resp.status(), StatusCode::OK, "the session is untouched");
     harness.cleanup().await;
 }
+
+#[tokio::test]
+async fn test_common_new_password_is_refused_and_keeps_the_old_one() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness.live_only().await.expect("live Redis required");
+    let ip = common::unique_ip("198.18");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "pwdcommon", &ip).await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/me/password")
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "current_password": "NotMyPassword123!", "new_password": "PassWord" })
+                .to_string(),
+        ))
+        .unwrap();
+    let (resp, body) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+    assert_eq!(
+        body["error"]["details"]["new_password"][0]["code"],
+        "common_password"
+    );
+    let resp = harness.send_request(me_req(&access)).await;
+    assert_eq!(resp.status(), StatusCode::OK, "the session is untouched");
+    harness.cleanup().await;
+}

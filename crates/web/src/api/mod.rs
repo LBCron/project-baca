@@ -168,19 +168,43 @@ async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Re
     make().await
 }
 
-/// "CODE: message", or "CODE[field]: message" naming the first field a
-/// validation refused: the reader's copy is chosen by code and field, never
-/// by the server's English message.
+/// "CODE: message", or "CODE[field:reason]: message" naming the first field
+/// a validation refused and the validator code it failed: the reader's copy
+/// is chosen by code, field and reason, never by the server's English message.
 fn error_string(error: ErrorPayload) -> String {
-    let field = error
+    let refusal = error
         .details
         .as_ref()
         .and_then(|d| d.as_object())
-        .and_then(|fields| fields.keys().next().cloned());
-    match field {
-        Some(field) => format!("{}[{field}]: {}", error.code, error.message),
+        .and_then(|fields| fields.iter().next())
+        .map(|(field, refusals)| {
+            let reason = refusals
+                .get(0)
+                .and_then(|r| r.get("code"))
+                .and_then(|c| c.as_str())
+                .unwrap_or_default();
+            (field.clone(), reason.to_string())
+        });
+    match refusal {
+        Some((field, reason)) => refusal_string(&error.code, &field, &reason, &error.message),
         None => format!("{}: {}", error.code, error.message),
     }
+}
+
+/// The error string of a refused field, shared by server answers and the
+/// checks a form runs before sending.
+pub fn refusal_string(code: &str, field: &str, reason: &str, message: &str) -> String {
+    format!("{code}[{field}:{reason}]: {message}")
+}
+
+/// The error string the server would answer a common `password` in `field`
+/// with, so a form refuses it before sending. Only the password rule runs
+/// here: the full shared validation would pull the email validator's
+/// Unicode tables into the bundle.
+pub fn common_password_refusal(field: &str, password: &str) -> Option<String> {
+    shared::validate_not_common_password(password)
+        .err()
+        .map(|e| refusal_string(shared::error_code::VALIDATION_FAILED, field, &e.code, ""))
 }
 
 async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> Result<T, String> {
