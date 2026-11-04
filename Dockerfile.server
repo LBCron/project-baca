@@ -1,12 +1,12 @@
 # Project Baca — production API image (stateless Axum, :8080).
-FROM rust:1.94-bookworm AS builder
+FROM rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo ./.cargo
 COPY crates ./crates
 RUN cargo build --release -p server
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 # wget serves the compose healthcheck; the slim base ships without it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \

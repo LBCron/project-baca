@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Security
+- CI and release workflows run only third-party actions pinned to a commit SHA, checkouts keep no credentials, and a `zizmor` job fails CI on a medium or high finding. The Trunk download is verified against a pinned SHA-256 per architecture in CI and in the edge image, base images and production compose services are pinned by digest, and two pushes of one release tag no longer run at once.
+
 ## [0.1.1] — 2026-11-04
 
 ### Added
