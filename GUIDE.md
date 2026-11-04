@@ -88,6 +88,7 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | Target | Scope | Needs |
 |---|---|---|
 | `make check` | `cargo check` native and wasm, clippy with `-D warnings`, `fmt --check` | nothing |
+| `make audit` | `cargo deny` (advisories, bans, sources, licences per `deny.toml`) on both Cargo workspaces, `pip-audit` on the worker | `cargo-deny`, `uv` |
 | `make test-domain` | 16 pure domain tests | nothing |
 | `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (31 + 6) | nothing |
 | `make test-<module>` | one module of `crates/server/tests/it`: smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability | `db-up` |
@@ -99,6 +100,17 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | `make test-web` | `cargo test -p web --lib` plus Playwright e2e, component, integration | `db-up`, API on :8080, web on :3000, Mailpit |
 | `make test-web-full` | builds the release bundle into `target/web-release` (size budget, no inline script), then adds visual goldens, axe a11y, and Firefox smoke | same; serve the release bundle with `make dev-web-release` |
 | `make test-all` | `cargo test --workspace` (includes performance and load) | `db-up` |
+
+When CI runs the heavy jobs (`check`, `backend`, `web`; decided by `scripts/ci_scope.py`, whose `--self-test` runs first in the `changes` job):
+
+| Run | Heavy jobs |
+|---|---|
+| Pull request to `main`, push to `main`, manual run | all |
+| Pull request to `develop`, direct push to `develop` | `check` and `backend` unless only `*.md` changed; `web` only when `crates/web`, `crates/shared`, `Cargo.toml`, `Cargo.lock`, `.github/`, `Makefile`, or `scripts/trunk.sha256` changed |
+| Push to `develop` of a pull request's merge commit | none (the pull request already ran them) |
+| Nightly 02:00 WIB on `develop` | all, when `develop` moved in the last 25 hours |
+
+`zizmor`, `audit`, and `changes` run every time. Skipped jobs report as skipped, which satisfies required checks.
 
 Notes:
 
@@ -128,12 +140,15 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 | Workflow | Trigger | Runs |
 |---|---|---|
-| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests | `zizmor`: workflow audit, red on a medium or high finding. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
-| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+| `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests, nightly, manual (heavy jobs per section 5) | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
+| `.github/workflows/codeql.yml` | pull requests to `main` or `develop`, push to `main`, Mondays, manual | CodeQL for Actions, JavaScript, Python, and Rust (`build-mode: none`); the generated Kotlin of the Tauri Android shell is left out because it cannot be built on the runner |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
 
 Production host: a shallow clone of the deployed tag in `/srv/rotaria/repo` (`git clone --depth 1 --branch vX.Y.Z https://github.com/aprxty3/project-baca.git /srv/rotaria/repo`) holds the compose file, `migrations/`, and `.env.production` with `ROTARIA_VERSION=X.Y.Z`. Deploy: check out the new tag (`git fetch --depth 1 origin tag vX.Y.Z && git checkout vX.Y.Z`), set `ROTARIA_VERSION`, then `make prod-pull prod-migrate prod-up`. Roll back by setting the previous tag and version and running `make prod-pull prod-up`; migrations are expand/contract, so the older server runs on the newer schema. The repository and the GHCR packages are public, so clone and pull need no credentials. When the repository turns private before the beta, the host gets a read-only deploy key for the clone and `docker login ghcr.io` with a `read:packages` token used only by that host, and the packages are republished as private. `make prod-build` builds the same images from the checkout instead, tagged with `ROTARIA_VERSION`.
 
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and third-party production `image:` carries an `@sha256:` digest (the project's own images go by release tag). Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
+
+Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, Dependabot version updates open one grouped minor-and-patch pull request per ecosystem against `develop` each Monday (releases at least 7 days old), CodeQL (`.github/workflows/codeql.yml`: Actions, JavaScript, Python, Rust without a build; on pull requests, pushes to `main`, and Mondays) uploads to the Security tab, and an advisory exception in `deny.toml` carries its reason and review date, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).
 
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
@@ -149,7 +164,16 @@ Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y`
 Cutting a release:
 
 1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
-2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
+2. `python3 scripts/release_notes.py --check-version`, then a pull request from `develop` to `main`, merged once CI is green.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
+
+Verifying a released image (anonymous pull works while the packages are public; ADR-40):
+
+```bash
+gh attestation verify oci://ghcr.io/aprxty3/project-baca/server:X.Y.Z -R aprxty3/project-baca
+docker buildx imagetools inspect ghcr.io/aprxty3/project-baca/server:X.Y.Z --format '{{json .SBOM}}'
+```
+
+Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.
 
 The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.
