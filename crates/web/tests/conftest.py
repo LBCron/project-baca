@@ -120,8 +120,11 @@ def reset_signup_cap():
 def register_reader(tag: str) -> dict:
     """Signs a fresh reader up through the real OTP mail; returns the token pair."""
     email = f"e2e-{tag}-{int(time.time() * 1000)}@example.com"
-    api_post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
-    return api_post("/auth/verify-otp", {"email": email, "otp": mailpit_otp(email)})
+    started = api_post("/auth/signup", {"display_name": "E2E", "email": email, "password": "E2EPassword123!"})
+    return api_post(
+        "/auth/verify-otp",
+        {"email": email, "registration_id": started["registration_id"], "otp": mailpit_otp(email)},
+    )
 
 
 def long_chapter_html(number: int, paragraphs: int = 40) -> str:

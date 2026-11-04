@@ -12,7 +12,8 @@ pub mod quotes;
 pub use admin::{admin_routes, dropoff_analytics, ingestion_status, upload_book};
 pub use auth::{auth_routes, user_routes};
 pub use books::{
-    books_routes, get_book, get_chapter, get_offline_bundle, list_books, search_books,
+    book_text_search_routes, books_routes, get_book, get_chapter, get_offline_bundle, list_books,
+    search_books,
 };
 pub use covers::{covers_routes, get_cover};
 pub use gamification::{

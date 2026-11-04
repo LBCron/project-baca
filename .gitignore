@@ -73,6 +73,7 @@ build/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.schemathesis/
 .coverage
 htmlcov/
 
@@ -87,12 +88,10 @@ minio-data/
 *.db
 
 # ------------------------------------------------------------------------------
-# 7. Graphify Cache & Backup Snapshots
+# 7. Graphify Graph & Backup Snapshots
 # ------------------------------------------------------------------------------
-graphify-out/cache/
-graphify-out/cache/**
-graphify-out/2026-*/
-graphify-out/2026-*/**
+# The graph also indexes the private knowledge/ repo, so it stays local
+graphify-out/
 .graphify/
 .graphify_*
 .graphify_labels.json*

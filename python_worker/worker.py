@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import socket
 import sys
@@ -30,6 +31,8 @@ import time
 import urllib.request
 import uuid
 import zipfile
+import zlib
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +43,31 @@ from xml.etree import ElementTree as ET
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
+
+
+@dataclass(frozen=True)
+class EpubLimits:
+    """What one upload may cost. Loose next to the largest real book in dev
+    (300 chapters, 6.3 MB of text, about 2,800 chunks), tight next to an
+    amplification: a 1 KiB file naming one entry ten thousand times."""
+
+    archive_bytes: int = 200_000_000
+    archive_files: int = 5_000
+    entry_bytes: int = 10_000_000
+    compression_ratio: int = 100
+    chapters: int = 2_000
+    text_bytes: int = 32_000_000
+    chunks: int = 8_000
+
+
+class PermanentJobError(Exception):
+    """A job no retry can fix: a broken upload, a missing object or row. It
+    goes to the dead-letter queue at once, its message shown to the curator,
+    so it must name the problem without internal detail."""
+
+
+class RejectedEpub(PermanentJobError, ValueError):
+    """An upload that can never ingest: malformed or past a limit."""
 
 
 @dataclass
@@ -75,6 +103,7 @@ class Settings:
     reclaim_idle_ms: int = field(
         default_factory=lambda: int(env("RECLAIM_IDLE_MS", "300000"))
     )
+    limits: EpubLimits = field(default_factory=EpubLimits)
 
 
 # Pure helpers (import-safe: stdlib only)
@@ -82,40 +111,103 @@ class Settings:
 ALLOWED_TAGS = {"p", "em", "strong", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li", "br"}
 
 
-class _Sanitizer(HTMLParser):
-    """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs."""
+# Elements that never take an end tag; they cannot open a skipped region.
+VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+    "param", "source", "track", "wbr",
+}
 
-    SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object", "embed"}
+
+# Allowed elements that hold running text themselves; text outside all of
+# them is wrapped in a <p> so it gets a p-N anchor and is searchable.
+TEXT_CONTAINERS = {"p", "li", "h1", "h2", "h3"}
+# Allowed elements that end a run of loose text.
+BLOCK_TAGS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+# Dropped elements that still separate paragraphs in the source layout.
+LAYOUT_BLOCKS = {
+    "div", "section", "article", "header", "footer", "main", "aside", "nav", "body",
+    "figure", "figcaption", "table", "tr", "td", "th", "pre", "dl", "dt", "dd", "center",
+}
+
+
+class _Sanitizer(HTMLParser):
+    """Allowlist sanitizer: keeps semantic tags, drops scripts/styles/attrs.
+
+    Open elements are tracked as a stack so a skipped element that is never
+    closed (common for ``iframe`` and ``object`` in real XHTML) ends with its
+    parent instead of swallowing the rest of the chapter. Text that sits in
+    no paragraph (a dropped ``div``'s content) is wrapped in one."""
+
+    SKIP_TAGS = {"script", "style", "head", "title", "iframe", "object"}
+    # Chapters are XHTML: ``<iframe src="x"/>`` is a complete element there,
+    # but the HTML raw-text rule would read the rest of the chapter as the
+    # iframe's text. Its content is skipped either way.
+    CDATA_CONTENT_ELEMENTS = ("script", "style")
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
-        self.skip_depth = 0
+        self.open_tags: list[str] = []
+        # Counts of open_tags, so a stray end tag is O(1) to dismiss; a
+        # scan of the stack made ten thousand of them quadratic.
+        self.open_counts: Counter[str] = Counter()
+        self.skip_from: int | None = None
+        self.containers = 0
+        self.loose_p = False
+
+    def _end_loose(self) -> None:
+        if self.loose_p:
+            self.parts.append("</p>")
+            self.loose_p = False
+
+    def _start_loose(self) -> None:
+        if not self.containers and not self.loose_p:
+            self.parts.append("<p>")
+            self.loose_p = True
 
     def handle_starttag(self, tag: str, attrs: list) -> None:
         tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self.skip_depth += 1
+        if tag not in VOID_TAGS:
+            if self.skip_from is None and tag in self.SKIP_TAGS:
+                self.skip_from = len(self.open_tags)
+            self.open_tags.append(tag)
+            self.open_counts[tag] += 1
+        if self.skip_from is not None:
             return
-        if self.skip_depth:
-            return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
+        elif tag in ALLOWED_TAGS and tag != "br":
+            self._start_loose()
         if tag in ALLOWED_TAGS:
             self.parts.append(f"<{tag}>" if tag != "br" else "<br/>")
+            if tag in TEXT_CONTAINERS:
+                self.containers += 1
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in self.SKIP_TAGS:
-            self.skip_depth = max(0, self.skip_depth - 1)
+        if self.open_counts[tag]:
+            while True:
+                closed = self.open_tags.pop()
+                self.open_counts[closed] -= 1
+                if closed == tag:
+                    break
+        if self.skip_from is not None:
+            if len(self.open_tags) <= self.skip_from:
+                self.skip_from = None
             return
-        if self.skip_depth:
-            return
+        if tag in BLOCK_TAGS or tag in LAYOUT_BLOCKS:
+            self._end_loose()
         if tag in ALLOWED_TAGS and tag not in {"br", "hr"}:
             self.parts.append(f"</{tag}>")
+            if tag in TEXT_CONTAINERS and self.containers:
+                self.containers -= 1
 
     def handle_data(self, data: str) -> None:
         # convert_charrefs decoded entities into text, so an encoded
         # ``&lt;img onerror=...&gt;`` would otherwise be re-emitted as live markup.
-        if not self.skip_depth:
+        if self.skip_from is None:
+            if data.strip():
+                self._start_loose()
             self.parts.append(html.escape(data, quote=False))
 
 
@@ -123,6 +215,8 @@ def sanitize_html(html: str) -> str:
     """Returns cleaned HTML containing only allowlisted semantic tags."""
     parser = _Sanitizer()
     parser.feed(html)
+    parser.close()
+    parser._end_loose()
     return "".join(parser.parts)
 
 
@@ -158,6 +252,59 @@ def extract_text(html: str) -> str:
     return " ".join("".join(parser.parts).split())
 
 
+# Start tags that close an open <p> under the HTML parsing rules, among the
+# tags the sanitizer keeps; "</p>" with no <p> open creates an empty one.
+P_CLOSERS = {"p", "blockquote", "h1", "h2", "h3", "hr", "ul", "ol", "li"}
+
+
+def fold_for_search(text: str) -> str:
+    """Case-folds one character at a time, final sigma as sigma; mirrors
+    ``shared::fold_for_search`` so the stored text and a query fold alike."""
+    return "".join((ch.lower()[:1] or ch) for ch in text).replace("\u03c2", "\u03c3")
+
+
+def paragraph_texts(html: str) -> list[str]:
+    """Plain text of each <p> element of sanitized chapter HTML, in the
+    order and count a browser parses them, so entry ``N-1`` is the reader's
+    ``p-N``. Entities are decoded, a ``<br>`` reads as a space (a verse line
+    must not run into the next), and whitespace is collapsed, exactly as
+    offline search reads the stored HTML."""
+
+    class _Paragraphs(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.found: list[list[str]] = []
+            self.open = False
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            tag = tag.lower()
+            if tag in P_CLOSERS:
+                self.open = False
+            if tag == "br" and self.open:
+                self.found[-1].append(" ")
+            if tag == "p":
+                self.found.append([])
+                self.open = True
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag.lower() != "p":
+                if tag.lower() in P_CLOSERS:
+                    self.open = False
+                return
+            if not self.open:
+                self.found.append([])
+            self.open = False
+
+        def handle_data(self, data: str) -> None:
+            if self.open:
+                self.found[-1].append(data)
+
+    parser = _Paragraphs()
+    parser.feed(html)
+    parser.close()
+    return [" ".join("".join(parts).split()) for parts in parser.found]
+
+
 def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     """Splits text into ~target-word chunks at whitespace boundaries.
 
@@ -182,6 +329,30 @@ def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
     return chunks
 
 
+def chunk_anchors(chunks: list[str], paragraphs: list[str]) -> list[str | None]:
+    """The reader anchor (``p-N``) each chunk starts in, or the first
+    paragraph after its start when that is a heading. Positions are compared
+    with all whitespace removed, because chunks and paragraphs space the same
+    text differently (tag boundaries, ``<br>``). A paragraph the chapter text
+    does not contain is skipped rather than guessed."""
+    text = "".join("".join(chunks).split())
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for n, paragraph in enumerate(paragraphs, start=1):
+        squeezed = "".join(paragraph.split())
+        at = text.find(squeezed, cursor) if squeezed else -1
+        if at >= 0:
+            spans.append((n, at + len(squeezed)))
+            cursor = at + len(squeezed)
+    anchors: list[str | None] = []
+    offset = 0
+    for chunk in chunks:
+        n = next((n for n, end in spans if end > offset), spans[-1][0] if spans else None)
+        anchors.append(f"p-{n}" if n is not None else None)
+        offset += len("".join(chunk.split()))
+    return anchors
+
+
 # Widths of the VARCHAR columns the parsed metadata lands in; an EPUB that
 # overflows them must not fail the job after its embeddings were paid for.
 TITLE_MAX_CHARS = 255
@@ -199,6 +370,8 @@ class ParsedChapter:
     html: str
     text: str
     word_count: int
+    chunks: list[str]
+    paragraphs: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -207,33 +380,45 @@ class ParsedEpub:
     author: str
     language: str
     cover_bytes: bytes | None
-    cover_media_type: str
     chapters: list[ParsedChapter]
 
 
-# Maximum total uncompressed bytes accepted from one archive.
-MAX_ARCHIVE_BYTES = 200_000_000
-# Maximum entries accepted from one archive.
-MAX_ARCHIVE_FILES = 5_000
-# Maximum uncompressed bytes accepted from a single entry.
-MAX_ENTRY_BYTES = 10_000_000
-# Maximum file_size/compress_size ratio accepted per entry.
-MAX_COMPRESSION_RATIO = 100
+# Room per central directory record for its name and extra fields.
+CENTRAL_RECORD_ALLOWANCE = 512
 
 
-def check_archive_limits(infos: list) -> None:
+def check_central_directory(data: bytes, limits: EpubLimits) -> None:
+    """Bounds the central directory before ``ZipFile`` builds one object per
+    entry: 400,000 entries in 33 MiB used to cost 469 MB just to be refused.
+    The end record is the one ``ZipFile`` itself will use (``_EndRecData``,
+    ZIP64 and prepended stubs included); a second parser could pick another
+    record and wave a crafted archive through. ``ZipFile`` walks the
+    directory by its size, never its declared count, so the size is bounded
+    as well as the count."""
+    try:
+        record = zipfile._EndRecData(io.BytesIO(data))
+    except OSError:
+        record = None
+    if record is None:
+        raise RejectedEpub("Upload is not a valid ZIP/EPUB archive")
+    entries, size = record[zipfile._ECD_ENTRIES_TOTAL], record[zipfile._ECD_SIZE]
+    if entries > limits.archive_files or size > limits.archive_files * CENTRAL_RECORD_ALLOWANCE:
+        raise RejectedEpub(f"EPUB holds more than {limits.archive_files} files")
+
+
+def check_archive_limits(infos: list, limits: EpubLimits = EpubLimits()) -> None:
     """Rejects zip bombs before any entry is extracted."""
     total = 0
     for info in infos:
         size = info.file_size
-        if size > MAX_ENTRY_BYTES:
-            raise ValueError("Archive entry exceeds per-file limit")
+        if size > limits.entry_bytes:
+            raise RejectedEpub("Archive entry exceeds per-file limit")
         squeezed = getattr(info, "compress_size", 0) or 0
-        if squeezed > 0 and size // squeezed > MAX_COMPRESSION_RATIO:
-            raise ValueError("Archive entry exceeds compression ratio")
+        if squeezed > 0 and size // squeezed > limits.compression_ratio:
+            raise RejectedEpub("Archive entry exceeds compression ratio")
         total += size
-    if len(infos) > MAX_ARCHIVE_FILES or total > MAX_ARCHIVE_BYTES:
-        raise ValueError("Archive exceeds decompression limits")
+    if len(infos) > limits.archive_files or total > limits.archive_bytes:
+        raise RejectedEpub("Archive exceeds decompression limits")
 
 
 def _safe_member(prefix: str, href: str) -> str:
@@ -241,39 +426,71 @@ def _safe_member(prefix: str, href: str) -> str:
     import posixpath
 
     if href.startswith("/") or href.startswith("\\"):
-        raise ValueError(f"EPUB entry escapes package: {href!r}")
+        raise RejectedEpub(f"EPUB entry escapes package: {href!r}")
     joined = posixpath.normpath(prefix + href)
     if joined.startswith("..") or posixpath.isabs(joined):
-        raise ValueError(f"EPUB entry escapes package: {href!r}")
+        raise RejectedEpub(f"EPUB entry escapes package: {href!r}")
     return joined
+
+
+# What zipfile raises for a member it cannot inflate: a corrupt deflate
+# stream, a bad CRC, a cut-off entry, an unknown method, or encryption.
+CORRUPT_MEMBER_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError)
+
+
+def _read_member(epub: zipfile.ZipFile, name: str) -> bytes:
+    """Reads one archive member; a missing one stays a ``KeyError`` for the
+    caller, a corrupt one rejects the upload."""
+    try:
+        return epub.read(name)
+    except CORRUPT_MEMBER_ERRORS as exc:
+        raise RejectedEpub(f"EPUB entry {name!r} is corrupt") from exc
+
+
+def _xml(text: str, name: str) -> ET.Element:
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise RejectedEpub(f"EPUB {name} is not well-formed XML") from exc
 
 
 def _opf_path(epub: zipfile.ZipFile) -> str:
     try:
-        container = epub.read("META-INF/container.xml").decode("utf-8", "replace")
+        container = _read_member(epub, "META-INF/container.xml").decode("utf-8", "replace")
     except KeyError as exc:
-        raise ValueError("EPUB missing META-INF/container.xml") from exc
-    root = ET.fromstring(container)
+        raise RejectedEpub("EPUB missing META-INF/container.xml") from exc
+    root = _xml(container, "container.xml")
     ns = {"c": "urn:oasis:names:tc:opendocument:xmlns:container"}
     node = root.find("c:rootfiles/c:rootfile", ns)
     if node is None or not node.get("full-path"):
-        raise ValueError("EPUB container.xml has no rootfile")
+        raise RejectedEpub("EPUB container.xml has no rootfile")
     return node.get("full-path", "")
 
 
-def parse_epub(data: bytes) -> ParsedEpub:
-    """Parses EPUB bytes into metadata, optional cover, and spine-ordered chapters."""
+# Project Gutenberg wraps every book in a header and a license, both inside
+# the spine. The book's own text lies between these two marker lines.
+GUTENBERG_START = re.compile(r"\*\*\*\s*START OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+GUTENBERG_END = re.compile(r"\*\*\*\s*END OF (?:THE|THIS) PROJECT GUTENBERG[^*]*\*\*\*", re.I)
+# Tags a cut leaves dangling: closers after the start, openers before the end.
+LEADING_CLOSERS = re.compile(r"^(?:\s*</[a-z0-9]+>)+")
+TRAILING_OPENERS = re.compile(r"(?:<[a-z0-9]+>\s*)+$")
+
+
+def parse_epub(data: bytes, limits: EpubLimits = EpubLimits()) -> ParsedEpub:
+    """Parses EPUB bytes into metadata, optional cover, and spine-ordered
+    chapters, refusing anything past ``limits`` with :class:`RejectedEpub`."""
+    check_central_directory(data, limits)
     try:
         epub = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile as exc:
-        raise ValueError("Upload is not a valid ZIP/EPUB archive") from exc
-    check_archive_limits(epub.infolist())
+        raise RejectedEpub("Upload is not a valid ZIP/EPUB archive") from exc
+    check_archive_limits(epub.infolist(), limits)
 
     opf_path = _opf_path(epub)
     base = opf_path.rpartition("/")[0]
     prefix = f"{base}/" if base else ""
 
-    opf = ET.fromstring(epub.read(_safe_member("", opf_path)).decode("utf-8", "replace"))
+    opf = _xml(_read_member(epub, _safe_member("", opf_path)).decode("utf-8", "replace"), "package document")
     ns = {
         "opf": "http://www.idpf.org/2007/opf",
         "dc": "http://purl.org/dc/elements/1.1/",
@@ -288,32 +505,25 @@ def parse_epub(data: bytes) -> ParsedEpub:
     language = clip(find_text("opf:metadata/dc:language"), LANGUAGE_MAX_CHARS) or "en"
 
     manifest: dict[str, tuple[str, str]] = {}
+    properties: dict[str, str] = {}
     for item in opf.findall("opf:manifest/opf:item", ns):
-        manifest[item.get("id", "")] = (
-            item.get("href", ""),
-            item.get("media-type", ""),
-        )
+        item_id = item.get("id", "")
+        manifest[item_id] = (item.get("href", ""), item.get("media-type", ""))
+        properties[item_id] = item.get("properties", "")
 
     cover_bytes: bytes | None = None
-    cover_media = ""
     for item_id, (href, media) in manifest.items():
-        props = ""
-        for item in opf.findall("opf:manifest/opf:item", ns):
-            if item.get("id") == item_id:
-                props = item.get("properties", "")
-        if "cover-image" in props or item_id.lower() == "cover-image":
-            cover_media = media
+        if "cover-image" in properties[item_id] or item_id.lower() == "cover-image":
             try:
-                cover_bytes = epub.read(_safe_member(prefix, href))
+                cover_bytes = _read_member(epub, _safe_member(prefix, href))
             except (KeyError, ValueError):
                 cover_bytes = None
             break
     if cover_bytes is None:
         for item_id, (href, media) in manifest.items():
             if media.startswith("image/") and "cover" in (item_id + href).lower():
-                cover_media = media
                 try:
-                    cover_bytes = epub.read(_safe_member(prefix, href))
+                    cover_bytes = _read_member(epub, _safe_member(prefix, href))
                 except (KeyError, ValueError):
                     cover_bytes = None
                 break
@@ -321,8 +531,15 @@ def parse_epub(data: bytes) -> ParsedEpub:
     chapters: list[ParsedChapter] = []
     spine = opf.find("opf:spine", ns)
     if spine is None:
-        raise ValueError("EPUB OPF has no spine")
+        raise RejectedEpub("EPUB OPF has no spine")
+    # A spine may name one document many times; it is one chapter.
+    read: set[str] = set()
+    text_bytes = 0
+    chunk_count = 0
+    gutenberg_ended = False
     for itemref in spine.findall("opf:itemref", ns):
+        if gutenberg_ended:
+            break
         ref = itemref.get("idref", "")
         if ref not in manifest:
             continue
@@ -330,13 +547,42 @@ def parse_epub(data: bytes) -> ParsedEpub:
         if "html" not in media and "xhtml" not in media and "xml" not in media:
             continue
         try:
-            raw = epub.read(_safe_member(prefix, href)).decode("utf-8", "replace")
-        except (KeyError, ValueError):
+            member = _safe_member(prefix, href)
+        except ValueError:
+            continue
+        if member in read:
+            continue
+        read.add(member)
+        try:
+            raw = _read_member(epub, member).decode("utf-8", "replace")
+        except KeyError:
             continue
         cleaned = sanitize_html(raw)
+        start = GUTENBERG_START.search(cleaned)
+        if start:
+            # Everything before the marker was the header: spend nothing on it.
+            chapters.clear()
+            text_bytes = chunk_count = 0
+            cleaned = LEADING_CLOSERS.sub("", cleaned[start.end() :])
+        end = GUTENBERG_END.search(cleaned)
+        if end:
+            gutenberg_ended = True
+            cleaned = TRAILING_OPENERS.sub("", cleaned[: end.start()].rstrip())
         text = extract_text(cleaned)
         if not text:
             continue
+        if len(chapters) == limits.chapters:
+            raise RejectedEpub(f"EPUB has more than {limits.chapters} chapters")
+        text_bytes += len(text.encode("utf-8"))
+        if text_bytes > limits.text_bytes:
+            raise RejectedEpub(f"EPUB text exceeds {limits.text_bytes // 1_000_000} MB")
+        # Counted here, before anything is written or paid for.
+        chunks = chunk_words(text)
+        chunk_count += len(chunks)
+        if chunk_count > limits.chunks:
+            raise RejectedEpub(
+                f"EPUB yields more than {limits.chunks} passages, the most one book may embed"
+            )
         heading = ""
         for tag in ("h1", "h2", "h3"):
             start = cleaned.lower().find(f"<{tag}>")
@@ -350,17 +596,18 @@ def parse_epub(data: bytes) -> ParsedEpub:
                 html=cleaned,
                 text=text,
                 word_count=len(text.split()),
+                chunks=chunks,
+                paragraphs=paragraph_texts(cleaned),
             )
         )
 
     if not chapters:
-        raise ValueError("EPUB contains no readable spine chapters")
+        raise RejectedEpub("EPUB contains no readable spine chapters")
     return ParsedEpub(
         title=title,
         author=author,
         language=language,
         cover_bytes=cover_bytes,
-        cover_media_type=cover_media,
         chapters=chapters,
     )
 
@@ -567,6 +814,20 @@ def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
 
 LOG = logging.getLogger("ingestion")
 
+# Mirrors JOB_TTL_SECS in crates/infra/src/queue.rs.
+JOB_TTL_SECONDS = 7 * 24 * 3600
+
+
+def write_job(redis_client, job_id: str, write):
+    """Runs ``write(pipe, key)`` with the hash TTL refreshed in the same
+    MULTI: a job hash the server let expire is never recreated without one.
+    Returns the reply of the write."""
+    key = f"job:{job_id}"
+    pipe = redis_client.pipeline()
+    write(pipe, key)
+    pipe.expire(key, JOB_TTL_SECONDS)
+    return pipe.execute()[0]
+
 
 def set_job(redis_client, job_id: str, status: str, progress: int, error: str = "") -> None:
     fields = {
@@ -574,22 +835,67 @@ def set_job(redis_client, job_id: str, status: str, progress: int, error: str = 
         "progress": str(progress),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    if error:
-        fields["error"] = error[:2000]
-    redis_client.hset(f"job:{job_id}", mapping=fields)
+    fields["error"] = error[:2000]
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, mapping=fields))
 
 
-def convert_cover_to_webp(cover_bytes: bytes) -> tuple[bytes, str]:
+# The cover formats an EPUB may carry; SVG, TIFF, JPEG 2000, BMP and the
+# rest never reach a decoder.
+COVER_FORMATS = ["JPEG", "PNG", "WEBP", "GIF"]
+# Pixels decoded for one cover. Past this Pillow refuses at the header,
+# before allocating anything, so a small file cannot claim gigabytes.
+MAX_COVER_PIXELS = 40_000_000
+# Longest edge of a stored cover; JPEGs decode straight to this scale.
+COVER_MAX_EDGE = 1600
+
+
+def convert_cover_to_webp(cover_bytes: bytes) -> bytes:
+    """Decodes an untrusted cover and re-encodes it as WebP. Raises on any
+    format outside :data:`COVER_FORMATS` or any decompression bomb."""
+    import warnings
+
     from PIL import Image
 
-    with Image.open(io.BytesIO(cover_bytes)) as image:
-        canvas = image.convert("RGB")
-        buffer = io.BytesIO()
-        canvas.save(buffer, format="WEBP", quality=82)
-        return buffer.getvalue(), "image/webp"
+    Image.MAX_IMAGE_PIXELS = MAX_COVER_PIXELS
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(io.BytesIO(cover_bytes), formats=COVER_FORMATS) as image:
+            image.thumbnail((COVER_MAX_EDGE, COVER_MAX_EDGE))
+            canvas = image.convert("RGB")
+            buffer = io.BytesIO()
+            canvas.save(buffer, format="WEBP", quality=82)
+            return buffer.getvalue()
 
 
 ARCHIVED_ERROR = "Book is archived; it was not republished"
+UNTITLED = "Untitled"
+MISSING_OBJECT_CODES = {"NoSuchKey", "NoSuchBucket"}
+
+
+def read_upload(minio_client, bucket: str, path: str) -> bytes:
+    from minio.error import S3Error
+
+    try:
+        response = minio_client.get_object(bucket, path)
+    except S3Error as exc:
+        if exc.code in MISSING_OBJECT_CODES:
+            raise PermanentJobError("The uploaded EPUB is gone from storage; upload it again") from exc
+        raise
+    try:
+        return response.read()
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def curator_reason(exc: BaseException) -> str:
+    """What the curator desk shows. Only permanent errors are worded for it;
+    anything else names its kind, and the worker log keeps the detail."""
+    if isinstance(exc, PermanentJobError):
+        return str(exc)
+    if isinstance(exc, RuntimeError) and str(exc).startswith("Gemini API"):
+        return str(exc)
+    return f"Unexpected {type(exc).__name__}; the worker log has the details"
 
 
 def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
@@ -607,11 +913,8 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
     try:
         set_job(redis_client, job_id, "parsing", 5)
-        response = minio_client.get_object(settings.bucket_epubs, storage_path)
-        epub_bytes = response.read()
-        response.close()
-        response.release_conn()
-        parsed = parse_epub(epub_bytes)
+        epub_bytes = read_upload(minio_client, settings.bucket_epubs, storage_path)
+        parsed = parse_epub(epub_bytes, settings.limits)
 
         # Metadata backfill: fill only blank admin-provided fields.
         cur.execute(
@@ -620,16 +923,24 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
         )
         row = cur.fetchone()
         if row is None:
-            raise RuntimeError(f"Book row missing: {book_id}")
+            raise PermanentJobError("The book was deleted before ingestion")
         if row[3] == "archived":
             # A curator archived it; a replay must neither republish it nor
             # spend embeddings on it.
             set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
             LOG.info("book %s is archived; ingestion skipped", book_id)
             return
+        # The catalog shows the book as processing until it publishes; a
+        # failure for good hands it back to draft (see fail_job).
+        cur.execute(
+            "UPDATE books SET status = 'processing', updated_at = NOW() WHERE id = %s AND status = 'draft'",
+            (book_id,),
+        )
         updates: dict[str, str] = {}
-        if (not row[0] or row[0] == "Unknown") and parsed.title:
-            updates["title"] = parsed.title
+        # A curator who left the title blank gets the EPUB's, or a
+        # placeholder rather than an empty title in the catalog.
+        if not row[0] or row[0] == "Unknown":
+            updates["title"] = parsed.title or UNTITLED
         if (not row[1] or row[1] == "Unknown") and parsed.author:
             updates["author"] = parsed.author
         if not row[2] and parsed.language:
@@ -641,27 +952,32 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 (*updates.values(), book_id),
             )
 
-        # Cover extraction (WebP when Pillow cooperates, original otherwise).
+        # Only a cover that decodes and re-encodes is stored; anything else
+        # leaves the book on the typographic cover the web draws.
+        cover_data = None
         if parsed.cover_bytes:
             try:
-                cover_data, cover_type = convert_cover_to_webp(parsed.cover_bytes)
-                cover_key = f"covers/{book_id}.webp"
-            except Exception as exc:  # noqa: BLE001 - Pillow must never kill ingestion
-                LOG.warning("cover conversion failed, storing original: %s", exc)
-                ext = "png" if "png" in parsed.cover_media_type else "jpg"
-                cover_data, cover_type = parsed.cover_bytes, parsed.cover_media_type or "image/jpeg"
-                cover_key = f"covers/{book_id}.{ext}"
+                cover_data = convert_cover_to_webp(parsed.cover_bytes)
+            except Exception as exc:  # noqa: BLE001 - a bad cover must never kill ingestion
+                LOG.warning("cover of %s refused, publishing without one: %s", book_id, exc)
+        if cover_data:
+            cover_key = f"covers/{book_id}.webp"
             minio_client.put_object(
                 settings.bucket_covers,
                 cover_key,
                 io.BytesIO(cover_data),
                 len(cover_data),
-                content_type=cover_type,
+                content_type="image/webp",
             )
             cur.execute(
                 "UPDATE books SET cover_url = %s, updated_at = NOW() WHERE id = %s",
                 (cover_key, book_id),
             )
+        # The book row is written only above and at publish. Committing now
+        # frees it for the hours of embedding and summaries below: a curator
+        # archiving the book meanwhile is not left waiting on this job, and
+        # the publish step still leaves an archived book archived.
+        conn.commit()
 
         # Chapters upsert (idempotent across re-runs).
         set_job(redis_client, job_id, "chunking", 30)
@@ -686,32 +1002,44 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 ),
             )
             chapter_ids.append(str(cur.fetchone()[0]))
+            write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
         # Scene chunking at ~400 words, then batched embeddings.
-        pending: list[tuple[str, int, str]] = []
+        pending: list[tuple[str, int, str, str | None]] = []
         for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            for index, piece in enumerate(chunk_words(chapter.text)):
-                pending.append((chapter_id, index, piece))
+            anchors = chunk_anchors(chapter.chunks, chapter.paragraphs)
+            for index, (piece, anchor) in enumerate(zip(chapter.chunks, anchors)):
+                pending.append((chapter_id, index, piece, anchor))
         if not pending:
-            raise RuntimeError("No embeddable chunks produced")
+            raise PermanentJobError("EPUB yields no passages to embed")
+        # The book row is free since the first commit, so a curator may have
+        # archived it already; stop before the embeddings and summaries are paid.
+        cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
+        current = cur.fetchone()
+        if current is not None and current[-1] == "archived":
+            conn.rollback()
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s was archived before embedding; ingestion stopped", book_id)
+            return
 
         set_job(redis_client, job_id, "embedding", 55)
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
-            vectors = embed_batch([text for _, _, text in batch], settings, job_id)
-            for (chapter_id, index, text), vector in zip(batch, vectors):
+            vectors = embed_batch([text for _, _, text, _ in batch], settings, job_id)
+            for (chapter_id, index, text, anchor), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
                 cur.execute(
                     """INSERT INTO book_chunks
-                       (id, book_id, chapter_id, chunk_index, chunk_text, embedding)
-                       VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                       (id, book_id, chapter_id, chunk_index, chunk_text, cfi_range, embedding)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s::vector)""",
                     (
                         str(uuid.uuid4()),
                         book_id,
                         chapter_id,
                         index,
                         text,
+                        anchor,
                         literal,
                     ),
                 )
@@ -769,13 +1097,18 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                 80 + int(15 * number / len(chapter_ids)),
             )
 
-        # Publish the book.
+        # The word count marks a finished ingestion even for a book archived
+        # meanwhile, so a curator can restore it; only the status waits on
+        # the archive.
         minutes = max(1, total_words // 200)
         cur.execute(
-            """UPDATE books SET total_words = %s, estimated_reading_minutes = %s,
-                      status = 'published', updated_at = NOW()
-               WHERE id = %s AND status <> 'archived'""",
+            """UPDATE books SET total_words = %s, estimated_reading_minutes = %s, updated_at = NOW()
+               WHERE id = %s""",
             (total_words, minutes, book_id),
+        )
+        cur.execute(
+            "UPDATE books SET status = 'published' WHERE id = %s AND status <> 'archived'",
+            (book_id,),
         )
         published = cur.rowcount > 0
         conn.commit()
@@ -796,7 +1129,77 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             pass
 
 
+# Rows per INSERT when writing paragraphs: one statement per paragraph
+# would cost a round trip each for books of tens of thousands.
+PARAGRAPH_BATCH = 500
+
+
+def write_paragraphs(cur, book_id: str, chapter_number: int, paragraphs: list[str]) -> None:
+    """Replaces the indexed paragraphs of one chapter (re-ingestion and the
+    backfill both rewrite them whole)."""
+    cur.execute(
+        "DELETE FROM chapter_paragraphs WHERE book_id = %s AND chapter_number = %s",
+        (book_id, chapter_number),
+    )
+    rows = [(n, text) for n, text in enumerate(paragraphs, start=1)]
+    for offset in range(0, len(rows), PARAGRAPH_BATCH):
+        batch = rows[offset : offset + PARAGRAPH_BATCH]
+        values = ", ".join(["(%s, %s, %s, %s, %s)"] * len(batch))
+        params = [
+            v for n, text in batch for v in (book_id, chapter_number, n, text, fold_for_search(text))
+        ]
+        cur.execute(
+            f"INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES {values}",
+            params,
+        )
+
+
+def backfill_paragraphs(settings: Settings) -> int:
+    """Indexes the paragraphs of every chapter from its stored HTML and
+    anchors its stored chunks on them, for books ingested before either
+    existed; the embeddings are kept, nothing is paid again. Returns
+    chapters done."""
+    conn = make_db(settings)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT book_id FROM chapters")
+        books = [str(row[0]) for row in cur.fetchall()]
+        done = 0
+        # One book's HTML in memory and one transaction per book: a large
+        # library neither loads whole nor holds its locks until the end.
+        for book_id in books:
+            done += backfill_book(cur, book_id)
+            conn.commit()
+        return done
+    finally:
+        conn.close()
+
+
+def backfill_book(cur, book_id: str) -> int:
+    """Indexes one book's paragraphs and anchors its chunks. Returns chapters done."""
+    cur.execute(
+        "SELECT id, chapter_number, html_content FROM chapters WHERE book_id = %s ORDER BY chapter_number",
+        (book_id,),
+    )
+    chapters = cur.fetchall()
+    for chapter_id, chapter_number, html_content in chapters:
+        paragraphs = paragraph_texts(html_content or "")
+        write_paragraphs(cur, book_id, chapter_number, paragraphs)
+        cur.execute(
+            "SELECT id, chunk_text FROM book_chunks WHERE chapter_id = %s ORDER BY chunk_index",
+            (str(chapter_id),),
+        )
+        chunks = cur.fetchall()
+        anchors = chunk_anchors([text for _, text in chunks], paragraphs)
+        for (chunk_id, _), anchor in zip(chunks, anchors):
+            cur.execute("UPDATE book_chunks SET cfi_range = %s WHERE id = %s", (anchor, str(chunk_id)))
+    return len(chapters)
+
+
 # Consumer loop
+
+# Runs of one job before it is dead-lettered, crashes included.
+MAX_ATTEMPTS = 3
 
 
 class WorkerShutdown(BaseException):
@@ -842,29 +1245,37 @@ def keep_claimed(redis_client, settings: Settings, consumer: str, msg_id: str):
         thread.join(timeout=5)
 
 
-def reclaim_idle(redis_client, settings: Settings, consumer: str) -> list:
-    """Takes over one entry idle past `RECLAIM_IDLE_MS` (dead-worker
-    recovery). Redis 7 answers XAUTOCLAIM with three values (next cursor,
-    entries, deleted ids) and Redis 6.2 with two; only the entries matter."""
+def reclaim_idle(
+    redis_client, settings: Settings, consumer: str, cursor: str = "0-0"
+) -> tuple[list, str]:
+    """Takes over the next entry idle past `RECLAIM_IDLE_MS` (dead-worker
+    recovery), scanning the pending list from ``cursor``; returns the entries
+    and the cursor for the next call, which wraps to ``0-0`` after a pass.
+
+    One entry at a time on purpose: a batch would leave the rest idle behind
+    the first job, and another replica would take and ingest them twice.
+    Redis 7 answers with three values (cursor, entries, deleted ids)."""
     try:
         reply = redis_client.xautoclaim(
             settings.stream,
             settings.group,
             consumer,
             min_idle_time=settings.reclaim_idle_ms,
-            start_id="0-0",
+            start_id=cursor,
             count=1,
         )
     except Exception as exc:  # noqa: BLE001 - reclaim is best-effort
         LOG.warning("xautoclaim failed: %s", exc)
-        return []
-    return list(reply[1]) if reply and len(reply) > 1 else []
+        return [], "0-0"
+    if not reply or len(reply) < 2:
+        return [], "0-0"
+    return list(reply[1]), str(reply[0])
 
 
 def release_job(redis_client, job_id: str) -> None:
     """Hands an interrupted job back: the attempt does not count, the entry
     stays pending for another worker, and the curator sees it queued."""
-    redis_client.hincrby(f"job:{job_id}", "attempts", -1)
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", -1))
     set_job(redis_client, job_id, "queued", 0)
 
 def ensure_group(redis_client, settings: Settings) -> None:
@@ -891,61 +1302,129 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
     signal.signal(signal.SIGTERM, _raise_shutdown)
     signal.signal(signal.SIGINT, _raise_shutdown)
 
+    # Reclaim runs every turn, before new work, and its cursor walks the
+    # pending list: one entry failing for good cannot hold the rest back.
+    cursor = "0-0"
     while True:
-        try:
-            messages = redis_client.xreadgroup(
-                settings.group, consumer, {settings.stream: ">"}, count=1, block=5000
-            )
-        except Exception as exc:  # noqa: BLE001 - stalled/blocked read: retry loop
-            LOG.warning("stream read stalled (%s); retrying", exc)
-            if once:
-                break
-            continue
-        entries = [entry for _, batch in (messages or []) for entry in batch]
+        entries, cursor = reclaim_idle(redis_client, settings, consumer, cursor)
         if not entries:
-            entries = reclaim_idle(redis_client, settings, consumer)
+            try:
+                messages = redis_client.xreadgroup(
+                    settings.group, consumer, {settings.stream: ">"}, count=1, block=5000
+                )
+            except Exception as exc:  # noqa: BLE001 - stalled/blocked read: retry loop
+                LOG.warning("stream read stalled (%s); retrying", exc)
+                if once:
+                    break
+                continue
+            entries = [entry for _, batch in (messages or []) for entry in batch]
         if not entries:
             if once:
                 break
             continue
         for msg_id, fields in entries:
-                job_id = fields.get("job_id", msg_id)
-                attempts_key = f"job:{job_id}"
-                try:
-                    attempts = int(redis_client.hincrby(attempts_key, "attempts", 1))
-                except (TypeError, ValueError):
-                    attempts = 0
-                try:
-                    with keep_claimed(redis_client, settings, consumer, msg_id):
-                        process_message(msg_id, fields, settings)
-                    redis_client.xack(settings.stream, settings.group, msg_id)
-                    processed += 1
-                except WorkerShutdown:
-                    release_job(redis_client, job_id)
-                    LOG.info("shutdown: job %s released unacknowledged", job_id)
-                    raise
-                except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
-                    LOG.exception("job %s failed: %s", job_id, exc)
-                    if attempts >= 3:
-                        dead_letter(redis_client, settings, job_id, exc)
-                        set_job(redis_client, job_id, "failed", 100, error=str(exc))
-                        redis_client.xack(settings.stream, settings.group, msg_id)
-                    # Otherwise leave unacknowledged for XPENDING reclaim.
-                if once:
-                    return 0
+            if handle_entry(redis_client, settings, consumer, msg_id, fields):
+                processed += 1
+            if once:
+                return 0
     return processed
 
 
-def dead_letter(redis_client, settings: Settings, job_id: str, exc: Exception) -> None:
+def handle_entry(redis_client, settings: Settings, consumer: str, msg_id: str, fields) -> bool:
+    """Runs one stream entry to an end: published, retried later, or failed
+    for good. Returns whether it published."""
+    if not fields:
+        # The entry's payload was deleted (XDEL) while it sat pending.
+        redis_client.xack(settings.stream, settings.group, msg_id)
+        return False
+    job_id = fields.get("job_id", msg_id)
+    try:
+        attempts = int(
+            write_job(redis_client, job_id, lambda pipe, key: pipe.hincrby(key, "attempts", 1))
+        )
+    except (TypeError, ValueError):
+        attempts = 0
+    if attempts > MAX_ATTEMPTS:
+        # Earlier attempts never reached an except clause: the process was
+        # killed (OOM, SIGKILL) mid-job. A fourth run would only die again.
+        fail_job(
+            redis_client, settings, msg_id, fields,
+            f"The worker stopped {MAX_ATTEMPTS} times while ingesting this book",
+        )
+        return False
+    try:
+        with keep_claimed(redis_client, settings, consumer, msg_id):
+            process_message(msg_id, fields, settings)
+    except WorkerShutdown:
+        release_job(redis_client, job_id)
+        LOG.info("shutdown: job %s released unacknowledged", job_id)
+        raise
+    except PermanentJobError as exc:
+        LOG.warning("job %s failed for good: %s", job_id, exc)
+        fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
+        LOG.exception("job %s failed: %s", job_id, exc)
+        if attempts >= MAX_ATTEMPTS:
+            fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
+        else:
+            # Left unacknowledged: reclaim retries it once it is idle.
+            set_job(
+                redis_client, job_id, "queued", 0,
+                error=curator_reason(exc),
+            )
+        return False
+    redis_client.xack(settings.stream, settings.group, msg_id)
+    return True
+
+
+def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason: str) -> None:
+    """Ends a job for good: dead letter first, so a crash before the ack
+    leaves it pending rather than lost."""
+    job_id = fields.get("job_id", msg_id)
+    # A crash between this dead letter and the ack below redelivers the
+    # entry; the job already failed, so a second letter would only double a
+    # replay.
+    if redis_client.hget(f"job:{job_id}", "status") != "failed":
+        dead_letter(redis_client, settings, job_id, fields.get("book_id", ""), reason)
+    set_job(redis_client, job_id, "failed", 100, error=reason)
+    return_to_draft(settings, fields.get("book_id", ""))
+    redis_client.xack(settings.stream, settings.group, msg_id)
+
+
+def return_to_draft(settings: Settings, book_id: str) -> None:
+    """A book whose job failed for good is no longer processing. Best effort:
+    the dead letter already holds the failure, and a replay moves it again."""
+    if not book_id:
+        return
+    try:
+        conn = make_db(settings)
+        try:
+            conn.cursor().execute(
+                "UPDATE books SET status = 'draft', updated_at = NOW() WHERE id = %s AND status = 'processing'",
+                (book_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - must not undo the dead letter
+        LOG.warning("book %s left processing: %s", book_id, exc)
+
+
+def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, reason: str) -> None:
     redis_client.xadd(
         settings.dlq_stream,
-        {"job_id": job_id, "error": str(exc)[:2000]},
+        {"job_id": job_id, "book_id": book_id, "error": reason[:2000]},
         maxlen=settings.stream_maxlen,
         approximate=True,
     )
 
 
 def main() -> None:
+    if "--backfill-paragraphs" in sys.argv[1:]:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        LOG.info("indexed the paragraphs of %d chapters", backfill_paragraphs(Settings()))
+        return
     try:
         sys.exit(run(once="--once" in sys.argv[1:]))
     except WorkerShutdown as reason:

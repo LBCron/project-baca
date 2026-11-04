@@ -1,0 +1,4 @@
+[env]
+# Swagger UI that utoipa-swagger-ui embeds for the dev docs. Its own default
+# (v5.32.6) bundles DOMPurify 3.4.0; 5.34.1 ships 3.4.17. Bump with the crate.
+SWAGGER_UI_DOWNLOAD_URL = "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.34.1.zip"

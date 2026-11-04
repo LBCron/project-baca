@@ -16,7 +16,6 @@ struct SeededAiContext {
     pub book_id: Uuid,
     pub chapter1_id: Uuid,
     pub chapter2_id: Uuid,
-    #[allow(dead_code)]
     pub user_id: Uuid,
     pub token: String,
     pub other_book_id: Uuid,
@@ -66,6 +65,14 @@ async fn seed_reader(harness: &TestHarness, email: &str) -> SeededReader {
 struct SeededReader {
     pub token: String,
 }
+
+/// Chapter one of the seeded book. Besides the passage the vector tests
+/// find, it holds every phrase the quote tests save there.
+const CHAPTER_ONE_HTML: &str = "<p>The oldest and strongest emotion of mankind is fear.</p>\
+<p>The oldest and strongest emotion of mankind is fear, and the oldest and strongest kind of fear is fear of the unknown.</p>\
+<p>Ownership split probe quote. Idempotent quote. A batch past the cap.</p>\
+<p>Racing quote 0. Racing quote 1. Racing quote 2. Racing quote 3. Racing quote 4.</p>\
+<p>Batch quote 0. Batch quote 1. Batch quote 2. Planted quote 7.</p>";
 
 async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, String> {
     let now = Utc::now();
@@ -135,9 +142,9 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_number: Set(1),
         title: Set("Chapter I: The Old Curiosity".to_string()),
         word_count: Set(4200),
-        html_content: Set(
-            "<p>The oldest and strongest emotion of mankind is fear.</p>".to_string(),
-        ),
+        // Saved quotes must be in their chapter, so the phrases the quote
+        // tests save are part of it.
+        html_content: Set(CHAPTER_ONE_HTML.to_string()),
         created_at: Set(now.into()),
     };
 
@@ -176,6 +183,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
             "The oldest and strongest emotion of mankind is fear, and the oldest and strongest kind of fear is fear of the unknown."
                 .to_string(),
         ),
+        cfi_range: Set(Some("p-1".to_string())),
         embedding: Set(PgVector::from(one_hot(0))),
         created_at: Set(now.into()),
     };
@@ -194,6 +202,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
             "The crumbling roofs of Innsmouth hung over the dark bay as fog swallowed the harbor lights."
                 .to_string(),
         ),
+        cfi_range: Set(None),
         embedding: Set(PgVector::from(one_hot(1))),
         created_at: Set(now.into()),
     };
@@ -253,6 +262,7 @@ async fn seed_test_context(harness: &TestHarness) -> Result<SeededAiContext, Str
         chapter_id: Set(other_chapter_id),
         chunk_index: Set(0),
         chunk_text: Set("Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.".to_string()),
+        cfi_range: Set(None),
         embedding: Set(PgVector::from(one_hot(0))),
         created_at: Set(now.into()),
     };
@@ -385,6 +395,9 @@ async fn test_scoped_quote_search_success_and_ratelimit_headers() {
     // ~1.0); the orthogonal chapter-2 chunk ranks last.
     let top = &data[0];
     assert_eq!(top["chapter_number"], 1);
+    // The anchor of the paragraph the chunk starts in, for "Buka halaman".
+    assert_eq!(top["cfi_range"], "p-1");
+    assert_eq!(data[1]["cfi_range"], Value::Null);
     let top_sim = top["similarity_score"]
         .as_f64()
         .expect("similarity_score must be a number");
@@ -559,11 +572,7 @@ async fn test_guest_ai_burst_enforcement() {
         .expect("Seeding must succeed");
 
     // Unique IP per run isolates this bucket from other tests and re-runs.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock must advance")
-        .as_nanos();
-    let guest_ip = format!("198.51.100.{}", (nanos % 200 + 1) as u8);
+    let guest_ip = common::unique_ip("198.19");
 
     let mut ok_count = 0;
     for _ in 0..25 {
@@ -590,6 +599,65 @@ async fn test_guest_ai_burst_enforcement() {
     }
     assert!(ok_count >= 1, "guest burst must allow initial requests");
     assert!(ok_count <= 10, "guest burst must shed past 10 req/min");
+    harness.cleanup().await;
+}
+
+/// The daily ceiling counts every reader together, so a fresh address per
+/// request still stops once the ceiling is spent.
+#[tokio::test]
+async fn test_ai_daily_budget_sheds_across_addresses() {
+    // Guests share a fifth of the ceiling: two searches of ten.
+    let harness = TestHarness::with_config(|c| c.ai.daily_budget = 10).await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let budgets = ["budget:ai:all", "budget:ai:guest"];
+    let _: () = redis::AsyncCommands::del(&mut redis, &budgets)
+        .await
+        .unwrap();
+    for i in 1..=3 {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
+            .header(common::CLIENT_IP_HEADER, common::unique_ip("198.19"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "query": "foggy harbor" }).to_string(),
+            ))
+            .expect("Valid request");
+        let resp = harness.send_request(req).await;
+        if i <= 2 {
+            assert_eq!(resp.status(), StatusCode::OK, "search {i}");
+            continue;
+        }
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "AI_RATE_LIMITED");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("per day"));
+    }
+
+    // Spent guests leave the rest of the ceiling to signed-in readers.
+    let reader = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/books/{}/quotes/search", seeded.book_id))
+        .header(header::AUTHORIZATION, format!("Bearer {}", seeded.token))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "query": "foggy harbor" }).to_string(),
+        ))
+        .expect("Valid request");
+    assert_eq!(harness.send_request(reader).await.status(), StatusCode::OK);
+    let _: () = redis::AsyncCommands::del(&mut redis, &budgets)
+        .await
+        .unwrap();
     harness.cleanup().await;
 }
 
@@ -1224,7 +1292,7 @@ async fn test_single_quote_save_is_idempotent() {
     let seeded = seed_test_context(&harness)
         .await
         .expect("Seeding must succeed");
-    let text = format!("Idempotent quote {}", Uuid::new_v4());
+    let text = "Idempotent quote.".to_string();
     let save = || {
         Request::builder()
             .method("POST")
@@ -1270,5 +1338,333 @@ async fn test_single_quote_save_is_idempotent() {
         .filter(|q| q["quote_text"] == text)
         .count();
     assert_eq!(copies, 1, "exactly one row for the repeated quote");
+    harness.cleanup().await;
+}
+
+/// Writes `count` quotes for the seeded reader straight into the table, one
+/// second apart, the newest first in time order of `g`.
+async fn plant_quotes(harness: &TestHarness, seeded: &SeededAiContext, count: i64) {
+    plant_quotes_spaced(harness, seeded, count, 1).await;
+}
+
+/// As [`plant_quotes`], `spacing` seconds apart; 0 gives every quote one
+/// timestamp, as a batch save does.
+async fn plant_quotes_spaced(
+    harness: &TestHarness,
+    seeded: &SeededAiContext,
+    count: i64,
+    spacing: i64,
+) {
+    use sea_orm::{ConnectionTrait, Statement};
+    harness
+        .state
+        .db
+        .execute(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at)
+             SELECT gen_random_uuid(), $1, $2, $3, 'Planted quote ' || g, NOW() - g * $5 * INTERVAL '1 second'
+             FROM generate_series(1, $4) AS g",
+            [
+                seeded.user_id.into(),
+                seeded.book_id.into(),
+                seeded.chapter1_id.into(),
+                count.into(),
+                spacing.into(),
+            ],
+        ))
+        .await
+        .expect("planting quotes must succeed");
+}
+
+fn bearer(method: &str, uri: &str, token: &str, body: Option<Value>) -> Request<Body> {
+    let builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    match body {
+        Some(json) => builder
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json.to_string())),
+        None => builder.body(Body::empty()),
+    }
+    .expect("Valid request")
+}
+
+#[tokio::test]
+async fn test_saved_quotes_page_by_keyset_and_cap_the_page() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes(&harness, &seeded, 120).await;
+    let page = |uri: String| {
+        let req = bearer("GET", &uri, &seeded.token, None);
+        let harness = &harness;
+        async move { harness.send_json_request(req).await }
+    };
+
+    let (resp, body) = page("/api/v1/quotes".to_string()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 50, "default page");
+
+    let (_, first) = page("/api/v1/quotes?limit=100".to_string()).await;
+    let first = first["data"].as_array().unwrap().clone();
+    assert_eq!(first.len(), 100);
+    let last = first.last().unwrap()["id"].as_str().unwrap().to_string();
+    let (_, rest) = page(format!("/api/v1/quotes?limit=100&cursor={last}")).await;
+    let rest = rest["data"].as_array().unwrap().clone();
+    assert_eq!(rest.len(), 20, "the short page is the last one");
+
+    let texts: Vec<&str> = first
+        .iter()
+        .chain(rest.iter())
+        .map(|q| q["quote_text"].as_str().unwrap())
+        .collect();
+    let expected: Vec<String> = (1..=120).map(|g| format!("Planted quote {g}")).collect();
+    assert_eq!(texts, expected, "newest first, no gap, no repeat");
+
+    for bad in ["limit=101", "limit=0"] {
+        let (resp, _) = page(format!("/api/v1/quotes?{bad}")).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    // A cursor from someone else's shelf reveals nothing of their order.
+    let stranger = seed_test_context(&harness).await.expect("second reader");
+    plant_quotes(&harness, &stranger, 3).await;
+    let (_, theirs) = harness
+        .send_json_request(bearer("GET", "/api/v1/quotes", &stranger.token, None))
+        .await;
+    let their_id = theirs["data"][0]["id"].as_str().unwrap().to_string();
+    let (resp, body) = page(format!("/api/v1/quotes?cursor={their_id}")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+    harness.cleanup().await;
+}
+
+/// Quotes saved in one batch share one timestamp; the id breaks the tie,
+/// so paging through them repeats and skips nothing.
+#[tokio::test]
+async fn test_saved_quotes_page_through_one_shared_timestamp() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes_spaced(&harness, &seeded, 120, 0).await;
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = String::new();
+    for expected in [50, 50, 20] {
+        let uri = format!("/api/v1/quotes{cursor}");
+        let (_, body) = harness
+            .send_json_request(bearer("GET", &uri, &seeded.token, None))
+            .await;
+        let page = body["data"].as_array().unwrap();
+        assert_eq!(page.len(), expected);
+        for quote in page {
+            assert!(
+                seen.insert(quote["id"].as_str().unwrap().to_string()),
+                "repeated across pages"
+            );
+        }
+        cursor = format!("?cursor={}", page.last().unwrap()["id"].as_str().unwrap());
+    }
+    assert_eq!(seen.len(), 120);
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_saving_past_the_quote_quota_is_409() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes(&harness, &seeded, infra::MAX_SAVED_QUOTES_PER_USER - 1).await;
+    let save = |text: &str| {
+        bearer(
+            "POST",
+            "/api/v1/quotes/save",
+            &seeded.token,
+            Some(serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": text
+            })),
+        )
+    };
+
+    // Five parallel saves at one slot left: the row lock lets exactly one in.
+    let racers = (0..5).map(|i| harness.send_json_request(save(&format!("Racing quote {i}"))));
+    let answers = futures::future::join_all(racers).await;
+    let created = answers
+        .iter()
+        .filter(|(resp, _)| resp.status() == StatusCode::CREATED)
+        .count();
+    assert_eq!(created, 1, "exactly one save fits the last slot");
+    for (resp, body) in answers
+        .iter()
+        .filter(|(resp, _)| resp.status() != StatusCode::CREATED)
+    {
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    }
+
+    // Saving a quote already on the shelf stays idempotent at the cap.
+    let resp = harness.send_request(save("Planted quote 7")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let batch = bearer(
+        "POST",
+        "/api/v1/quotes/save-batch",
+        &seeded.token,
+        Some(serde_json::json!({ "items": [{
+            "book_id": seeded.book_id,
+            "chapter_id": seeded.chapter1_id,
+            "quote_text": "A batch past the cap."
+        }]})),
+    );
+    let (resp, body) = harness.send_json_request(batch).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    harness.cleanup().await;
+}
+
+/// A batch that would cross the quota saves none of it, not the part that
+/// fits: the device that sent it keeps every quote it could not hand over.
+#[tokio::test]
+async fn test_a_batch_crossing_the_quota_saves_nothing() {
+    use sea_orm::{ConnectionTrait, Statement};
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    plant_quotes(&harness, &seeded, infra::MAX_SAVED_QUOTES_PER_USER - 2).await;
+    let items: Vec<Value> = (0..3)
+        .map(|i| {
+            serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": format!("Batch quote {i}")
+            })
+        })
+        .collect();
+    let batch = bearer(
+        "POST",
+        "/api/v1/quotes/save-batch",
+        &seeded.token,
+        Some(serde_json::json!({ "items": items })),
+    );
+    let (resp, body) = harness.send_json_request(batch).await;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(body["error"]["code"], "QUOTA_EXCEEDED");
+    let kept = harness
+        .state
+        .db
+        .query_one(Statement::from_sql_and_values(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT COUNT(*) AS kept FROM saved_quotes WHERE user_id = $1",
+            [seeded.user_id.into()],
+        ))
+        .await
+        .expect("count must run")
+        .expect("count returns a row")
+        .try_get::<i64>("", "kept")
+        .expect("count is a number");
+    assert_eq!(kept, infra::MAX_SAVED_QUOTES_PER_USER - 2);
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_account_writes_past_the_minute_limit_are_429() {
+    let harness = TestHarness::new().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Postgres + Redis required (db-up)");
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let _: () = redis::AsyncCommands::del(&mut redis, format!("rl:user:{}", seeded.user_id))
+        .await
+        .unwrap();
+    // Invalid writes still count: the limiter runs before the handler, and
+    // one bucket covers the account across /quotes and /progress.
+    let write = |i: u32| {
+        if i.is_multiple_of(2) {
+            bearer(
+                "POST",
+                "/api/v1/quotes/save",
+                &seeded.token,
+                Some(serde_json::json!({})),
+            )
+        } else {
+            let uri = format!("/api/v1/progress/{}", Uuid::new_v4());
+            bearer("PUT", &uri, &seeded.token, Some(serde_json::json!({})))
+        }
+    };
+    for i in 1..=120 {
+        let resp = harness.send_request(write(i)).await;
+        assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "write {i}");
+    }
+    let (resp, body) = harness.send_json_request(write(121)).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    assert!(resp.headers().get(header::RETRY_AFTER).is_some());
+
+    // Reads are not writes: the shelf still opens.
+    let resp = harness
+        .send_request(bearer("GET", "/api/v1/quotes", &seeded.token, None))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    harness.cleanup().await;
+}
+
+/// A quote must be words of its chapter: an invented line is refused with
+/// VALIDATION_FAILED, alone or in a batch, while a real one, selected
+/// across a paragraph break, is kept.
+#[tokio::test]
+async fn test_a_quote_not_in_its_chapter_is_refused() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let save = |text: &str| {
+        bearer(
+            "POST",
+            "/api/v1/quotes/save",
+            &seeded.token,
+            Some(serde_json::json!({
+                "book_id": seeded.book_id,
+                "chapter_id": seeded.chapter1_id,
+                "quote_text": text
+            })),
+        )
+    };
+    let (resp, body) = harness
+        .send_json_request(save("Fear is the mind-killer."))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_FAILED");
+
+    let (resp, body) = harness
+        .send_json_request(save("is fear.\n\nThe oldest and   strongest"))
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED, "{body}");
+
+    let batch = bearer(
+        "POST",
+        "/api/v1/quotes/save-batch",
+        &seeded.token,
+        Some(serde_json::json!({ "items": [
+            { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": "Batch quote 1." },
+            { "book_id": seeded.book_id, "chapter_id": seeded.chapter1_id, "quote_text": "A line no one wrote." },
+        ]})),
+    );
+    let (resp, body) = harness.send_json_request(batch).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["saved"], 1);
+    assert_eq!(body["data"]["rejected"], 1);
+    assert_eq!(
+        body["data"]["outcomes"][1]["error"],
+        "The quote is not in this chapter"
+    );
     harness.cleanup().await;
 }

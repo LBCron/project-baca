@@ -38,13 +38,16 @@ Credentials and bucket names are in `.env.example`. The server creates the bucke
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger |
+| `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger; `.env.example` sets `APP_HOST=127.0.0.1` so the dev API stays off the network (the Android emulator reaches it at 10.0.2.2), while the server image keeps `0.0.0.0` |
 | `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist; the last two are the Tauri app WebView origins |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-IP cap on unauthenticated reads; production compose sets 600, and production refuses a cap without `TRUST_PROXY_HEADERS=true` |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on unauthenticated reads; production compose sets 600 |
+| `BOOK_SEARCH_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on in-book search; production compose sets 30 |
+| `ARGON2_MAX_CONCURRENCY` | cores, at most 8 | Argon2 hashes and verifies run at once (19 MiB each); a login or signup that waits 2 s for a slot answers 503; 0 is refused |
+| `OTP_HOURLY_BUDGET`, `AI_DAILY_BUDGET` | `0` (off) | ceilings across every client: signup mail per hour (past it signup answers 503 and logs `otp_budget_exhausted` once) and semantic searches per day (past it 429 `AI_RATE_LIMITED` and `ai_budget_exhausted`; guests share a fifth); a value that is not a whole number stops the boot; production compose sets 100 and 5000, and production refuses to boot with either at 0 or without `TRUST_PROXY_HEADERS=true` |
 | `JWT_SECRET`, `JWT_ACCESS_EXPIRY_MINUTES`, `JWT_REFRESH_EXPIRY_DAYS` | dev secret, `1440`, `14` | production compose pins access tokens to 60 minutes |
-| `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS` | dev URL, `20`, `5`, `10`, `300` | SeaORM pool |
+| `DATABASE_URL`, `DATABASE_MAX_CONNECTIONS`, `DATABASE_MIN_CONNECTIONS`, `DATABASE_CONNECT_TIMEOUT_SECS`, `DATABASE_IDLE_TIMEOUT_SECS`, `DATABASE_STATEMENT_TIMEOUT_MS` | dev URL, `20`, `5`, `10`, `300`, `5000` | SeaORM pool; Postgres cancels an API statement past the timeout |
 | `REDIS_URL` | `redis://localhost:6380/0` | OTP, sessions, rate limits, streams |
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `S3_FORCE_PATH_STYLE` | MinIO dev values | any S3-compatible store |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Mailpit, `starttls` | `SMTP_SECURITY=none` for Mailpit (refused in production); credentials sent only when `SMTP_USER` is set; signup answers 502 when the relay is unreachable |
@@ -64,6 +67,7 @@ make worker            # after make worker-install
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
 - Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`.
+- Paragraph index and quote anchors for books ingested before them: `make backfill-paragraphs` (production `make prod-backfill-paragraphs`), one book per transaction, idempotent, no embeddings paid. Run it after migrating and before the new server takes traffic, or in-book search finds nothing in those books.
 - Dev data: `make seed-dev` installs four CC0 books with fixed ids (the web suite pins `a0000000-0000-4000-8000-000000000001`). `make purge-test-debris` removes rows, stream entries, and objects left by crashed test runs. Never run either against production.
 
 App shell:
@@ -82,9 +86,9 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 |---|---|---|
 | `make check` | `cargo check` native and wasm, clippy with `-D warnings`, `fmt --check` | nothing |
 | `make test-domain` | 16 pure domain tests | nothing |
-| `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (25 + 6) | nothing |
+| `cargo test -p infra`, `cargo test -p server --lib` | config, repositories, helpers (31 + 6) | nothing |
 | `make test-<module>` | one module of `crates/server/tests/it`: smoke, integration, auth, catalog, semantic, admin, database, api-boundary, security, reliability | `db-up` |
-| `cargo test -p server --test it` | all functional modules, 94 tests (9 live tests ignored) | `db-up` |
+| `cargo test -p server --test it` | all functional modules, 109 tests (9 live tests ignored) | `db-up` |
 | `make test-live` | the 9 ignored live tests, single-threaded | `db-up` |
 | `make test-performance`, `make test-performance-release` | 4 p95 latency benchmarks | `db-up`, idle machine |
 | `make test-load-stress` | 200 concurrent tasks and rate-limit saturation | `db-up` |
@@ -99,7 +103,7 @@ Notes:
 - The web suite runs from `crates/web/tests` with `--browser chromium`. Contexts pin `color_scheme=dark`; the a11y suite also scans the Paper theme. Goldens are 1280x720 under `tests/visual/test_visual.py-snapshots/`; delete one to regenerate it after an intended change and review the image before committing.
 - Benchmarks follow machine load. Rerun on an idle machine before reading a failure as a regression.
 - Do not run the web suite while heavy backend suites run; Playwright `networkidle` waits can time out.
-- Signup is capped at 10 per hour per IP. Delete the Redis key `otp:signup:ip:127.0.0.1` if local auth tests answer 429.
+- Signup is capped at 10 per hour per client (an IPv6 client counts as its /64). Delete the Redis key `otp:signup:ip:127.0.0.1` if local auth tests answer 429.
 
 ## 6. Troubleshooting
 
@@ -126,9 +130,18 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 Not in CI: visual goldens (font rasterisation differs on the runner), Firefox smoke, and the p95 benchmarks (they follow machine load); run them locally with `make test-web-full` and `make test-performance-release`.
 
+Versions follow Semantic Versioning with the Cargo reading of `0.y.z`: a new `y` means a break, so additions and fixes raise `z`. One release per milestone or batch of work, not per merge.
+
+| Version | When |
+|---|---|
+| `0.1.z` | Each release before the public beta; API, web and app ship together, so no client breaks |
+| `0.2.0` | The public beta opens (M5 done, the launch checklist passes on the production domain) |
+| later `0.y.0` | A change readers feel as a new product step (M6), or an API change that breaks installed apps |
+| `1.0.0` | The owner declares the product stable and the API contract binding for installed apps |
+
 Cutting a release:
 
-1. Set `[workspace.package] version` in `Cargo.toml`, rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
+1. Set `[workspace.package] version` in `Cargo.toml` and `version` in `apps/tauri/Cargo.toml` and `apps/tauri/tauri.conf.json` (the Android `versionCode` follows it), rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] — YYYY-MM-DD`, and open a new empty `[Unreleased]`.
 2. `python3 scripts/release_notes.py --check-version`, merge to `main`.
 3. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 

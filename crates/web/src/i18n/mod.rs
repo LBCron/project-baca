@@ -17,11 +17,15 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("nav_tabs", "Navigasi bawah", "Primary"),
     ("reading_theme", "Tema baca", "Reading theme"),
     ("streak_label", "Runtunan membaca", "Reading streak"),
-    ("upload_rejected", "Unggahan ditolak.", "Upload rejected."),
+    (
+        "upload_rejected",
+        "Berkas itu bukan EPUB yang bisa kami baca. Periksa berkasnya lalu unggah lagi.",
+        "That file is not an EPUB we can read. Check it and upload again.",
+    ),
     ("retry", "Coba lagi", "Try again"),
     ("load_failed", "Katalog tidak dapat dimuat.", "The catalog could not be loaded."),
     ("book_load_failed", "Buku tidak dapat dimuat.", "The book could not be loaded."),
-    ("chapter_load_failed", "Bab tidak dapat dimuat.", "The chapter could not be loaded."),
+    ("chapter_load_failed", "Bab ini belum bisa dimuat.", "This chapter could not be loaded yet."),
     ("page_range", "Halaman {a}\u{2013}{b} dari {n}", "Pages {a}\u{2013}{b} of {n}"),
     ("book_finished_title", "Kamu menamatkan buku ini.", "You finished this book."),
     (
@@ -36,6 +40,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "shelf_empty_body",
         "Pilih satu buku; posisi baca, kutipan, dan unduhanmu akan tersusun di sini.",
         "Pick a book; your reading position, quotes, and downloads will gather here.",
+    ),
+    (
+        "shelf_none_reading",
+        "Belum ada buku yang sedang kamu baca.",
+        "No book in progress yet.",
     ),
     ("browse_catalog", "Jelajahi katalog", "Browse the catalog"),
     ("page_missing", "Halaman ini belum tertulis.", "This page has not been written yet."),
@@ -102,6 +111,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("recap_last", "Rekap bab lalu", "Recap so far"),
     ("share_book", "Bagikan buku", "Share this book"),
     ("share_copied", "Tautan disalin.", "Link copied."),
+    ("quote_copied", "Kutipan disalin.", "Quote copied."),
     ("font_smaller", "Perkecil huruf", "Smaller type"),
     ("font_larger", "Perbesar huruf", "Larger type"),
     ("leading_tight", "Rapat", "Tight"),
@@ -152,6 +162,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("continue_chapter", "Lanjutkan Bab", "Continue Chapter"),
     ("save_offline", "Simpan untuk dibaca luring", "Save for offline reading"),
     ("saved_offline", "Tersimpan di perangkat", "Saved on this device"),
+    ("saved_books_device", "Tersimpan di perangkat ini", "Saved on this device"),
     ("saving", "Menyimpan…", "Saving…"),
     ("quote_finder", "Cari kutipan", "Find a quote"),
     ("atomic_cards", "Kartu insight", "Insight cards"),
@@ -289,6 +300,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("offline_books", "Tersimpan di perangkat", "Saved on this device"),
     ("sessions", "Sesi dan keamanan", "Sessions and security"),
     ("current_password", "Kata sandi saat ini", "Current password"),
+    ("current_password_wrong", "Kata sandi lamamu tidak cocok.", "Your current password does not match."),
     ("new_password", "Kata sandi baru", "New password"),
     ("revoke_others", "Keluarkan sesi di perangkat lain", "Sign out other devices"),
     ("change_password", "Ganti kata sandi", "Change password"),
@@ -318,9 +330,15 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("admin_upload", "Unggah EPUB domain publik", "Upload a public domain EPUB"),
     ("admin_drop", "Pilih berkas .epub (maks 50 MB)", "Choose an .epub file (max 50 MB)"),
     (
+        "admin_too_large",
+        "Berkas ini lebih dari 50 MB, batas satu unggahan.",
+        "This file is over 50 MB, the limit for one upload.",
+    ),
+    ("untitled_pending", "Judul menyusul dari EPUB", "Title to come from the EPUB"),
+    (
         "admin_title_field",
-        "Judul (opsional, dibaca dari EPUB)",
-        "Title (optional, read from the EPUB)",
+        "Judul (kosongkan untuk memakai judul EPUB)",
+        "Title (leave blank to use the EPUB's)",
     ),
     ("admin_author_field", "Penulis (opsional)", "Author (optional)"),
     ("admin_queue", "Antrekan pemrosesan", "Queue for processing"),
@@ -334,6 +352,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("job_summarizing", "Merangkum", "Summarizing"),
     ("job_published", "Terbit", "Published"),
     ("job_failed", "Gagal", "Failed"),
+    ("job_retrying", "Percobaan {n} gagal, akan dicoba lagi otomatis.", "Attempt {n} failed; it will be retried."),
     ("admin_forbidden", "Halaman ini untuk kurator.", "This page is for curators."),
     ("admin_desk", "Meja kurator", "Curator desk"),
     ("tab_manuscripts", "Naskah", "Manuscripts"),
@@ -359,6 +378,16 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "No failed jobs. The queue is clear.",
     ),
     ("replay", "Ulangi", "Replay"),
+    ("dismiss", "Tutup", "Dismiss"),
+    ("dismissed", "Entri ditutup dan tidak akan diulang.", "Entry dismissed; it will not run again."),
+    ("dlq_book_gone", "Bukunya sudah tidak ada", "The book is gone"),
+    ("restore", "Terbitkan lagi", "Publish again"),
+    ("restored", "Naskah terbit lagi.", "Manuscript published again."),
+    (
+        "restore_unfinished",
+        "Naskah ini diarsipkan sebelum selesai diproses; unggah ulang EPUB-nya.",
+        "This manuscript was archived before ingestion finished; upload the EPUB again.",
+    ),
     ("replayed", "Pekerjaan diantrekan ulang.", "Job queued again."),
     (
         "replay_expired",
@@ -392,9 +421,156 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("not_found", "Naskah tidak ditemukan.", "Manuscript not found."),
     (
         "rate_limited",
-        "Terlalu banyak percobaan. Coba lagi dalam {t}.",
-        "Too many attempts. Try again in {t}.",
+        "Terlalu banyak permintaan dalam waktu singkat. Coba lagi dalam {t}.",
+        "Too many requests in a short time. Try again in {t}.",
     ),
+    (
+        "quotes_full",
+        "Rak kutipanmu sudah penuh. Kutipan ini belum bisa disimpan.",
+        "Your quote shelf is full. This one could not be kept.",
+    ),
+    (
+        "err_bad_request",
+        "Permintaan itu tidak bisa diproses. Periksa isianmu lalu coba lagi.",
+        "That request could not be processed. Check what you entered and try again.",
+    ),
+    (
+        "err_validation_failed",
+        "Ada isian yang belum sesuai. Periksa lagi, ya.",
+        "Something you entered does not fit. Check it again.",
+    ),
+    (
+        "err_unauthorized",
+        "Sesimu sudah berakhir. Masuk lagi untuk melanjutkan.",
+        "Your session has ended. Sign in again to continue.",
+    ),
+    (
+        "err_forbidden",
+        "Kamu tidak punya akses ke bagian ini.",
+        "You do not have access to this.",
+    ),
+    (
+        "err_not_found",
+        "Yang kamu cari tidak ditemukan.",
+        "What you are looking for was not found.",
+    ),
+    (
+        "err_method_not_allowed",
+        "Permintaan itu tidak didukung.",
+        "That request is not supported.",
+    ),
+    (
+        "err_conflict",
+        "Ada perubahan yang mendahuluimu. Muat ulang lalu coba lagi.",
+        "Something changed before you did. Reload and try again.",
+    ),
+    (
+        "err_quota_exceeded",
+        "Batas simpananmu sudah penuh.",
+        "You have reached your storage limit.",
+    ),
+    (
+        "err_payload_too_large",
+        "Berkas itu terlalu besar.",
+        "That file is too large.",
+    ),
+    (
+        "err_ai_rate_limited",
+        "Pencarian kutipan sedang dibatasi. Coba lagi dalam {t}.",
+        "Quote search is paused for now. Try again in {t}.",
+    ),
+    (
+        "err_service_unavailable",
+        "Layanan sedang sibuk. Coba lagi dalam {t}.",
+        "The service is busy. Try again in {t}.",
+    ),
+    (
+        "err_external_service_error",
+        "Layanan pendukung sedang tidak terjangkau. Coba lagi sebentar lagi.",
+        "A service we rely on is unreachable. Try again shortly.",
+    ),
+    (
+        "err_database_error",
+        "Ada yang tidak beres di pihak kami. Coba lagi sebentar lagi.",
+        "Something went wrong on our side. Try again shortly.",
+    ),
+    (
+        "err_internal_error",
+        "Ada yang tidak beres di pihak kami. Coba lagi sebentar lagi.",
+        "Something went wrong on our side. Try again shortly.",
+    ),
+    (
+        "err_field_display_name",
+        "Nama tampilanmu perlu 2 sampai 100 karakter.",
+        "Your display name needs 2 to 100 characters.",
+    ),
+    (
+        "err_field_email",
+        "Alamat email itu belum benar. Periksa lagi, ya.",
+        "That email address does not look right. Check it again.",
+    ),
+    (
+        "err_field_password",
+        "Kata sandimu perlu 8 sampai 128 karakter.",
+        "Your password needs 8 to 128 characters.",
+    ),
+    (
+        "err_field_new_password",
+        "Kata sandi barumu perlu 8 sampai 128 karakter.",
+        "Your new password needs 8 to 128 characters.",
+    ),
+    (
+        "err_field_current_password",
+        "Isi kata sandimu yang sekarang.",
+        "Enter your current password.",
+    ),
+    (
+        "err_field_otp",
+        "Kode itu salah atau sudah kedaluwarsa. Periksa lagi, atau minta kode baru.",
+        "That code is wrong or has expired. Check it, or ask for a new one.",
+    ),
+    (
+        "err_field_quote_text",
+        "Kutipan perlu 1 sampai 2.000 karakter.",
+        "A quote needs 1 to 2,000 characters.",
+    ),
+    (
+        "err_field_query",
+        "Tulis 3 sampai 500 karakter untuk mencari kutipan.",
+        "Write 3 to 500 characters to search for a quote.",
+    ),
+    (
+        "err_field_q",
+        "Tulis 2 sampai 200 karakter untuk mencari.",
+        "Write 2 to 200 characters to search.",
+    ),
+    (
+        "err_field_avatar_url",
+        "Tautan foto profil itu tidak bisa dipakai.",
+        "That profile picture link cannot be used.",
+    ),
+    (
+        "auth_account_exists",
+        "Alamat ini sudah punya akun. Masuk saja dengan kata sandimu.",
+        "This address already has an account. Sign in with your password.",
+    ),
+    (
+        "err_field_title",
+        "Judulnya terlalu panjang. Persingkat sampai 255 karakter.",
+        "The title is too long. Keep it to 255 characters.",
+    ),
+    (
+        "err_field_author",
+        "Nama penulisnya terlalu panjang. Persingkat sampai 255 karakter.",
+        "The author name is too long. Keep it to 255 characters.",
+    ),
+    ("unit_hours", "jam", "hours"),
+    (
+        "doc_title_home",
+        "Rotaria \u{2014} Sirkulasi Buku-Buku Hebat",
+        "Rotaria \u{2014} The Circulation of Great Books",
+    ),
+    ("doc_title_missing", "Halaman tidak ditemukan", "Page not found"),
     ("unit_minutes", "menit", "minutes"),
     ("unit_seconds", "detik", "seconds"),
     ("hours", "jam", "h"),
@@ -451,6 +627,11 @@ impl Lang {
         }
     }
 
+    /// True when the dictionary holds `key` (a miss would show the key).
+    pub fn has(self, key: &str) -> bool {
+        ENTRIES.iter().any(|(k, _, _)| *k == key)
+    }
+
     /// Looks a key up; unknown keys echo themselves so a typo is visible.
     pub fn text(self, key: &str) -> String {
         ENTRIES
@@ -498,7 +679,9 @@ impl Lang {
 
     /// A wait in whole minutes when it is a minute or more, else seconds.
     pub fn wait_text(self, seconds: u64) -> String {
-        if seconds >= 60 {
+        if seconds >= 3600 {
+            format!("{} {}", seconds.div_ceil(3600), self.text("unit_hours"))
+        } else if seconds >= 60 {
             format!("{} {}", seconds.div_ceil(60), self.text("unit_minutes"))
         } else {
             format!("{} {}", seconds.max(1), self.text("unit_seconds"))
@@ -520,20 +703,27 @@ impl Lang {
         }
     }
 
-    /// "Okt 2026" or "Oct 2026".
+    /// "Okt 2026" or "Oct 2026", on the reader's own calendar.
     pub fn month_year(self, date: chrono::DateTime<chrono::Utc>) -> String {
         use chrono::Datelike;
-        format!("{} {}", self.month_short(date.month()), date.year())
+        let local = crate::format::local_time(date, crate::format::utc_offset_minutes_at(date));
+        format!("{} {}", self.month_short(local.month()), local.year())
     }
 
-    /// "8 Okt 2026" or "8 Oct 2026".
+    /// "8 Okt 2026" or "8 Oct 2026" on the reader's own calendar: a quote
+    /// kept at 06:56 WIB is dated that day, not the UTC day before.
     pub fn date_short(self, date: chrono::DateTime<chrono::Utc>) -> String {
+        self.date_short_at(date, crate::format::utc_offset_minutes_at(date))
+    }
+
+    pub fn date_short_at(self, date: chrono::DateTime<chrono::Utc>, offset_minutes: i32) -> String {
         use chrono::Datelike;
+        let local = crate::format::local_time(date, offset_minutes);
         format!(
             "{} {} {}",
-            date.day(),
-            self.month_short(date.month()),
-            date.year()
+            local.day(),
+            self.month_short(local.month()),
+            local.year()
         )
     }
 
@@ -597,4 +787,30 @@ pub fn apply_lang(set: leptos::prelude::WriteSignal<Lang>, lang: Lang) {
     set.set(lang);
     lang.save();
     lang.document_lang();
+}
+
+/// Keeps `document.title` on the page shown, in the interface language:
+/// "<part> \u{2014} Rotaria", or the home title when `part` gives none, so
+/// tabs, history, and screen readers tell routes apart.
+pub fn use_page_title(part: impl Fn(Lang) -> Option<String> + 'static) {
+    use leptos::prelude::*;
+    let (lang, _) = use_lang();
+    Effect::new(move || {
+        let lang = lang.get();
+        let title = match part(lang) {
+            Some(part) if !part.trim().is_empty() => format!("{part} \u{2014} Rotaria"),
+            _ => lang.text("doc_title_home"),
+        };
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            document.set_title(&title);
+        }
+    });
+}
+
+/// A book's language for a `lang` attribute, or none while the worker has
+/// not filled it: `lang=""` would mark the text as of no language and turn
+/// hyphenation off.
+pub fn text_lang(language: &str) -> Option<String> {
+    let language = language.trim();
+    (!language.is_empty()).then(|| language.to_string())
 }

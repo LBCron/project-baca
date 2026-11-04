@@ -114,11 +114,8 @@ async fn test_perf_auth_login_latency() {
     let password = "PerfPassword123!".to_string();
 
     // Setup active test user
-    let hash = infra::hash_password_async(password.clone()).await.unwrap();
-    let _ = infra::create_inactive_user(&harness.state.db, &test_email, "PerfUser", &hash)
-        .await
-        .unwrap();
-    let _ = infra::activate_user_by_email(&harness.state.db, &test_email)
+    let hash = harness.state.argon2.hash(password.clone()).await.unwrap();
+    let _ = infra::activate_registration(&harness.state.db, &test_email, "PerfUser", &hash)
         .await
         .unwrap();
 
@@ -179,11 +176,12 @@ async fn test_perf_auth_otp_verify_latency() {
     // measured iterations reflect steady state, not cold-start noise.
     {
         let warm_email = format!("perf_otp_warmup_{}@example.com", uuid::Uuid::new_v4());
-        let _ =
-            infra::create_inactive_user(&harness.state.db, &warm_email, "PerfUser", "hash").await;
-        if let Ok(warm_otp) = infra::generate_and_store_otp(&mut redis_conn, &warm_email).await {
+        if let Ok((registration_id, warm_otp)) =
+            infra::start_registration(&mut redis_conn, &warm_email, "PerfUser", "hash").await
+        {
             let warm_req = shared::VerifyOtpRequest {
                 email: warm_email,
+                registration_id,
                 otp: warm_otp,
             };
             let req = Request::builder()
@@ -202,15 +200,14 @@ async fn test_perf_auth_otp_verify_latency() {
 
     for i in 0..iterations {
         let test_email = format!("perf_otp_{}_{}@example.com", i, uuid::Uuid::new_v4());
-        let _ = infra::create_inactive_user(&harness.state.db, &test_email, "PerfUser", "hash")
-            .await
-            .unwrap();
-        let otp = infra::generate_and_store_otp(&mut redis_conn, &test_email)
-            .await
-            .unwrap();
+        let (registration_id, otp) =
+            infra::start_registration(&mut redis_conn, &test_email, "PerfUser", "hash")
+                .await
+                .unwrap();
 
         let verify_req = shared::VerifyOtpRequest {
             email: test_email,
+            registration_id,
             otp,
         };
 
@@ -249,4 +246,73 @@ async fn test_perf_auth_otp_verify_latency() {
         "OTP verify p95 latency ({} ms) exceeded target (100 ms)",
         p95_ms
     );
+}
+
+/// In-book search reads the paragraph index: a query with no hit in a book
+/// of 8 MB of text answers well inside 50 ms at the median, instead of the
+/// half second it took to split and strip every chapter per request.
+#[tokio::test]
+async fn test_perf_in_book_search_on_an_8_mb_book() {
+    use sea_orm::{ConnectionTrait, TransactionTrait};
+    let harness = TestHarness::new().await;
+    if harness.live_only().await.is_none() {
+        panic!("live DB required (db-up)");
+    }
+    let book_id = harness.track_book(uuid::Uuid::new_v4());
+    let db = &harness.state.db;
+    // Seeding 40,000 rows outlasts the API's statement timeout; lift it for
+    // this transaction only.
+    let seed = db.begin().await.unwrap();
+    seed.execute_unprepared(&format!(
+        "SET LOCAL statement_timeout = 0; \
+         INSERT INTO books (id, title, author, language, primary_theme, description, cover_url, \
+           epub_storage_path, total_words, estimated_reading_minutes, source_name, license, status, \
+           created_at, updated_at) \
+         VALUES ('{book_id}', 'Perf Tome', 'Perf', 'en', 'Test', '', '', '', 1, 1, 'Test', 'Private', \
+           'published', NOW(), NOW()); \
+         INSERT INTO chapters (id, book_id, chapter_number, title, word_count, html_content, created_at) \
+         SELECT gen_random_uuid(), '{book_id}', c, 'Chapter ' || c, 1, '', NOW() FROM generate_series(1, 40) c; \
+         INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) \
+         SELECT '{book_id}', c, n, t, lower(t) FROM ( \
+           SELECT c, n, 'The harbour lay quiet ' || md5((c * 10000 + n)::text) \
+             || ' while the ships of the ancestral fleet ' || md5(n::text) \
+             || ' waited for a wind that would carry them home before the winter came again.' AS t \
+           FROM generate_series(1, 40) c, generate_series(1, 1000) n) s;"
+    ))
+    .await
+    .expect("seed the 8 MB book");
+    seed.commit().await.unwrap();
+    // Earlier runs leave their deleted rows behind until autovacuum comes;
+    // measure the index, not that backlog.
+    db.execute_unprepared("VACUUM ANALYZE chapter_paragraphs")
+        .await
+        .expect("vacuum");
+    let bytes: i64 = db
+        .query_one(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!("SELECT sum(length(text))::int8 AS b FROM chapter_paragraphs WHERE book_id = '{book_id}'"),
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get("", "b")
+        .unwrap();
+    assert!(bytes >= 8_000_000, "the book holds {bytes} bytes of text");
+
+    let mut latencies = Vec::new();
+    for _ in 0..12 {
+        let req = Request::builder()
+            .uri(format!("/api/v1/books/{book_id}/search?q=zqxjv%20absent"))
+            .body(Body::empty())
+            .unwrap();
+        let start = Instant::now();
+        let resp = harness.send_request(req).await;
+        latencies.push(start.elapsed().as_micros());
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+    latencies.sort_unstable();
+    let median = latencies[latencies.len() / 2];
+    println!("in-book search, 8 MB book, no hit: median {median} µs");
+    harness.cleanup().await;
+    assert!(median < 50_000, "median {median} µs exceeds 50 ms");
 }

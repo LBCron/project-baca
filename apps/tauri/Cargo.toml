@@ -1,6 +1,6 @@
 [package]
 name = "rotaria-app"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Rotaria as an Android, iOS, and desktop app: the web bundle inside a Tauri shell"
 license = "MIT OR Apache-2.0"

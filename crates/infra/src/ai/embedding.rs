@@ -343,6 +343,7 @@ mod tests {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         assert!(GeminiEmbeddingProvider::new(&config).is_err());
     }
@@ -354,6 +355,7 @@ mod tests {
             api_key: "secret-key-123".to_string(),
             model_name: "gemini-embedding-2".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         let provider = GeminiEmbeddingProvider::new(&config).expect("key configured");
         assert!(!provider.embed_url().contains("secret-key-123"));
@@ -381,6 +383,7 @@ mod tests {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         let provider = FastEmbedProvider::new(&config);
         assert_eq!(provider.dimension(), 768);
@@ -413,6 +416,7 @@ mod tests {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         assert!(build_embedding_provider(&config).is_err());
     }
@@ -424,6 +428,7 @@ mod tests {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         let provider = build_embedding_provider(&config);
         assert!(provider.is_ok());
@@ -444,6 +449,7 @@ mod tests {
             api_key: key,
             model_name: "gemini-embedding-2".to_string(),
             dimension: 768,
+            daily_budget: 0,
         };
         let provider = GeminiEmbeddingProvider::new(&config).expect("Must construct provider");
         let vec = provider

@@ -13,7 +13,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use infra::{init_redis_conn, AppConfig, EmbeddingProvider, RedisConn, StorageService};
+use infra::{init_redis_conn, AppConfig, Argon2Gate, EmbeddingProvider, RedisConn, StorageService};
 use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
@@ -38,6 +38,8 @@ pub struct AppState {
     /// S3-compatible object storage. `None` when MinIO/S3 is unreachable at
     /// startup; upload endpoints fail closed with a 500 in that case.
     pub storage: Option<Arc<StorageService>>,
+    /// Bounds the Argon2 work of logins, signups and password changes.
+    pub argon2: Argon2Gate,
 }
 
 impl AppState {
@@ -71,6 +73,7 @@ impl AppState {
         routes::auth::change_password,
         routes::auth::delete_me,
         routes::progress::get_active_progress,
+        routes::progress::list_reading,
         routes::progress::update_progress,
         routes::progress::merge_guest_progress,
         routes::books::list_books,
@@ -98,12 +101,14 @@ impl AppState {
         routes::admin::patch_book,
         routes::admin::list_dlq,
         routes::admin::replay_dlq,
+        routes::admin::dismiss_dlq,
     ),
     components(
         schemas(
             ErrorPayload,
             SignupRequest,
             VerifyOtpRequest,
+            RegistrationStartedDto,
             LoginRequest,
             RefreshTokenRequest,
             TokenResponse,
@@ -142,11 +147,12 @@ impl AppState {
             AdminBookRowDto,
             AdminBookPatchRequest,
             DlqEntryDto,
+            DlqPageDto,
             DlqReplayResponseDto,
             DropOffPointDto
         )
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ErrorResponsesAddon),
     tags(
         (name = "System & Health", description = "Runtime health checks and infrastructure connectivity"),
         (name = "Authentication", description = "User registration, OTP verification, and JWT sessions"),
@@ -159,7 +165,6 @@ impl AppState {
     ),
     info(
         title = "Project Baca REST API",
-        version = "0.1.0",
         description = "Public Domain Classic E-Reader & Atomic Insights API.",
         license(name = "MIT OR Apache-2.0")
     )
@@ -180,6 +185,92 @@ impl utoipa::Modify for SecurityAddon {
                         .build(),
                 ),
             );
+        }
+    }
+}
+
+/// Answers any operation can give whatever its handler does: extractor
+/// rejections (400, and 415 and 422 where it takes JSON), the rate limits
+/// (429), a failure (500), and 401 where it takes a token. Documented once
+/// here instead of on every path; a path's own description of a status wins.
+struct ErrorResponsesAddon;
+
+impl utoipa::Modify for ErrorResponsesAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::{ContentBuilder, ResponseBuilder};
+        use utoipa::PartialSchema;
+
+        let error = |description: &str| {
+            ResponseBuilder::new()
+                .description(description)
+                .content(
+                    "application/json",
+                    ContentBuilder::new()
+                        .schema(Some(ApiResponse::<ErrorPayload>::schema()))
+                        .build(),
+                )
+                .build()
+        };
+        for item in openapi.paths.paths.values_mut() {
+            let operations = [
+                &mut item.get,
+                &mut item.put,
+                &mut item.post,
+                &mut item.delete,
+                &mut item.patch,
+            ];
+            for operation in operations.into_iter().flatten() {
+                // axum refuses a multipart body with 400, never 415 or 422.
+                let takes_json = operation
+                    .request_body
+                    .as_ref()
+                    .is_some_and(|body| match body {
+                        utoipa::openapi::RefOr::T(b) => b.content.contains_key("application/json"),
+                        utoipa::openapi::RefOr::Ref(_) => true,
+                    });
+                // An empty requirement among them makes the token optional.
+                let takes_token = operation.security.as_ref().is_some_and(|reqs| {
+                    !reqs.is_empty()
+                        && reqs.iter().all(|r| {
+                            serde_json::to_value(r)
+                                .is_ok_and(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+                        })
+                });
+                let mut shared = vec![
+                    (
+                        "400",
+                        "BAD_REQUEST or VALIDATION_FAILED: a path, query, or body the API refuses",
+                    ),
+                    (
+                        "429",
+                        "RATE_LIMITED: too many requests; Retry-After says when to try again",
+                    ),
+                    ("500", "DATABASE_ERROR or INTERNAL_ERROR"),
+                ];
+                if takes_json {
+                    shared.push((
+                        "415",
+                        "BAD_REQUEST: the body is not sent as the content type the operation takes",
+                    ));
+                    shared.push((
+                        "422",
+                        "VALIDATION_FAILED: the body parses but misses or mistypes a field",
+                    ));
+                }
+                if takes_token {
+                    shared.push((
+                        "401",
+                        "UNAUTHORIZED: the access token is missing, invalid, or revoked",
+                    ));
+                }
+                for (status, description) in shared {
+                    operation
+                        .responses
+                        .responses
+                        .entry(status.to_string())
+                        .or_insert_with(|| error(description).into());
+                }
+            }
         }
     }
 }
@@ -291,7 +382,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
         Json(ApiResponse::success(serde_json::json!({
             "service": "project-baca-server",
             "status": status,
-            "version": "0.1.0"
+            "version": env!("CARGO_PKG_VERSION")
         }))),
     )
 }
@@ -332,7 +423,7 @@ pub async fn not_found_handler() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
         Json(ApiResponse::<()>::error(
-            "NOT_FOUND",
+            shared::error_code::NOT_FOUND,
             "The requested resource was not found",
             None,
         )),
@@ -400,21 +491,50 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         }
     };
 
+    let book_search_cap = state.config.server.book_search_rate_limit_per_minute;
+    let book_search = |router: Router<Arc<AppState>>| {
+        if book_search_cap > 0 {
+            router.layer(axum_mw::from_fn_with_state(
+                state.clone(),
+                crate::middleware::book_search_rate_limit_middleware,
+            ))
+        } else {
+            router
+        }
+    };
+
+    let account_writes = |router: Router<Arc<AppState>>| {
+        router.layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            crate::middleware::user_write_rate_limit_middleware,
+        ))
+    };
+
     Router::new()
         .merge(swagger_routes(&state))
         .route("/health", get(health_check))
         .route("/api/v1/health", get(api_health_check))
         .nest("/api/v1/auth", auth_router)
-        .nest("/api/v1/me", routes::user_routes())
-        .nest("/api/v1/books", public(routes::books_routes()))
+        .nest("/api/v1/me", account_writes(routes::user_routes()))
+        .nest(
+            "/api/v1/books",
+            public(routes::books_routes().merge(book_search(routes::book_text_search_routes()))),
+        )
         .nest("/api/v1/covers", public(routes::covers_routes()))
-        .nest("/api/v1/progress", routes::progress_routes())
+        .nest(
+            "/api/v1/progress",
+            account_writes(routes::progress_routes()),
+        )
         .nest("/api/v1", public(routes::gamification_routes()))
         .nest("/api/v1/books", quotes_router)
         .nest("/api/v1/books", public(routes::insights_routes()))
-        .nest("/api/v1/quotes", routes::saved_quotes_routes())
+        .nest(
+            "/api/v1/quotes",
+            account_writes(routes::saved_quotes_routes()),
+        )
         .nest("/api/v1/admin", routes::admin_routes())
         .fallback(not_found_handler)
+        .layer(axum_mw::from_fn(error::envelope_rejections))
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))
         .layer(cors)

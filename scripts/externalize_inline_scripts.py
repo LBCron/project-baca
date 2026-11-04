@@ -20,16 +20,19 @@ import sys
 from pathlib import Path
 
 SCRIPT_RE = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.DOTALL)
+MODULE_RE = re.compile(r"""\btype\s*=\s*["']?module\b""")
 
 
-# `trunk serve` injects a live-reload script whose address placeholders are
-# filled at request time; it never ships in a release build and stays inline.
+# `trunk serve` injects a live-reload script whose address placeholders
+# (`{{__TRUNK_ADDRESS__}}` in Trunk 0.22) are filled at request time; it never
+# ships in a release build and stays inline. Matched without case, since the
+# placeholders' case changed between Trunk releases.
 SERVE_ONLY_MARKER = "{{__trunk_"
 
 
 def _is_inline(match: re.Match) -> bool:
     body = match.group("body")
-    return "src=" not in match.group("attrs") and bool(body.strip()) and SERVE_ONLY_MARKER not in body
+    return "src=" not in match.group("attrs") and bool(body.strip()) and SERVE_ONLY_MARKER not in body.lower()
 
 
 def externalize(dist: Path, public_url: str) -> int:
@@ -45,7 +48,8 @@ def externalize(dist: Path, public_url: str) -> int:
         name = f"boot-{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}.js"
         (dist / name).write_text(body, encoding="utf-8")
         moved += 1
-        kind = ' type="module"' if 'type="module"' in match.group("attrs") else ""
+        # Minified HTML drops the quotes (`type=module`).
+        kind = ' type="module"' if MODULE_RE.search(match.group("attrs")) else ""
         return f'<script{kind} src="{public_url}{name}"></script>'
 
     index.write_text(SCRIPT_RE.sub(replace, html), encoding="utf-8")
@@ -58,7 +62,15 @@ def check(dist: Path) -> int:
     if inline:
         print(f"{len(inline)} inline script(s) remain in {dist / 'index.html'}", file=sys.stderr)
         return 1
-    print(f"{dist / 'index.html'}: no inline scripts")
+    # A bootstrap that imports must stay a module, or the app never starts.
+    for m in SCRIPT_RE.finditer(html):
+        src = re.search(r"""src=["']?/?(boot-[0-9a-f]+\.js)""", m.group("attrs"))
+        if src and not MODULE_RE.search(m.group("attrs")):
+            body = (dist / src.group(1)).read_text(encoding="utf-8")
+            if body.lstrip().startswith("import"):
+                print(f"{src.group(1)} imports but is not loaded as a module", file=sys.stderr)
+                return 1
+    print(f"{dist / 'index.html'}: no inline scripts, bootstrap loads as a module")
     return 0
 
 

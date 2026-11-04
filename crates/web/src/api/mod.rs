@@ -6,10 +6,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use shared::{
     ActiveProgressDto, ApiResponse, BookCatalogQuery, BookDetailDto, BookSearchQuery,
-    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, GuestMergeRequest, LoginRequest,
-    OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto, ReadingHeartbeatRequest,
-    ReadingHeartbeatResponse, ReadingProgressUpdateDto, RefreshTokenRequest, SignupRequest,
-    TokenResponse, UserProfileDto, VerifyOtpRequest,
+    BookSearchResultDto, BookSummaryDto, ChapterDetailDto, ErrorPayload, GuestMergeRequest,
+    LoginRequest, OfflineBundleDto, QuoteSearchRequest, QuoteSearchResultDto,
+    ReadingHeartbeatRequest, ReadingHeartbeatResponse, ReadingProgressUpdateDto,
+    RefreshTokenRequest, SignupRequest, TokenResponse, UserProfileDto, VerifyOtpRequest,
 };
 use wasm_bindgen::JsCast;
 use web_sys::window;
@@ -67,7 +67,26 @@ pub fn set_token(token: &str) {
     }
 }
 
+/// The account the stored access token was issued to (its `sub` claim),
+/// read from the payload without verification: it only tags data kept on
+/// this device, and the server checks every request anyway.
+fn token_owner() -> Option<uuid::Uuid> {
+    let payload = token()?
+        .split('.')
+        .nth(1)?
+        .replace('-', "+")
+        .replace('_', "/");
+    let padded = format!("{payload}{}", "=".repeat((4 - payload.len() % 4) % 4));
+    let claims: serde_json::Value = serde_json::from_str(&window()?.atob(&padded).ok()?).ok()?;
+    claims.get("sub")?.as_str()?.parse().ok()
+}
+
+/// Ends the session on this device, together with the progress writes it
+/// left unsent: they must never reach the next account to sign in here.
 pub fn clear_token() {
+    if let Some(owner) = token_owner() {
+        wasm_bindgen_futures::spawn_local(forget_pending(owner));
+    }
     if let Some(storage) = storage() {
         let _ = storage.remove_item(TOKEN_KEY);
         let _ = storage.remove_item(REFRESH_KEY);
@@ -127,8 +146,9 @@ use std::pin::Pin;
 type SendFuture = Pin<Box<dyn Future<Output = Result<gloo_net::http::Response, String>>>>;
 
 /// Sends a request, transparently refreshing an expired access token once.
-/// A second 401 clears the stored tokens so the next navigation lands on the
-/// guest view instead of failing silently.
+/// Only a refused refresh ends the session (`refresh` clears the tokens);
+/// once it has, requests that were waiting on that refresh give up instead
+/// of being sent again.
 async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Response, String> {
     let first = make().await?;
     if first.status() != 401 {
@@ -142,11 +162,25 @@ async fn authed_send(make: &dyn Fn() -> SendFuture) -> Result<gloo_net::http::Re
     // connection, and a few of them exhaust the browser's pool for the host.
     let _ = first.binary().await;
     refresh_once().await?;
-    let second = make().await?;
-    if second.status() == 401 {
-        clear_token();
+    if token().is_none() {
+        return Err("UNAUTHORIZED: session ended".to_string());
     }
-    Ok(second)
+    make().await
+}
+
+/// "CODE: message", or "CODE[field]: message" naming the first field a
+/// validation refused: the reader's copy is chosen by code and field, never
+/// by the server's English message.
+fn error_string(error: ErrorPayload) -> String {
+    let field = error
+        .details
+        .as_ref()
+        .and_then(|d| d.as_object())
+        .and_then(|fields| fields.keys().next().cloned());
+    match field {
+        Some(field) => format!("{}[{field}]: {}", error.code, error.message),
+        None => format!("{}: {}", error.code, error.message),
+    }
 }
 
 async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> Result<T, String> {
@@ -157,7 +191,7 @@ async fn parse_envelope<T: DeserializeOwned>(resp: gloo_net::http::Response) -> 
     envelope.data.ok_or_else(|| {
         envelope
             .error
-            .map(|e| format!("{}: {}", e.code, e.message))
+            .map(error_string)
             .unwrap_or_else(|| "empty response".to_string())
     })
 }
@@ -241,7 +275,7 @@ async fn post_once<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> R
     envelope.data.ok_or_else(|| {
         envelope
             .error
-            .map(|e| format!("{}: {}", e.code, e.message))
+            .map(error_string)
             .unwrap_or_else(|| "empty response".to_string())
     })
 }
@@ -393,6 +427,10 @@ pub async fn active_progress() -> Result<Option<ActiveProgressDto>, String> {
     get("/progress/active").await
 }
 
+pub async fn reading_progress() -> Result<Vec<ActiveProgressDto>, String> {
+    get("/progress/reading").await
+}
+
 pub async fn merge_guest_progress(req: &GuestMergeRequest) -> Result<(), String> {
     let _: serde_json::Value = post("/progress/merge", req).await?;
     Ok(())
@@ -422,11 +460,12 @@ pub async fn chapter_recap(
     get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
 }
 
-/// Registers and sends the code; a cooldown (429), relay outage (502), or
-/// Redis outage (503) comes back as an error so the sheet stays on the form.
-pub async fn signup(req: &SignupRequest) -> Result<(), String> {
-    let _: serde_json::Value = post_once("/auth/signup", req).await?;
-    Ok(())
+/// Registers and sends the code, returning the registration the code must
+/// come back with; a spent cap (429), relay outage (502), or Redis outage
+/// (503) comes back as an error so the sheet stays on the form.
+pub async fn signup(req: &SignupRequest) -> Result<uuid::Uuid, String> {
+    let started: shared::RegistrationStartedDto = post_once("/auth/signup", req).await?;
+    Ok(started.registration_id)
 }
 
 pub async fn verify_otp(req: &VerifyOtpRequest) -> Result<TokenResponse, String> {
@@ -503,7 +542,43 @@ pub async fn change_password(
 }
 
 pub async fn my_streak() -> Result<shared::ReadingStreakDto, String> {
-    get("/me/streak").await
+    let offset = crate::format::utc_offset_minutes();
+    get(&format!("/me/streak?utc_offset_minutes={offset}")).await
+}
+
+/// Uploads an EPUB. The form is rebuilt for each send, so an expired
+/// session refreshes and the upload goes out again instead of failing.
+pub async fn admin_upload(
+    file: &web_sys::File,
+    title: &str,
+    author: &str,
+) -> Result<shared::UploadBookResponseDto, String> {
+    let url = format!("{}/admin/books/upload", api_base());
+    let resp = authed_send(&|| {
+        let (url, file, title, author) = (
+            url.clone(),
+            file.clone(),
+            title.to_string(),
+            author.to_string(),
+        );
+        Box::pin(async move {
+            let form = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+            form.append_with_blob_and_filename("file", &file, &file.name())
+                .map_err(|e| format!("{e:?}"))?;
+            form.append_with_str("title", &title)
+                .map_err(|e| format!("{e:?}"))?;
+            form.append_with_str("author", &author)
+                .map_err(|e| format!("{e:?}"))?;
+            authed(Request::post(&url))
+                .body(wasm_bindgen::JsValue::from(form))
+                .map_err(|e| e.to_string())?
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
 }
 
 pub async fn admin_job(job_id: &str) -> Result<shared::JobStatusDto, String> {
@@ -539,8 +614,23 @@ pub async fn admin_set_status(
     .await
 }
 
-pub async fn admin_dlq() -> Result<Vec<shared::DlqEntryDto>, String> {
+pub async fn admin_dlq() -> Result<shared::DlqPageDto, String> {
     get("/admin/dlq?limit=100").await
+}
+
+pub async fn admin_dismiss(entry_id: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}/admin/dlq/{entry_id}", api_base());
+    let resp = authed_send(&|| {
+        let url = url.clone();
+        Box::pin(async move {
+            authed(Request::delete(&url))
+                .send()
+                .await
+                .map_err(|e| e.to_string())
+        }) as SendFuture
+    })
+    .await?;
+    parse_envelope(resp).await
 }
 
 pub async fn admin_replay(entry_id: &str) -> Result<shared::DlqReplayResponseDto, String> {
@@ -565,11 +655,16 @@ pub async fn copy_text(text: &str) -> bool {
         .is_ok()
 }
 
-/// Shares text through the Web Share API when the platform offers it.
+/// Shares text through the Web Share API when the platform offers it, and
+/// answers false when it does not (desktop Chromium on Linux, Firefox), so
+/// the caller copies instead. The binding would throw on a missing method.
 pub async fn share_text(title: &str, text: &str) -> bool {
     let Some(navigator) = window().map(|w| w.navigator()) else {
         return false;
     };
+    if !js_sys::Reflect::has(&navigator, &"share".into()).unwrap_or(false) {
+        return false;
+    }
     let data = web_sys::ShareData::new();
     data.set_title(title);
     data.set_text(text);
@@ -639,8 +734,15 @@ pub async fn save_quote(
     post("/quotes/save", req).await
 }
 
-pub async fn my_quotes() -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
-    get("/quotes").await
+/// One page of the reader's saved quotes, newest first, after `cursor`.
+pub async fn my_quotes(
+    cursor: Option<uuid::Uuid>,
+) -> Result<Vec<shared::SavedQuoteResponseDto>, String> {
+    let mut path = format!("/quotes?limit={}", shared::SAVED_QUOTES_PAGE);
+    if let Some(cursor) = cursor {
+        path.push_str(&format!("&cursor={cursor}"));
+    }
+    get(&path).await
 }
 
 pub async fn save_quotes_batch(
@@ -650,10 +752,14 @@ pub async fn save_quotes_batch(
 }
 
 /// One unsent reading-progress write, replayed FIFO when connectivity returns.
+/// `user_id` is the account that wrote it; a record without one predates the
+/// owner and is never sent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PendingProgress {
     pub book_id: String,
     pub update: ReadingProgressUpdateDto,
+    #[serde(default)]
+    pub user_id: Option<uuid::Uuid>,
 }
 
 pub async fn queue_pending_progress(
@@ -665,42 +771,69 @@ pub async fn queue_pending_progress(
         &PendingProgress {
             book_id: book_id.to_string(),
             update: update.clone(),
+            user_id: token_owner(),
         },
     )
     .await
 }
 
-pub async fn pending_count() -> usize {
-    crate::storage::get_all::<PendingProgress>(crate::storage::STORE_PENDING_SYNC)
+async fn pending_ops() -> Vec<(wasm_bindgen::JsValue, PendingProgress)> {
+    crate::storage::get_all_keyed(crate::storage::STORE_PENDING_SYNC)
         .await
-        .map(|ops| ops.len())
-        .unwrap_or(0)
+        .unwrap_or_default()
+}
+
+/// Writes waiting for the signed-in account; none without one.
+pub async fn pending_count() -> usize {
+    let Some(owner) = token_owner() else {
+        return 0;
+    };
+    pending_ops()
+        .await
+        .iter()
+        .filter(|(_, op)| op.user_id == Some(owner))
+        .count()
+}
+
+/// Drops the unsent writes of an account whose session ended on this device.
+async fn forget_pending(owner: uuid::Uuid) {
+    let keys: Vec<_> = pending_ops()
+        .await
+        .into_iter()
+        .filter(|(_, op)| op.user_id == Some(owner))
+        .map(|(key, _)| key)
+        .collect();
+    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &keys).await;
 }
 
 thread_local! {
     static DRAINING: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// Replays queued progress writes oldest-first; failures stay queued.
-/// Returns the number still pending. Each replayed write is deleted by its
-/// own key, so a write queued during the replay survives it, and a second
-/// call while one runs returns at once instead of sending everything twice.
+/// Replays the signed-in account's queued writes oldest-first; failures stay
+/// queued, and writes of any other account are dropped unsent. Returns the
+/// number still pending. Each handled write is deleted by its own key, so a
+/// write queued during the replay survives it, and a second call while one
+/// runs returns at once instead of sending everything twice.
 pub async fn drain_pending() -> usize {
+    let Some(owner) = token_owner() else {
+        return 0;
+    };
     let already = DRAINING.with(|f| f.replace(true));
     if already {
         return pending_count().await;
     }
-    let ops: Vec<(wasm_bindgen::JsValue, PendingProgress)> =
-        crate::storage::get_all_keyed(crate::storage::STORE_PENDING_SYNC)
-            .await
-            .unwrap_or_default();
-    let mut sent = Vec::new();
-    for (key, op) in ops {
-        if save_progress(&op.book_id, &op.update).await.is_ok() {
-            sent.push(key);
+    let mut done = Vec::new();
+    for (key, op) in pending_ops().await {
+        // A session that ends mid-drain takes its remaining writes with it.
+        if token_owner() != Some(owner) {
+            break;
+        }
+        if op.user_id != Some(owner) || save_progress(&op.book_id, &op.update).await.is_ok() {
+            done.push(key);
         }
     }
-    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &sent).await;
+    let _ = crate::storage::delete_keys(crate::storage::STORE_PENDING_SYNC, &done).await;
     DRAINING.with(|f| f.replace(false));
     pending_count().await
 }

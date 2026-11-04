@@ -34,6 +34,10 @@ pub async fn init_db_pool(config: &AppConfig) -> Result<DatabaseConnection, AppE
         .connect_timeout(Duration::from_secs(config.database.connect_timeout_secs))
         .idle_timeout(Duration::from_secs(config.database.idle_timeout_secs))
         .sqlx_logging(false);
+    let statement_timeout = config.database.statement_timeout_ms.to_string();
+    opt.map_sqlx_postgres_opts(move |pg| {
+        pg.options([("statement_timeout", statement_timeout.as_str())])
+    });
 
     Database::connect(opt)
         .await

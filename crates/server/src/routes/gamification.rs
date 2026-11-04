@@ -2,22 +2,25 @@
 
 use crate::{error::HttpError, middleware::auth::AuthUser, AppState};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use shared::{
-    ApiResponse, AppError, BadgeDto, ErrorPayload, ReadingHeartbeatRequest,
-    ReadingHeartbeatResponse, ReadingStreakDto, UserBadgeDto,
+    ApiResponse, BadgeDto, ErrorPayload, ReadingHeartbeatRequest, ReadingHeartbeatResponse,
+    ReadingStreakDto, StreakQuery, UserBadgeDto,
 };
 use std::sync::Arc;
 use validator::Validate;
 
 /// Minimum seconds between two rewarded heartbeats per user. Streaks and XP
-/// are per user, so the gate is too: alternating books must not multiply
-/// the credit, and bursts inside the window are rejected outright.
-pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
+/// are per user, so the gate is too: alternating books or tabs must not
+/// multiply the credit. A heartbeat inside the window earns nothing but is
+/// still a normal reading tick, so it answers 200 with `credited: false`.
+/// The reader beats every 60 s; the gate is a little shorter so a beat that
+/// lands early after a slow one is still credited.
+pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 55;
 
 /// Logs reading seconds, evaluates the streak, and awards XP.
 #[utoipa::path(
@@ -25,9 +28,10 @@ pub const HEARTBEAT_MIN_INTERVAL_SECS: u64 = 60;
     path = "/api/v1/activity/heartbeat",
     request_body = ReadingHeartbeatRequest,
     responses(
-        (status = 200, description = "Heartbeat recorded and streak evaluated", body = ApiResponse<ReadingHeartbeatResponse>),
+        (status = 200, description = "Heartbeat recorded and streak evaluated, or `credited: false` inside the per-reader interval", body = ApiResponse<ReadingHeartbeatResponse>),
         (status = 400, description = "Invalid payload", body = ApiResponse<ErrorPayload>),
-        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
+        (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>),
+        (status = 404, description = "The book is not published", body = ApiResponse<ErrorPayload>)
     ),
     security(("BearerAuth" = [])),
     tag = "Gamification"
@@ -54,9 +58,10 @@ pub async fn record_heartbeat(
         let reply: Result<Option<String>, _> = redis_conn.set_options(&farm_key, "1", gate).await;
         let fresh = reply.map(|set| set.is_some()).unwrap_or(true);
         if !fresh {
-            let ttl: i64 = redis_conn.ttl(&farm_key).await.unwrap_or(60);
-            let retry_after = if ttl > 0 { ttl as u64 } else { 60 };
-            return Err(HttpError(AppError::RateLimited { retry_after }));
+            let standing = infra::heartbeat_standing(&state.db, auth.id)
+                .await
+                .map_err(HttpError::from)?;
+            return Ok(Json(ApiResponse::success(standing)).into_response());
         }
     }
 
@@ -108,6 +113,7 @@ pub async fn list_user_badges(
 #[utoipa::path(
     get,
     path = "/api/v1/me/streak",
+    params(StreakQuery),
     responses(
         (status = 200, description = "Current streak standing", body = ApiResponse<ReadingStreakDto>),
         (status = 401, description = "Unauthorized", body = ApiResponse<ErrorPayload>)
@@ -118,8 +124,10 @@ pub async fn list_user_badges(
 pub async fn get_my_streak(
     State(state): State<Arc<AppState>>,
     auth: AuthUser,
+    Query(query): Query<StreakQuery>,
 ) -> Result<Response, HttpError> {
-    let streak = infra::get_streak(&state.db, auth.id)
+    query.validate().map_err(HttpError::from)?;
+    let streak = infra::get_streak(&state.db, auth.id, query.utc_offset_minutes.unwrap_or(0))
         .await
         .map_err(HttpError::from)?;
     Ok(Json(ApiResponse::success(streak)).into_response())

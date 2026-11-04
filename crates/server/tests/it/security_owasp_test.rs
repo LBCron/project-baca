@@ -169,7 +169,7 @@ async fn test_owasp_rate_limiting_headers_and_ip_extraction() {
 }
 
 #[tokio::test]
-async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
+async fn test_owasp_otp_email_bombing_is_capped_per_recipient() {
     let harness = TestHarness::new().await;
     let _ = harness
         .live_only()
@@ -184,33 +184,27 @@ async fn test_owasp_otp_cooldown_and_email_bombing_prevention() {
         password: "ValidPassword123!".to_string(),
     };
     let client_ip = unique_test_ip();
+    let signup = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/signup")
+            .header(common::CLIENT_IP_HEADER, &client_ip)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
+            .unwrap()
+    };
 
-    // First signup: Success (201 Created)
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/signup")
-        .header(common::CLIENT_IP_HEADER, &client_ip)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
-        .unwrap();
+    // Three codes an hour reach one address, whoever asks for them.
+    for _ in 0..3 {
+        let (resp, body) = harness.send_json_request(signup()).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(body["success"], true);
+    }
 
-    let (resp, body) = harness.send_json_request(req).await;
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    assert_eq!(body["success"], true);
-
-    // Immediate second signup for the same email: Throttled (429 Too Many Requests)
-    let req2 = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/signup")
-        .header(common::CLIENT_IP_HEADER, &client_ip)
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
-        .unwrap();
-
-    let (resp2, body2) = harness.send_json_request(req2).await;
-    assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(body2["error"]["code"], "RATE_LIMITED");
-    assert!(resp2.headers().contains_key(header::RETRY_AFTER));
+    let (resp, body) = harness.send_json_request(signup()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
     harness.cleanup().await;
 }
 
@@ -381,6 +375,7 @@ async fn test_owasp_token_revocation_on_logout() {
     // Logout with only the refresh token: the session record names the
     // access token issued with it, so that token dies as well.
     let now = chrono::Utc::now().timestamp() as usize;
+    let sid = Uuid::new_v4();
     let (paired_access, jti) = infra::issue_access_token(
         test_user_id,
         "token_revoker@test.local",
@@ -388,6 +383,7 @@ async fn test_owasp_token_revocation_on_logout() {
         harness.state.config.jwt_secret(),
         15,
         now,
+        sid,
     )
     .unwrap();
     let paired_refresh = infra::generate_refresh_token();
@@ -398,6 +394,7 @@ async fn test_owasp_token_revocation_on_logout() {
         14,
         infra::SessionMeta {
             jti,
+            sid,
             ..infra::SessionMeta::default()
         },
     )
@@ -716,6 +713,49 @@ async fn test_owasp_structured_validation_error_details() {
     harness.cleanup().await;
 }
 
+/// In-book search has its own per-client cap, apart from the general public
+/// limiter, because each request reads a book's text index.
+#[tokio::test]
+async fn test_book_search_is_capped_per_client() {
+    let harness =
+        TestHarness::with_config(|c| c.server.book_search_rate_limit_per_minute = 2).await;
+    if harness.live_only().await.is_none() {
+        panic!("live Redis required (db-up)");
+    }
+    let ip = unique_test_ip();
+    let search = || {
+        Request::builder()
+            .uri(format!(
+                "/api/v1/books/{}/search?q=kapal",
+                uuid::Uuid::new_v4()
+            ))
+            .header(common::CLIENT_IP_HEADER, &ip)
+            .body(Body::empty())
+            .unwrap()
+    };
+    for _ in 0..2 {
+        let resp = harness.send_request(search()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "an unknown book, under the cap"
+        );
+    }
+    let (resp, body) = harness.send_json_request(search()).await;
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+    let catalog = Request::builder()
+        .uri("/api/v1/books?limit=1")
+        .header(common::CLIENT_IP_HEADER, &ip)
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        harness.send_request(catalog).await.status(),
+        StatusCode::OK,
+        "the cap is the search route's alone"
+    );
+    harness.cleanup().await;
+}
 /// The public read cap is off by default (shared fallback IP in dev) and,
 /// once configured, meters unauthenticated catalog reads per IP.
 #[tokio::test]

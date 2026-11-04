@@ -129,6 +129,11 @@ pub async fn get_job_status(
         book_id,
         status: fields.get("status").cloned().unwrap_or_default(),
         progress,
+        error: fields.get("error").filter(|e| !e.is_empty()).cloned(),
+        attempts: fields
+            .get("attempts")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
     }))
 }
 
@@ -148,7 +153,36 @@ fn dlq_entry(id: String, fields: &HashMap<String, String>) -> DlqEntryDto {
         job_id: fields.get("job_id").cloned().unwrap_or_default(),
         error: fields.get("error").cloned().unwrap_or_default(),
         book_id: fields.get("book_id").and_then(|s| Uuid::parse_str(s).ok()),
+        book_title: None,
     }
+}
+
+/// Entries in the dead-letter stream.
+pub async fn dlq_length(conn: &mut RedisConn) -> Result<u64, AppError> {
+    conn.xlen(INGESTION_DLQ_STREAM)
+        .await
+        .map_err(|e| AppError::Internal(format!("DLQ length failed: {e}")))
+}
+
+/// Removes one dead letter without re-queueing it. `false` when it was
+/// already gone or the id is not a stream id.
+pub async fn dismiss_dlq_entry(conn: &mut RedisConn, entry_id: &str) -> Result<bool, AppError> {
+    if !is_stream_id(entry_id) {
+        return Ok(false);
+    }
+    let removed: u64 = conn
+        .xdel(INGESTION_DLQ_STREAM, &[entry_id])
+        .await
+        .map_err(|e| AppError::Internal(format!("DLQ dismiss failed: {e}")))?;
+    Ok(removed > 0)
+}
+
+fn is_stream_id(id: &str) -> bool {
+    id.split_once('-').is_some_and(|(ms, seq)| {
+        [ms, seq]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// Newest dead-letter entries first.
@@ -185,6 +219,9 @@ pub async fn replay_dlq_entry(
     conn: &mut RedisConn,
     entry_id: &str,
 ) -> Result<Option<String>, AppError> {
+    if !is_stream_id(entry_id) {
+        return Ok(None);
+    }
     let reply: redis::streams::StreamRangeReply = conn
         .xrange(INGESTION_DLQ_STREAM, entry_id, entry_id)
         .await
@@ -247,6 +284,14 @@ pub async fn replay_dlq_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_stream_ids_reach_xdel() {
+        assert!(is_stream_id("1793711139171-0"));
+        for bad in ["", "-", "17-", "-0", "17-0-1", "abc-0", "$", "+", "17 -0"] {
+            assert!(!is_stream_id(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn ingestion_entries_trim_the_stream_approximately() {

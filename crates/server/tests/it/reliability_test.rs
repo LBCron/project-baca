@@ -28,6 +28,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         api_key: String::new(),
         model_name: "text-embedding-004".to_string(),
         dimension: 768,
+        daily_budget: 0,
     })
     .expect("fastembed stub must always succeed");
 
@@ -38,6 +39,7 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
         config: Arc::new(config),
         embedding,
         storage: storage.map(Arc::new),
+        argon2: infra::Argon2Gate::new(2),
     }))
 }
 
@@ -142,10 +144,7 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     }
     let email = format!("smtp_down_{}@example.com", uuid::Uuid::new_v4());
     // A fresh address per run keeps the per-IP signup cap out of the picture.
-    let ip = format!(
-        "203.0.113.{}",
-        10 + (uuid::Uuid::new_v4().as_u128() % 200) as u8
-    );
+    let ip = common::unique_ip("198.21");
     harness.track_email(&email);
     let signup = || {
         Request::builder()
@@ -172,6 +171,13 @@ async fn test_signup_fails_closed_when_smtp_unreachable() {
     let (resp, body) = harness.send_json_request(signup()).await;
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "EXTERNAL_SERVICE_ERROR");
+
+    // No mail went out, so none counts against the address.
+    let mut redis = harness.live_only().await.expect("live Redis");
+    let sent: Option<i64> = redis::AsyncCommands::get(&mut redis, format!("otp:sent:3600:{email}"))
+        .await
+        .unwrap();
+    assert_eq!(sent.unwrap_or(0), 0);
     harness.cleanup().await;
 }
 
@@ -188,11 +194,7 @@ async fn test_redis_outage_answers_503_and_heals_without_restart() {
         .live_only()
         .await
         .expect("live Postgres + Redis required (db-up)");
-    let ip = format!(
-        "198.18.{}.{}",
-        (Uuid::new_v4().as_u128() % 250) as u8,
-        (Uuid::new_v4().as_u128() % 250) as u8
-    );
+    let ip = common::unique_ip("198.21");
     let (access, _) = provision_verified_user(&harness, &mut redis, "relay", &ip).await;
     let (resp, me) = harness
         .send_json_request(get_bearer("/api/v1/me", &access))
@@ -249,6 +251,10 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
         .env("DATABASE_CONNECT_TIMEOUT_SECS", "2")
         .env("JWT_SECRET", "p".repeat(48))
         .env("SMTP_SECURITY", "starttls")
+        .env("TRUST_PROXY_HEADERS", "true")
+        .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
+        .env("OTP_HOURLY_BUDGET", "100")
+        .env("AI_DAILY_BUDGET", "5000")
         .env("RUST_LOG", "server=info")
         .kill_on_drop(true)
         .output();
@@ -272,14 +278,34 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
 /// cover request within the operation timeout instead of holding it open.
 #[tokio::test]
 async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
+    // The cover route asks the database whether the book is published before
+    // it reads the bucket, so this one needs the live database.
+    let harness = common::TestHarness::new().await;
+    let book_id = common::seed_book(&harness, "published").await;
     let (port, _listener) = common::silent_listener().await;
     let mut config = AppConfig::default();
     config.storage.endpoint = format!("http://127.0.0.1:{port}");
     let storage = StorageService::connect(&config.storage);
-    let app = offline_app(config, Some(storage));
+    let embedding = build_embedding_provider(&AiConfig {
+        provider: "fastembed".to_string(),
+        api_key: String::new(),
+        model_name: "text-embedding-004".to_string(),
+        dimension: 768,
+        daily_budget: 0,
+    })
+    .expect("fastembed stub must always succeed");
+    let app = create_app(Arc::new(AppState {
+        db: harness.state.db.clone(),
+        redis: redis::Client::open("redis://127.0.0.1:6380").unwrap(),
+        redis_conn: None,
+        config: Arc::new(config),
+        embedding,
+        storage: Some(Arc::new(storage)),
+        argon2: infra::Argon2Gate::new(2),
+    }));
 
     let started = Instant::now();
-    let uri = format!("/api/v1/covers/{}.webp", Uuid::new_v4());
+    let uri = format!("/api/v1/covers/{book_id}.webp");
     let resp = tokio::time::timeout(
         S3_OPERATION_TIMEOUT + Duration::from_secs(5),
         app.oneshot(get(&uri)),
@@ -293,4 +319,5 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
         "took {:?}",
         started.elapsed()
     );
+    harness.cleanup().await;
 }

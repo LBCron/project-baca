@@ -11,7 +11,7 @@ members = [
 exclude = ["apps/tauri"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Project Baca Contributors"]
 license = "MIT OR Apache-2.0"
@@ -42,7 +42,7 @@ utoipa = { version = "6.0", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "10.0", features = ["axum"] }
 argon2 = "0.5"
 aws-credential-types = "1"
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 sha2 = "0.10"
 jsonwebtoken = "9.3"
 rand = "0.8"

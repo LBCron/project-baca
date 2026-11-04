@@ -1,6 +1,8 @@
 """Reader flows: body render, type sheet, recap chip, offline save + read,
 and the integrity of the saved reading position."""
+import base64
 import json
+import subprocess
 import urllib.request
 
 import pytest
@@ -126,11 +128,15 @@ def _guest_record(page: Page, book_id: str) -> dict | None:
     return next((r for r in page.evaluate(GUEST_PROGRESS) if r["book_id"] == book_id), None)
 
 
-def _account_anchor(token: str, book_id: str) -> str | None:
+def _account_progress(token: str, book_id: str) -> dict | None:
     req = urllib.request.Request(f"{API}/progress/active", headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req) as r:
         active = json.load(r)["data"]
-    return active["last_anchor_cfi"] if active and active["book_id"] == book_id else None
+    return active if active and active["book_id"] == book_id else None
+
+
+def _account_anchor(token: str, book_id: str) -> str | None:
+    return (_account_progress(token, book_id) or {}).get("last_anchor_cfi")
 
 
 def _reopens_saved_page(page: Page, book_id: str, saved_anchor) -> None:
@@ -174,6 +180,16 @@ def test_account_reopens_saved_page_when_position_is_slow(new_context, book_with
         context.close()
 
 
+def test_guest_reopens_saved_page_when_chapter_is_slow(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context, delay=[f"/books/{book_id}/chapters/1"])
+    try:
+        _reopens_saved_page(page, book_id, lambda: (_guest_record(page, book_id) or {}).get("last_anchor_cfi"))
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
 def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
     book_id = book_with_chapters
     chapters = api_get(f"/books/{book_id}")["chapters"]
@@ -182,7 +198,7 @@ def test_stale_chapter_answer_is_dropped(new_context, book_with_chapters: str):
         _open(page, book_id)
         page.keyboard.press("End")
         page.wait_for_timeout(250)
-        _turn(page, "ArrowRight")
+        _turn(page, "ArrowRight", 2)
         _turn(page, "ArrowLeft")
         page.wait_for_timeout(600)
         page.evaluate("() => window.__release()")
@@ -209,6 +225,126 @@ def test_leaving_inside_the_debounce_saves_the_new_page(new_context, book_with_c
         page.wait_for_timeout(1000)
         assert "/book/" in page.url
         assert (_guest_record(page, book_id) or {}).get("last_anchor_cfi") == expected
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+VISIBLE_PARAGRAPHS = """() => {
+  const v = document.querySelector('.reader-viewport');
+  const box = v.getBoundingClientRect();
+  return [...v.querySelectorAll('.chapter-body p')].flatMap((p, i) =>
+    [...p.getClientRects()].some(r => r.width > 0 && r.right > box.left + 1 && r.left < box.right - 1) ? [i + 1] : []);
+}"""
+
+
+def _resize(page: Page, width: int, height: int) -> list[int]:
+    page.set_viewport_size({"width": width, "height": height})
+    page.wait_for_timeout(500)
+    return page.evaluate(VISIBLE_PARAGRAPHS)
+
+
+def test_resizing_keeps_the_paragraph_being_read(new_context, book_with_chapters: str):
+    context = new_context(viewport={"width": 1280, "height": 800}, reduced_motion="reduce")
+    install_fetch_shim(context, chapters=3)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        _open(page, book_with_chapters)
+        _turn(page, "ArrowRight", 3)
+        reading = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        for width, height in [(800, 1100), (1280, 800), (390, 844), (1280, 800), (1024, 768), (1280, 800)]:
+            shown = _resize(page, width, height)
+        assert reading in shown, f"p-{reading} left the screen, now {shown}"
+
+        _resize(page, 390, 844)
+        _turn(page, "ArrowRight", 2)
+        first = page.evaluate(VISIBLE_PARAGRAPHS)[0]
+        _resize(page, 844, 390)
+        assert abs(_resize(page, 390, 844)[0] - first) <= 1, "one rotation and back keeps the paragraph"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+def test_unknown_book_end_never_shows_the_finale(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    context, page, errors = _reader_context(new_context)
+    try:
+        page.route(f"{API}/books/{book_id}", lambda route: route.abort())
+        _open(page, book_id)
+        page.keyboard.press("End")
+        _turn(page, "ArrowRight", 2)
+        expect(page.locator(".finale")).to_have_count(0)
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+PENDING_SYNC = """
+() => new Promise(resolve => {
+  const open = indexedDB.open('project_baca_db');
+  open.onsuccess = () => {
+    const db = open.result;
+    if (!db.objectStoreNames.contains('pending_sync_queue')) { resolve([]); return; }
+    const all = db.transaction('pending_sync_queue', 'readonly').objectStore('pending_sync_queue').getAll();
+    all.onsuccess = () => resolve(all.result.map(op => op.update));
+  };
+  open.onerror = () => resolve([]);
+})
+"""
+
+
+def test_unreachable_chapter_is_never_skipped_or_synced(new_context, book_with_chapters: str):
+    book_id = book_with_chapters
+    chapters = api_get(f"/books/{book_id}")["chapters"]
+    ceiling = 100 / len(chapters) + 0.01
+    tokens = register_reader("unreachable")
+    context, page, errors = _reader_context(new_context)
+    context.add_init_script(
+        f"localStorage.setItem('baca_access_token','{tokens['access_token']}');"
+        f"localStorage.setItem('baca_refresh_token','{tokens['refresh_token']}');"
+    )
+    try:
+        _open(page, book_id)
+        page.route(f"{API}/**", lambda route: route.abort())
+        page.keyboard.press("End")
+        page.wait_for_timeout(250)
+        _turn(page, "ArrowRight", 4)
+        page.wait_for_timeout(1700)
+        assert "chapter=1" in page.url
+        assert "Bab 1 paragraf" in page.inner_text(".chapter-body")
+        expect(page.locator(".reader-title .kicker")).to_have_text("Chapter I")
+        expect(page.locator(".reader .toast")).to_contain_text("could not be loaded")
+        expect(page.locator(".finale:not(.chapter-end)")).to_have_count(0)
+        queued = page.evaluate(PENDING_SYNC)
+        assert queued, "the last page of chapter 1 waits in the queue"
+        assert all(u["chapter_id"] == chapters[0]["id"] and u["completion_percentage"] <= ceiling for u in queued), queued
+
+        page.unroute(f"{API}/**")
+        page.goto(f"{WEB}/", wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        assert page.evaluate(PENDING_SYNC) == [], "the queue drains when the app opens signed in"
+        saved = _account_progress(tokens["access_token"], book_id)
+        assert saved and saved["chapter_id"] == chapters[0]["id"], saved
+        assert saved["completion_percentage"] <= ceiling and not saved["is_finished"], saved
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("case", ["unknown-book", "api-down"])
+def test_book_that_fails_to_load_never_shows_the_finale(new_context, book_with_chapters: str, case: str):
+    context, page, errors = _reader_context(new_context)
+    try:
+        book_id = "a0000000-0000-4000-8000-0000000000ff" if case == "unknown-book" else book_with_chapters
+        if case == "api-down":
+            page.route(f"{API}/**", lambda route: route.abort())
+        page.goto(f"{WEB}/read/{book_id}?chapter=1", wait_until="domcontentloaded")
+        page.wait_for_selector(".reader-end")
+        _turn(page, "ArrowRight", 2)
+        expect(page.locator(".finale")).to_have_count(0)
         assert errors == [], errors[:3]
     finally:
         context.close()
@@ -356,6 +492,42 @@ def test_selected_text_becomes_an_account_quote(new_context, book_with_chapters:
         context.close()
 
 
+def _fill_quote_shelf(user_id: str, book_id: str) -> None:
+    """Plants a full shelf straight into the dev database; saving 5,000
+    quotes through the API would take a hundred batches."""
+    chapter_id = api_get(f"/books/{book_id}")["chapters"][0]["id"]
+    sql = (
+        "INSERT INTO saved_quotes (id, user_id, book_id, chapter_id, quote_text, created_at) "
+        f"SELECT gen_random_uuid(), '{user_id}', '{book_id}', '{chapter_id}', 'Shelf ' || g, NOW() "
+        "FROM generate_series(1, 5000) AS g"
+    )
+    subprocess.run(
+        ["docker", "exec", "project_baca_db", "psql", "-U", "baca_user", "-d", "project_baca_db", "-c", sql],
+        capture_output=True,
+        check=True,
+    )
+
+
+def test_saving_past_a_full_shelf_says_so(new_context, book_with_chapters: str):
+    tokens = register_reader("quota")
+    payload = tokens["access_token"].split(".")[1]
+    user_id = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["sub"]
+    _fill_quote_shelf(user_id, book_with_chapters)
+    context, page, errors = _context(new_context, tokens=tokens)
+    try:
+        _open(page, book_with_chapters, settle_ms=1500)
+        _save_selection(page)
+        expect(page.locator(".reader .toast")).to_contain_text("quote shelf is full")
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+        req = urllib.request.Request(
+            f"{API}/me", method="DELETE", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+        with urllib.request.urlopen(req):
+            pass
+
+
 def _search(page: Page, query: str):
     page.click(".btn-search")
     page.fill("#book-search", query)
@@ -377,6 +549,52 @@ def test_book_search_opens_the_page_that_holds_the_hit(new_context, book_with_ch
         assert page.query_selector(".sheet[role='dialog']") is None
         assert "chapter=1" not in page.url, "the last hit is in a later chapter"
         assert page.evaluate(FLASHED_ON_SHOWN_PAGE) is True, "the hit's paragraph is on the page shown"
+        assert errors == [], errors[:3]
+    finally:
+        context.close()
+
+
+PARAGRAPH_COUNT = """html => new DOMParser().parseFromString(html, 'text/html').querySelectorAll('p').length"""
+
+
+def test_quote_search_hit_opens_its_paragraph(new_context, book_with_chapters: str):
+    """A quote hit carries the anchor of the paragraph its passage starts
+    in; its jump link opens the reader on that paragraph, lit as an in-book
+    hit is. The search answer is stubbed: the seeded books hold no
+    embeddings, and the anchor itself is covered by the worker and API tests."""
+    book_id = book_with_chapters
+    chapter, _ = _chapter_no(book_id)
+    html = api_get(f"/books/{book_id}/chapters/{chapter}")["html_content"]
+    context, page, errors = _context(new_context)
+    try:
+        goto(page, f"/book/{book_id}")
+        last = page.evaluate(PARAGRAPH_COUNT, html)
+        assert last > 3, "the seeded chapter spans several pages"
+        hit = {
+            "chunk_id": "00000000-0000-4000-8000-0000000000aa",
+            "chapter_number": chapter,
+            "chapter_title": None,
+            "cfi_range": f"p-{last}",
+            "content": "A passage from the end of the chapter.",
+            "similarity_score": 0.9,
+        }
+        page.route(
+            "**/quotes/search",
+            lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps({"success": True, "data": [hit]})
+            ),
+        )
+        page.click("text=Find a quote")
+        page.fill(".sheet .search-bar input", "the end of the chapter")
+        page.click(".sheet .search-bar .btn-primary")
+        jump = page.locator(".quote-row .quote-actions a.btn-primary")
+        expect(jump).to_have_attribute("href", f"/read/{book_id}?chapter={chapter}&at=p-{last}")
+        jump.click()
+        page.wait_for_selector(".chapter-body")
+        page.wait_for_timeout(1600)
+        assert page.evaluate(FLASHED_ON_SHOWN_PAGE) is True, "the quote's paragraph is on the page shown"
+        assert page.evaluate("document.querySelector('.reader-viewport').scrollLeft") > 0, "opened past page one"
+        assert "at=" not in page.url, "a reload returns to the saved place, not the hit"
         assert errors == [], errors[:3]
     finally:
         context.close()
@@ -404,6 +622,43 @@ def test_book_search_field_takes_focus_and_keeps_it(new_context, book_with_chapt
         assert hits.count() >= 1
         assert errors == [], errors[:3]
     finally:
+        context.close()
+
+
+HITS_JS = """() => [...document.querySelectorAll('.search-hit')].map(b =>
+    `${b.dataset.chapter}:${b.dataset.paragraph}:${b.querySelector('.hit-text').textContent}`)"""
+
+
+def test_book_search_online_and_offline_agree(new_context, book_with_chapters: str):
+    """The server's paragraph index and the saved copy find the same
+    paragraphs with the same snippets: one normalization on both sides."""
+    book_id = book_with_chapters
+    queries = ["surat", "kapal", "di pelabuhan", "dan"]
+    context, page, errors = _context(new_context)
+    try:
+        page.goto(f"{WEB}/book/{book_id}", wait_until="networkidle")
+        save = '[aria-label="Save for offline reading"]'
+        if page.query_selector(save):
+            page.click(save)
+            page.wait_for_selector('[aria-label="Saved on this device"]', timeout=10000)
+        _open(page, book_id, settle_ms=1500)
+        page.click(".btn-search")
+
+        def results(query: str) -> list[str]:
+            page.fill("#book-search", query)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1200)
+            return page.evaluate(HITS_JS)
+
+        online = {q: results(q) for q in queries}
+        context.set_offline(True)
+        offline = {q: results(q) for q in queries}
+        expect(page.locator(".sheet .form-hint")).to_have_text("Searched in the copy on your device.")
+        assert any(online.values()), "the queries must find something"
+        assert online == offline
+        assert errors == [], errors[:3]
+    finally:
+        context.set_offline(False)
         context.close()
 
 

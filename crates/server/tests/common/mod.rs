@@ -20,7 +20,9 @@ use uuid::Uuid;
 pub const CLIENT_IP_HEADER: &str = "cf-connecting-ip";
 
 /// A random IPv4 address under `prefix` (two octets), drawn from 62,500 so
-/// tests running in the same minute do not share a rate-limit bucket.
+/// tests running in the same minute do not share a rate-limit bucket. Each
+/// suite keeps its own prefix: auth 198.18, semantic 198.19, load stress
+/// 198.20, reliability 198.21, catalog 198.22.
 #[allow(dead_code)]
 pub fn unique_ip(prefix: &str) -> String {
     let n = Uuid::new_v4().as_u128();
@@ -82,6 +84,7 @@ impl TestHarness {
             api_key: String::new(),
             model_name: "text-embedding-004".to_string(),
             dimension: 768,
+            daily_budget: 0,
         })
         .expect("mock provider must always succeed");
 
@@ -97,6 +100,7 @@ impl TestHarness {
             config: Arc::clone(&config),
             embedding,
             storage,
+            argon2: infra::Argon2Gate::new(config.server.argon2_max_concurrency),
         });
 
         let app = create_app(state.clone());
@@ -147,6 +151,7 @@ impl TestHarness {
         }
         let db = &self.state.db;
         if !seeded.books.is_empty() {
+            self.drop_queued_jobs(&seeded.books).await;
             let _ = books::Entity::delete_many()
                 .filter(books::Column::Id.is_in(seeded.books))
                 .exec(db)
@@ -169,6 +174,38 @@ impl TestHarness {
                 .filter(users::Column::Email.is_in(seeded.emails))
                 .exec(db)
                 .await;
+        }
+    }
+
+    /// Removes the ingestion entries and job hashes that uploads in this test
+    /// queued. Their book rows go with cleanup, so a worker would otherwise
+    /// fail each of them later on the shared dev stream.
+    async fn drop_queued_jobs(&self, books: &[Uuid]) {
+        let Ok(mut redis) = self.state.get_redis_conn().await else {
+            return;
+        };
+        let Ok(reply) = redis
+            .xrevrange_count::<_, _, _, _, redis::streams::StreamRangeReply>(
+                infra::INGESTION_STREAM,
+                "+",
+                "-",
+                1000,
+            )
+            .await
+        else {
+            return;
+        };
+        for entry in reply.ids {
+            let book = entry
+                .get::<String>("book_id")
+                .and_then(|b| Uuid::parse_str(&b).ok());
+            if !book.is_some_and(|b| books.contains(&b)) {
+                continue;
+            }
+            let _: Result<i64, _> = redis.xdel(infra::INGESTION_STREAM, &[&entry.id]).await;
+            if let Some(job) = entry.get::<String>("job_id") {
+                let _: Result<i64, _> = redis.del(format!("job:{job}")).await;
+            }
         }
     }
 
@@ -212,6 +249,71 @@ impl TestHarness {
     }
 }
 
+/// A book row in `status`, so its cover has something to answer to.
+#[allow(dead_code)]
+pub async fn seed_book(harness: &TestHarness, status: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    use sea_orm::{ActiveModelTrait, Set};
+    books::ActiveModel {
+        id: Set(id),
+        title: Set("Cover Probe".to_string()),
+        author: Set("Probe".to_string()),
+        language: Set("id".to_string()),
+        primary_theme: Set("Probe".to_string()),
+        sub_theme: Set(None),
+        description: Set("Cover probe".to_string()),
+        cover_url: Set(format!("covers/{id}.webp")),
+        epub_storage_path: Set(format!("epubs/{id}.epub")),
+        total_words: Set(1),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Probe".to_string()),
+        source_url: Set(None),
+        license: Set("CC0".to_string()),
+        publication_year: Set(None),
+        status: Set(status.to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("seed book");
+    harness.track_book(id)
+}
+
+/// Code a test swaps in for the one mailed to a registration.
+#[allow(dead_code)]
+pub const KNOWN_OTP: &str = "424242";
+
+/// The registration id a signup answered with.
+#[allow(dead_code)]
+pub fn registration_of(signup_body: &serde_json::Value) -> Uuid {
+    signup_body["data"]["registration_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("signup answers with a registration id")
+}
+
+/// Replaces the mailed code of a pending registration with `otp`, keeping
+/// the password and name its registrant chose.
+#[allow(dead_code)]
+pub async fn plant_known_otp(
+    redis_conn: &mut infra::RedisConn,
+    email: &str,
+    registration_id: Uuid,
+    otp: &str,
+) {
+    let key = infra::registration_key(email, registration_id);
+    let record: String = redis_conn.get(&key).await.expect("pending registration");
+    let mut registration: infra::PendingRegistration =
+        serde_json::from_str(&record).expect("registration record");
+    registration.code_hash = infra::hash_otp(otp);
+    let _: () = redis_conn
+        .set_ex(&key, serde_json::to_string(&registration).unwrap(), 600)
+        .await
+        .unwrap();
+}
+
 /// Password of every account [`provision_verified_user`] creates.
 #[allow(dead_code)]
 pub const PROVISIONED_PASSWORD: &str = "Adversarial123!";
@@ -240,16 +342,10 @@ pub async fn provision_verified_user(
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&signup_req).unwrap()))
         .unwrap();
-    let (resp, _) = harness.send_json_request(req).await;
+    let (resp, body) = harness.send_json_request(req).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-
-    let known_otp = "424242";
-    let record_json =
-        serde_json::json!({ "hash": infra::hash_otp(known_otp), "attempts": 0 }).to_string();
-    let _: () = redis_conn
-        .set_ex(format!("otp:{email}"), record_json, 600)
-        .await
-        .unwrap();
+    let registration_id = registration_of(&body);
+    plant_known_otp(redis_conn, &email, registration_id, KNOWN_OTP).await;
 
     let req = Request::builder()
         .method("POST")
@@ -259,7 +355,8 @@ pub async fn provision_verified_user(
         .body(Body::from(
             serde_json::to_vec(&VerifyOtpRequest {
                 email: email.clone(),
-                otp: known_otp.to_string(),
+                registration_id,
+                otp: KNOWN_OTP.to_string(),
             })
             .unwrap(),
         ))

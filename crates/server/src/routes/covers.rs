@@ -33,23 +33,19 @@ fn is_cover_file_name(file: &str) -> bool {
         && matches!(ext, "webp" | "jpg" | "jpeg" | "png")
 }
 
-/// Media type from the stored object, falling back to the extension when the
-/// bucket did not record an image type.
-fn cover_content_type(file: &str, stored: Option<String>) -> String {
-    stored
-        .filter(|ct| ct.starts_with("image/"))
-        .unwrap_or_else(|| {
-            match file.rsplit_once('.').map(|(_, ext)| ext) {
-                Some("webp") => "image/webp",
-                Some("png") => "image/png",
-                _ => "image/jpeg",
-            }
-            .to_string()
-        })
+/// Media type from the file's allowlisted extension, never from what the
+/// bucket recorded: an object stored as `image/svg+xml` is still served as a
+/// raster type the browser will not run.
+fn cover_content_type(file: &str) -> &'static str {
+    match file.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("webp") => "image/webp",
+        Some("png") => "image/png",
+        _ => "image/jpeg",
+    }
 }
 
-/// Cover image bytes for a book. Public, cached immutably, 404 for anything
-/// that is not a stored cover.
+/// Cover image bytes for a published book. Public, cached immutably, 404 for
+/// anything that is not the stored cover of a published book.
 #[utoipa::path(
     get,
     path = "/api/v1/covers/{file}",
@@ -59,7 +55,7 @@ fn cover_content_type(file: &str, stored: Option<String>) -> String {
     ),
     responses(
         (status = 200, description = "Cover image", content_type = "image/webp"),
-        (status = 404, description = "No such cover")
+        (status = 404, description = "No such cover, or its book is not published")
     )
 )]
 pub async fn get_cover(
@@ -67,28 +63,41 @@ pub async fn get_cover(
     Path(file): Path<String>,
 ) -> Result<Response, HttpError> {
     let not_found = || HttpError(AppError::NotFound("Cover not found".to_string()));
-    if !is_cover_file_name(&file) {
+    let Some(book_id) = is_cover_file_name(&file)
+        .then(|| file.rsplit_once('.'))
+        .flatten()
+        .and_then(|(stem, _)| stem.parse::<uuid::Uuid>().ok())
+    else {
         return Err(not_found());
-    }
+    };
+    // A draft or archived book's cover is as invisible as the book: a
+    // takedown takes the cover down with it.
+    infra::ensure_book_published(&state.db, book_id)
+        .await
+        .map_err(|e| match e {
+            AppError::NotFound(_) => not_found(),
+            other => HttpError(other),
+        })?;
     let storage = state.storage.as_ref().ok_or_else(|| {
         HttpError(AppError::Internal(
             "Object storage unavailable; covers cannot be served".to_string(),
         ))
     })?;
-    let object = storage
+    let bytes = storage
         .get_cover(&format!("covers/{file}"))
         .await
         .map_err(|e| match e {
             AppError::NotFound(_) => not_found(),
             other => HttpError(other),
         })?;
-    let content_type = HeaderValue::from_str(&cover_content_type(&file, object.content_type))
-        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
 
     Ok((
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, content_type),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(cover_content_type(&file)),
+            ),
             (
                 header::CACHE_CONTROL,
                 HeaderValue::from_static(COVER_CACHE_CONTROL),
@@ -99,7 +108,7 @@ pub async fn get_cover(
                 HeaderValue::from_static("cross-origin"),
             ),
         ],
-        object.bytes,
+        bytes,
     )
         .into_response())
 }
@@ -130,15 +139,10 @@ mod tests {
     }
 
     #[test]
-    fn content_type_prefers_stored_image_type() {
-        assert_eq!(
-            cover_content_type("x.webp", Some("image/png".to_string())),
-            "image/png"
-        );
-        assert_eq!(
-            cover_content_type("x.webp", Some("text/html".to_string())),
-            "image/webp"
-        );
-        assert_eq!(cover_content_type("x.jpg", None), "image/jpeg");
+    fn content_type_comes_from_the_extension_alone() {
+        assert_eq!(cover_content_type("x.webp"), "image/webp");
+        assert_eq!(cover_content_type("x.png"), "image/png");
+        assert_eq!(cover_content_type("x.jpg"), "image/jpeg");
+        assert_eq!(cover_content_type("x.jpeg"), "image/jpeg");
     }
 }

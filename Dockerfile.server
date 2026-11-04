@@ -2,6 +2,7 @@
 FROM rust:1.94-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY crates ./crates
 RUN cargo build --release -p server
 
@@ -14,6 +15,10 @@ COPY --from=builder /app/target/release/server /usr/local/bin/server
 # Two malloc arenas instead of one per core: 256 concurrent readers peaked
 # at 61 MB RSS instead of 72 MB with the same throughput.
 ENV MALLOC_ARENA_MAX=2
+# A fixed mmap threshold keeps every 19 MiB Argon2 buffer on its own mapping,
+# returned on free: with glibc's sliding threshold they land in the arenas
+# and 100 parallel logins peaked at 814 MB instead of 189 MB.
+ENV MALLOC_MMAP_THRESHOLD_=131072
 # The API writes nothing to disk, so it runs as an unprivileged id.
 USER 10001:10001
 EXPOSE 8080

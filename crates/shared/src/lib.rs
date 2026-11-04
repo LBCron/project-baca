@@ -49,6 +49,44 @@ pub struct ErrorPayload {
     pub details: Option<serde_json::Value>,
 }
 
+/// The `error.code` values the API answers with. The server sends only
+/// these, and the web client keeps one dictionary entry for each.
+pub mod error_code {
+    pub const BAD_REQUEST: &str = "BAD_REQUEST";
+    pub const VALIDATION_FAILED: &str = "VALIDATION_FAILED";
+    pub const UNAUTHORIZED: &str = "UNAUTHORIZED";
+    pub const FORBIDDEN: &str = "FORBIDDEN";
+    pub const NOT_FOUND: &str = "NOT_FOUND";
+    pub const METHOD_NOT_ALLOWED: &str = "METHOD_NOT_ALLOWED";
+    pub const CONFLICT: &str = "CONFLICT";
+    pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
+    pub const PAYLOAD_TOO_LARGE: &str = "PAYLOAD_TOO_LARGE";
+    pub const RATE_LIMITED: &str = "RATE_LIMITED";
+    pub const AI_RATE_LIMITED: &str = "AI_RATE_LIMITED";
+    pub const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
+    pub const EXTERNAL_SERVICE_ERROR: &str = "EXTERNAL_SERVICE_ERROR";
+    pub const DATABASE_ERROR: &str = "DATABASE_ERROR";
+    pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
+
+    pub const ALL: &[&str] = &[
+        BAD_REQUEST,
+        VALIDATION_FAILED,
+        UNAUTHORIZED,
+        FORBIDDEN,
+        NOT_FOUND,
+        METHOD_NOT_ALLOWED,
+        CONFLICT,
+        QUOTA_EXCEEDED,
+        PAYLOAD_TOO_LARGE,
+        RATE_LIMITED,
+        AI_RATE_LIMITED,
+        SERVICE_UNAVAILABLE,
+        EXTERNAL_SERVICE_ERROR,
+        DATABASE_ERROR,
+        INTERNAL_ERROR,
+    ];
+}
+
 /// Common application errors
 #[derive(Debug, thiserror::Error, Serialize, Deserialize, Clone)]
 pub enum AppError {
@@ -75,6 +113,15 @@ pub enum AppError {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    /// A per-account storage limit is spent; distinct from `Conflict` so the
+    /// client can say what the reader can do about it.
+    #[error("Quota exceeded: {0}")]
+    QuotaExceeded(String),
+
+    /// The body is larger than the route accepts (413).
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
 
     #[error("Rate limit exceeded. Try again in {retry_after} seconds")]
     RateLimited { retry_after: u64 },
@@ -115,13 +162,16 @@ pub struct SignupRequest {
         max = 100,
         message = "Display name must be between 2 and 100 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 2, max_length = 100))]
     pub display_name: String,
 
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
     #[validate(length(min = 8, max = 128, message = "Password must be at least 8 characters"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub password: String,
 }
 
@@ -130,10 +180,25 @@ pub struct SignupRequest {
 pub struct VerifyOtpRequest {
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
+    /// The registration the code was mailed for, from the signup answer.
+    pub registration_id: Uuid,
+
     #[validate(length(equal = 6, message = "OTP must be exactly 6 digits"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 6, max_length = 6))]
     pub otp: String,
+}
+
+/// Answer to a signup: the code is on its way and must come back with this
+/// registration's id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RegistrationStartedDto {
+    pub message: String,
+    pub email: String,
+    pub registration_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -141,9 +206,11 @@ pub struct VerifyOtpRequest {
 pub struct LoginRequest {
     #[serde(deserialize_with = "deserialize_email")]
     #[validate(email(message = "Invalid email format"))]
+    #[cfg_attr(feature = "openapi", schema(format = Email))]
     pub email: String,
 
     #[validate(length(min = 1, message = "Password cannot be empty"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub password: String,
 }
 
@@ -151,6 +218,7 @@ pub struct LoginRequest {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RefreshTokenRequest {
     #[validate(length(min = 1, message = "Refresh token must not be empty"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub refresh_token: String,
 }
 
@@ -187,6 +255,7 @@ pub struct UpdateProfileRequest {
         max = 100,
         message = "Display name must be between 2 and 100 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 2, max_length = 100))]
     pub display_name: Option<String>,
     #[validate(custom(function = "validate_avatar_url"))]
     pub avatar_url: Option<String>,
@@ -213,12 +282,14 @@ pub fn validate_avatar_url(url: &str) -> Result<(), validator::ValidationError> 
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChangePasswordRequest {
     #[validate(length(min = 1, message = "Current password is required"))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1))]
     pub current_password: String,
     #[validate(length(
         min = 8,
         max = 128,
         message = "New password must be at least 8 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 8, max_length = 128))]
     pub new_password: String,
     #[serde(default)]
     pub revoke_other_sessions: Option<bool>,
@@ -241,8 +312,10 @@ pub struct GuestProgressRecord {
     pub book_id: Uuid,
     pub last_chapter_id: Uuid,
     #[validate(length(min = 1, max = 255))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 255))]
     pub last_anchor_cfi: String,
     #[validate(range(min = 0.0, max = 100.0))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 0.0, maximum = 100.0))]
     pub completion_percentage: f32,
     pub is_finished: Option<bool>,
     pub last_read_at: Option<DateTime<Utc>>,
@@ -253,6 +326,7 @@ pub struct GuestProgressRecord {
 pub struct GuestMergeRequest {
     #[validate(length(max = 100, message = "Cannot merge more than 100 records at once"))]
     #[validate(nested)]
+    #[cfg_attr(feature = "openapi", schema(max_items = 100))]
     pub records: Vec<GuestProgressRecord>,
 }
 
@@ -331,12 +405,16 @@ pub struct OfflineBundleDto {
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BookCatalogQuery {
     pub cursor: Option<Uuid>,
-    pub limit: Option<u64>,
+    /// Page size, clamped to 1..=100 (default 20).
+    pub limit: Option<i64>,
     #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 10))]
     pub language: Option<String>,
     #[validate(length(max = 50, message = "Theme filter must not exceed 50 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 50))]
     pub theme: Option<String>,
     #[validate(length(max = 50, message = "Tag filter must not exceed 50 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 50))]
     pub tag: Option<String>,
 }
 
@@ -348,10 +426,13 @@ pub struct BookSearchQuery {
         max = 200,
         message = "Search query must be between 2 and 200 characters"
     ))]
+    #[cfg_attr(feature = "openapi", param(min_length = 2, max_length = 200))]
     pub q: String,
     #[validate(length(max = 10, message = "Language filter must not exceed 10 characters"))]
+    #[cfg_attr(feature = "openapi", param(max_length = 10))]
     pub language: Option<String>,
-    pub limit: Option<u64>,
+    /// Result count, clamped to 1..=50 (default 20).
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +457,7 @@ pub struct BookTextSearchQuery {
         max = 200,
         message = "Search query must be between 2 and 200 characters"
     ))]
+    #[cfg_attr(feature = "openapi", param(min_length = 2, max_length = 200))]
     pub q: String,
 }
 
@@ -396,11 +478,33 @@ pub const BOOK_TEXT_HITS_MAX: usize = 50;
 /// Characters of context kept on each side of a match in a snippet.
 const SNIPPET_CONTEXT: usize = 70;
 
+/// Case folding for matching, one character at a time on both sides: a
+/// whole-string lowercase turns a final capital sigma into `ς` and `İ` into
+/// two characters, so a needle and the text it came from stopped matching.
+pub fn fold(c: char) -> char {
+    match c.to_lowercase().next().unwrap_or(c) {
+        '\u{03C2}' => '\u{03C3}',
+        lower => lower,
+    }
+}
+
+/// A query as in-book search matches it: whitespace collapsed, then folded
+/// like the `chapter_paragraphs.folded` column the worker writes.
+pub fn fold_for_search(query: &str) -> String {
+    query
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .map(fold)
+        .collect()
+}
+
 /// The match of `query` in `text` (case-insensitive) with some context on
 /// either side, or `None` when it is absent. Server and offline search share
 /// it, so a hit reads the same either way.
 pub fn text_hit_snippet(text: &str, query: &str) -> Option<String> {
-    let needle: Vec<char> = query.trim().to_lowercase().chars().collect();
+    let needle: Vec<char> = fold_for_search(query).chars().collect();
     if needle.is_empty() {
         return None;
     }
@@ -410,10 +514,7 @@ pub fn text_hit_snippet(text: &str, query: &str) -> Option<String> {
         .join(" ")
         .chars()
         .collect();
-    let folded: Vec<char> = words
-        .iter()
-        .map(|c| c.to_lowercase().next().unwrap_or(*c))
-        .collect();
+    let folded: Vec<char> = words.iter().map(|c| fold(*c)).collect();
     let at = folded
         .windows(needle.len())
         .position(|window| window == needle.as_slice())?;
@@ -440,6 +541,7 @@ pub struct ReadingProgressUpdateDto {
         max = 255,
         message = "CFI position must be between 1 and 255 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 255))]
     pub last_anchor_cfi: String,
     #[serde(alias = "percentage")]
     #[validate(range(
@@ -447,6 +549,7 @@ pub struct ReadingProgressUpdateDto {
         max = 100.0,
         message = "Percentage must be between 0.0 and 100.0"
     ))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 0.0, maximum = 100.0))]
     pub completion_percentage: f32,
 }
 
@@ -479,7 +582,23 @@ pub struct ReadingHeartbeatRequest {
         max = 3600,
         message = "Seconds spent must be between 1 and 3600"
     ))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 3600))]
     pub seconds_spent: i32,
+    /// Minutes the reader's clock is east of UTC (WIB 420, WIT 540): the
+    /// day the reading counts for is theirs. Absent means UTC.
+    #[serde(default)]
+    #[validate(range(min = -720, max = 840, message = "UTC offset must be between -720 and 840 minutes"))]
+    #[cfg_attr(feature = "openapi", schema(minimum = -720, maximum = 840))]
+    pub utc_offset_minutes: Option<i32>,
+}
+
+/// `GET /me/streak`: today's reading is summed over the reader's own day.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct StreakQuery {
+    #[validate(range(min = -720, max = 840, message = "UTC offset must be between -720 and 840 minutes"))]
+    #[cfg_attr(feature = "openapi", param(minimum = -720, maximum = 840))]
+    pub utc_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,6 +610,15 @@ pub struct ReadingHeartbeatResponse {
     pub total_xp: i32,
     pub xp_earned: i32,
     pub streak_incremented: bool,
+    /// False when the heartbeat came inside the per-reader interval (two
+    /// open tabs): nothing was logged and the standing is returned as is.
+    /// Absent from a server older than the field, where every 200 credited.
+    #[serde(default = "credited_by_default")]
+    pub credited: bool,
+}
+
+fn credited_by_default() -> bool {
+    true
 }
 
 /// Current streak standing for the profile page; zeros before the first
@@ -539,8 +667,10 @@ pub struct QuoteSearchRequest {
         max = 500,
         message = "Query must be between 3 and 500 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 3, max_length = 500))]
     pub query: String,
     #[validate(range(min = 1, max = 20, message = "Limit must be between 1 and 20"))]
+    #[cfg_attr(feature = "openapi", schema(minimum = 1, maximum = 20))]
     pub limit: Option<u64>,
 }
 
@@ -589,6 +719,7 @@ pub struct SaveQuoteRequest {
         max = 2000,
         message = "Quote text must be between 1 and 2000 characters"
     ))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 2000))]
     pub quote_text: String,
 }
 
@@ -611,6 +742,20 @@ pub struct SessionDto {
 /// Upper bound of one batch save, matching the guest merge chunk size.
 pub const SAVE_QUOTES_BATCH_MAX: usize = 50;
 
+/// Saved quotes listed per page when the client names no limit.
+pub const SAVED_QUOTES_PAGE: u64 = 50;
+
+/// One page of saved quotes, newest first. `cursor` is the id of the last
+/// quote of the previous page; a page shorter than `limit` is the last.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Validate)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct SavedQuotesQuery {
+    pub cursor: Option<Uuid>,
+    #[validate(range(min = 1, max = 100, message = "limit must be between 1 and 100"))]
+    #[cfg_attr(feature = "openapi", param(minimum = 1, maximum = 100))]
+    pub limit: Option<u64>,
+}
+
 /// Several quotes saved together, used to merge a device's local quotes into
 /// the account at sign-in. Each item is validated like a single save.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
@@ -620,6 +765,7 @@ pub struct SaveQuotesBatchRequest {
         length(min = 1, max = 50, message = "A batch holds between 1 and 50 quotes"),
         nested
     )]
+    #[cfg_attr(feature = "openapi", schema(min_items = 1, max_items = 50))]
     pub items: Vec<SaveQuoteRequest>,
 }
 
@@ -668,7 +814,18 @@ pub struct JobStatusDto {
     pub status: String,
     /// Completion percentage 0-100.
     pub progress: i32,
+    /// Why the job failed, or why its last attempt did while it waits for
+    /// a retry, in the worker's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Runs the worker has started for this job, crashes included.
+    #[serde(default)]
+    pub attempts: i32,
 }
+
+/// Largest EPUB a curator may upload; the server enforces it while
+/// streaming and the web checks it before sending.
+pub const MAX_EPUB_BYTES: usize = 50 * 1024 * 1024;
 
 /// Accepted EPUB upload response (HTTP 202).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -700,6 +857,7 @@ pub struct AdminBookRowDto {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminBookPatchRequest {
     #[validate(length(min = 1, max = 20))]
+    #[cfg_attr(feature = "openapi", schema(min_length = 1, max_length = 20))]
     pub status: String,
 }
 
@@ -713,7 +871,18 @@ pub struct DlqEntryDto {
     pub error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub book_id: Option<Uuid>,
+    /// Title of the book, while its row exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub book_title: Option<String>,
     pub failed_at: DateTime<Utc>,
+}
+
+/// One page of dead letters, newest first, and how many the stream holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct DlqPageDto {
+    pub total: u64,
+    pub entries: Vec<DlqEntryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -757,6 +926,27 @@ mod tests {
         assert!(snippet.starts_with('\u{2026}') && snippet.ends_with('\u{2026}'));
         assert!(snippet.contains("harbour"));
         assert!(snippet.chars().count() <= 2 * 70 + "harbour".len() + 2);
+    }
+
+    #[test]
+    fn snippet_folds_both_sides_alike() {
+        assert!(text_hit_snippet("\u{0130}STANBUL by the sea", "istanbul").is_some());
+        assert!(text_hit_snippet(
+            "THE WANDERINGS OF \u{039F}\u{0394}\u{03A5}\u{03A3}\u{03A3}\u{0395}\u{03A5}\u{03A3}",
+            "\u{03BF}\u{03B4}\u{03C5}\u{03C3}\u{03C3}\u{03B5}\u{03C5}\u{03C2}"
+        )
+        .is_some());
+        assert!(text_hit_snippet("the secure ancestral hall", "secure   ancestral").is_some());
+        assert!(text_hit_snippet("Tom & Jerry", "tom & jerry").is_some());
+    }
+
+    #[test]
+    fn folding_matches_the_worker() {
+        // The same literal is asserted for the worker's fold_for_search.
+        assert_eq!(
+            fold_for_search("\u{0130}STANBUL \u{039F}\u{0394}\u{03A5}\u{03A3}\u{03A3}\u{0395}\u{03A5}\u{03A3} \u{03C2}"),
+            "istanbul \u{03BF}\u{03B4}\u{03C5}\u{03C3}\u{03C3}\u{03B5}\u{03C5}\u{03C3} \u{03C3}"
+        );
     }
 
     #[test]

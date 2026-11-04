@@ -258,6 +258,27 @@ img {
 
 /* Shell */
 
+/* The static home shell (index.html) paints only where boot.js marked the
+   page as home, in the language boot.js chose. A session that opens on home
+   skips the shell fade, so the swap does not blink the heading. */
+#boot-shell,
+html[lang="id"] #boot-shell [lang="en"],
+html[lang="en"] #boot-shell [lang="id"] {
+    display: none;
+}
+
+html[data-boot="home"] #boot-shell {
+    display: flex;
+}
+
+html[data-boot="home"] .shell-main {
+    animation: none;
+}
+
+html[data-boot="home"]:not([data-boot-fonts]) #boot-shell .hero-heading {
+    visibility: hidden;
+}
+
 .shell {
     min-height: 100dvh;
     display: flex;
@@ -2944,6 +2965,13 @@ button.reader-title {
     grid-column: 1 / -1;
 }
 
+.dlq-row > .dlq-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+}
+
 .tag[data-status="published"] {
     color: var(--success);
 }
@@ -3319,7 +3347,8 @@ select.input {
     }
 
     .manuscript-row .btn,
-    .dlq-row .btn {
+    .dlq-row .btn,
+    .dlq-row > .dlq-actions {
         grid-column: auto;
     }
 

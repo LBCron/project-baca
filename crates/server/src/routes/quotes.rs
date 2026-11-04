@@ -2,22 +2,25 @@
 
 use crate::{error::HttpError, middleware::AuthUser, AppState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use infra::{
-    get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
-    list_saved_quotes as repo_list_saved_quotes, save_quote as repo_save_quote,
+    chapter_quote_text, get_book_by_id, get_chapter_book_id, get_saved_quote_by_id,
+    list_saved_quotes as repo_list_saved_quotes, quote_in_text, save_quote as repo_save_quote,
     save_quotes_batch as repo_save_quotes_batch, search_quotes_by_embedding, QuoteSaveOutcome,
 };
 use sea_orm::DatabaseConnection;
 use shared::{
     ApiResponse, AppError, QuoteSearchRequest, QuoteSearchResultDto, SaveQuoteOutcomeDto,
     SaveQuoteRequest, SaveQuotesBatchRequest, SaveQuotesBatchResponseDto, SavedQuoteResponseDto,
+    SavedQuotesQuery, SAVED_QUOTES_PAGE,
 };
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 use validator::Validate;
@@ -106,6 +109,8 @@ pub async fn search_book_quotes(
         (status = 400, description = "Validation error or chapter does not belong to the book"),
         (status = 401, description = "Authentication required"),
         (status = 404, description = "Unknown book or chapter"),
+        (status = 409, description = "QUOTA_EXCEEDED: the account already keeps the most quotes it may"),
+        (status = 429, description = "Too many writes from this account this minute"),
         (status = 500, description = "Database error")
     ),
     security(("BearerAuth" = [])),
@@ -120,9 +125,15 @@ pub async fn handle_save_quote(
 
     let id = Uuid::new_v4();
 
-    validate_quote_target(&state.db, payload.book_id, payload.chapter_id)
-        .await
-        .map_err(HttpError)?;
+    validate_quote_target(
+        &state.db,
+        payload.book_id,
+        payload.chapter_id,
+        &payload.quote_text,
+        &mut HashMap::new(),
+    )
+    .await
+    .map_err(HttpError)?;
 
     let outcome = repo_save_quote(
         &state.db,
@@ -156,11 +167,15 @@ fn card_url_for(quote_id: Uuid) -> String {
 
 /// The (book, chapter) pair must exist, be readable, and belong together:
 /// 404 for unknown or draft ids, 400 for cross-book mismatches, never a raw
-/// FK violation. Shared by the single save and the batch.
+/// FK violation; and the text must be in that chapter, so a share card never
+/// credits a book with words it does not hold. Shared by the single save and
+/// the batch.
 async fn validate_quote_target(
     db: &DatabaseConnection,
     book_id: Uuid,
     chapter_id: Uuid,
+    quote_text: &str,
+    chapter_texts: &mut HashMap<Uuid, String>,
 ) -> Result<(), AppError> {
     get_book_by_id(db, book_id).await?;
     let chapter_book_id = get_chapter_book_id(db, chapter_id).await?;
@@ -168,6 +183,15 @@ async fn validate_quote_target(
         return Err(AppError::ValidationError(format!(
             "Chapter {chapter_id} does not belong to book {book_id}"
         )));
+    }
+    let text = match chapter_texts.entry(chapter_id) {
+        Entry::Occupied(known) => known.into_mut(),
+        Entry::Vacant(slot) => slot.insert(chapter_quote_text(db, chapter_id).await?),
+    };
+    if !quote_in_text(text, quote_text) {
+        return Err(AppError::ValidationError(
+            "The quote is not in this chapter".to_string(),
+        ));
     }
     Ok(())
 }
@@ -196,7 +220,9 @@ fn outcome(
     responses(
         (status = 200, description = "Per-item outcomes in request order", body = SaveQuotesBatchResponseDto),
         (status = 400, description = "Empty batch, more than 50 items, or an invalid item"),
-        (status = 401, description = "Authentication required")
+        (status = 401, description = "Authentication required"),
+        (status = 409, description = "QUOTA_EXCEEDED: the new quotes would carry the account past its quota; nothing is saved"),
+        (status = 429, description = "Too many writes from this account this minute")
     ),
     security(("BearerAuth" = [])),
     tag = "Semantic Search"
@@ -210,8 +236,18 @@ pub async fn handle_save_quotes_batch(
 
     let mut outcomes: Vec<Option<SaveQuoteOutcomeDto>> = vec![None; payload.items.len()];
     let mut accepted: Vec<(usize, (Uuid, Uuid, String))> = Vec::new();
+    // A device usually merges many quotes from one chapter: load it once.
+    let mut chapter_texts = HashMap::new();
     for (index, item) in payload.items.iter().enumerate() {
-        match validate_quote_target(&state.db, item.book_id, item.chapter_id).await {
+        match validate_quote_target(
+            &state.db,
+            item.book_id,
+            item.chapter_id,
+            &item.quote_text,
+            &mut chapter_texts,
+        )
+        .await
+        {
             Ok(()) => accepted.push((
                 index,
                 (item.book_id, item.chapter_id, item.quote_text.clone()),
@@ -245,12 +281,14 @@ pub async fn handle_save_quotes_batch(
     Ok((StatusCode::OK, Json(ApiResponse::success(response))))
 }
 
-/// Saved quotes of the authenticated user, most recent first.
+/// Saved quotes of the authenticated user, newest first, one page at a time.
 #[utoipa::path(
     get,
     path = "/api/v1/quotes",
+    params(SavedQuotesQuery),
     responses(
-        (status = 200, description = "List of saved quotes ordered by recency", body = Vec<SavedQuoteResponseDto>),
+        (status = 200, description = "One page of saved quotes, newest first; fewer than `limit` means the last page", body = ApiResponse<Vec<SavedQuoteResponseDto>>),
+        (status = 400, description = "limit outside 1 to 100"),
         (status = 401, description = "Authentication required"),
         (status = 500, description = "Database error")
     ),
@@ -260,10 +298,17 @@ pub async fn handle_save_quotes_batch(
 pub async fn handle_list_saved_quotes(
     State(state): State<Arc<AppState>>,
     auth_user: AuthUser,
+    Query(page): Query<SavedQuotesQuery>,
 ) -> Result<impl IntoResponse, HttpError> {
-    let quotes = repo_list_saved_quotes(&state.db, auth_user.id)
-        .await
-        .map_err(HttpError)?;
+    page.validate().map_err(HttpError::from)?;
+    let quotes = repo_list_saved_quotes(
+        &state.db,
+        auth_user.id,
+        page.cursor,
+        page.limit.unwrap_or(SAVED_QUOTES_PAGE),
+    )
+    .await
+    .map_err(HttpError)?;
 
     let dtos: Vec<SavedQuoteResponseDto> = quotes
         .into_iter()

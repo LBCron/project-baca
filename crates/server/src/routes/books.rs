@@ -142,7 +142,11 @@ pub fn books_routes() -> axum::Router<Arc<AppState>> {
             "/{id}/offline-bundle",
             axum::routing::get(get_offline_bundle),
         )
-        .route("/{id}/search", axum::routing::get(search_book_text))
+}
+
+/// In-book search, apart so it can carry its own per-client limit.
+pub fn book_text_search_routes() -> axum::Router<Arc<AppState>> {
+    axum::Router::new().route("/{id}/search", axum::routing::get(search_book_text))
 }
 
 /// Paragraphs of one book that contain a phrase, in reading order, each with

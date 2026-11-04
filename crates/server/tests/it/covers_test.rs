@@ -26,7 +26,7 @@ async fn test_cover_roundtrip_through_storage() {
         .storage
         .clone()
         .expect("live MinIO required (db-up)");
-    let book_id = Uuid::new_v4();
+    let book_id = common::seed_book(&harness, "published").await;
     let key = format!("covers/{book_id}.webp");
     let bytes = b"RIFF\x1a\x00\x00\x00WEBPVP8 ".to_vec();
     storage
@@ -52,6 +52,45 @@ async fn test_cover_roundtrip_through_storage() {
     );
     let served = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
     assert_eq!(served.as_ref(), bytes.as_slice());
+
+    storage
+        .delete_cover(&key)
+        .await
+        .expect("cover cleanup must succeed");
+    harness.cleanup().await;
+}
+
+/// An object whose stored media type is SVG, as the old worker fallback could
+/// write, is served under its raster extension's type: never as SVG a
+/// browser would run.
+#[tokio::test]
+async fn test_cover_stored_as_svg_is_never_served_as_svg() {
+    let harness = TestHarness::new().await;
+    let storage = harness
+        .state
+        .storage
+        .clone()
+        .expect("live MinIO required (db-up)");
+    let book_id = common::seed_book(&harness, "published").await;
+    let key = format!("covers/{book_id}.png");
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
+    storage
+        .put_cover(&key, svg.to_vec(), "image/svg+xml")
+        .await
+        .expect("cover upload must succeed");
+
+    let resp = harness
+        .send_request(get_cover(&format!("{book_id}.png")))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        resp.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
 
     storage
         .delete_cover(&key)
@@ -87,6 +126,32 @@ async fn test_cover_missing_and_invalid_names_are_404() {
         let (resp, body) = harness.send_json_request(get_cover(name)).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{name}: {body}");
         assert_eq!(body["error"]["code"], "NOT_FOUND", "{name}");
+    }
+    harness.cleanup().await;
+}
+
+/// A takedown takes the cover with it: the stored cover of a draft or an
+/// archived book answers 404 like a missing one.
+#[tokio::test]
+async fn test_cover_of_an_unpublished_book_is_404() {
+    let harness = TestHarness::new().await;
+    let storage = harness
+        .state
+        .storage
+        .clone()
+        .expect("live MinIO required (db-up)");
+    for status in ["archived", "draft"] {
+        let book_id = common::seed_book(&harness, status).await;
+        let key = format!("covers/{book_id}.webp");
+        storage
+            .put_cover(&key, b"RIFF\x1a\x00\x00\x00WEBPVP8 ".to_vec(), "image/webp")
+            .await
+            .expect("cover upload must succeed");
+        let resp = harness
+            .send_request(get_cover(&format!("{book_id}.webp")))
+            .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{status}");
+        storage.delete_cover(&key).await.expect("cover cleanup");
     }
     harness.cleanup().await;
 }

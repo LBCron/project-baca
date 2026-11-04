@@ -516,16 +516,23 @@ async fn test_gamification_heartbeat_and_badges() {
 
     let (resp_hb, json_hb) = harness.send_json_request(req_heartbeat).await;
     assert_eq!(resp_hb.status(), StatusCode::OK);
-    assert!(
-        json_hb["data"]["total_reading_seconds"]
-            .as_i64()
-            .unwrap_or(0)
-            >= 65
+    assert_eq!(json_hb["data"]["total_reading_seconds"].as_i64(), Some(65));
+    // The heartbeat's own XP plus First Step's reward, exactly once.
+    let first_step_xp = badges
+        .iter()
+        .find(|b| b["id"] == "first_step")
+        .and_then(|b| b["xp_reward"].as_i64())
+        .expect("first_step is seeded with a reward");
+    let expected_xp = i64::from(domain::BASE_HEARTBEAT_XP) + first_step_xp;
+    assert_eq!(
+        json_hb["data"]["total_xp"].as_i64(),
+        Some(expected_xp),
+        "{json_hb}"
     );
-    assert!(json_hb["data"]["total_xp"].as_i64().unwrap_or(0) > 0);
+    assert_eq!(json_hb["data"]["credited"], true);
 
-    // A second heartbeat inside the 60 s min-interval is rejected so XP
-    // cannot be farmed by replaying cheap heartbeats.
+    // A second heartbeat inside the 55 s min-interval (a second tab) earns
+    // nothing, so XP cannot be farmed, yet it is no error either.
     let req_farm = Request::builder()
         .uri("/api/v1/activity/heartbeat")
         .method("POST")
@@ -534,8 +541,14 @@ async fn test_gamification_heartbeat_and_badges() {
         .body(Body::from(heartbeat_payload.to_string()))
         .unwrap();
     let (resp_farm, json_farm) = harness.send_json_request(req_farm).await;
-    assert_eq!(resp_farm.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(json_farm["error"]["code"], "RATE_LIMITED");
+    assert_eq!(resp_farm.status(), StatusCode::OK, "{json_farm}");
+    assert_eq!(json_farm["data"]["credited"], false);
+    assert_eq!(json_farm["data"]["xp_earned"], 0);
+    assert_eq!(json_farm["data"]["total_xp"].as_i64(), Some(expected_xp));
+    assert_eq!(
+        json_farm["data"]["total_reading_seconds"].as_i64(),
+        Some(65)
+    );
 
     // Verify user unlocked first_step badge
     let req_user_badges = Request::builder()
@@ -595,7 +608,8 @@ async fn test_heartbeat_credit_clamped_and_gate_per_user() {
     let (resp, json) = harness
         .send_json_request(heartbeat(seeded.book2_id, 30))
         .await;
-    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS, "{json}");
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["credited"], false, "{json}");
 
     // The profile reads the same standing back, including today's progress
     // toward the daily threshold.
@@ -701,7 +715,7 @@ async fn test_unpublished_books_hide_chapters_and_insights() {
 async fn test_progress_ignores_unpublished_books() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live services required");
-    let ip = format!("198.19.77.{}", (Uuid::new_v4().as_u128() % 250) as u8);
+    let ip = common::unique_ip("198.22");
     let (token, _) = common::provision_verified_user(&harness, &mut redis, "draftprog", &ip).await;
     let (draft_id, draft_chapter) = seed_book_with_chapter(&harness, "draft").await;
     let (later_id, later_chapter) = seed_book_with_chapter(&harness, "published").await;
@@ -783,18 +797,22 @@ async fn test_book_text_search_finds_paragraphs() {
     if harness.live_only().await.is_none() {
         panic!("live DB required (db-up)");
     }
-    let (book_id, chapter_id) = seed_book_with_chapter(&harness, "published").await;
-    chapters::Entity::update_many()
-        .col_expr(
-            chapters::Column::HtmlContent,
-            sea_orm::sea_query::Expr::value(
-                "<h2>Pembuka</h2><p>Kabut turun di pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100% penuh.</p><p>Kapal tiba.</p>",
-            ),
-        )
-        .filter(chapters::Column::Id.eq(chapter_id))
-        .exec(&harness.state.db)
-        .await
-        .unwrap();
+    let (book_id, _) = seed_book_with_chapter(&harness, "published").await;
+    // The rows the worker writes for "<h2>Pembuka</h2><p>Kabut turun di
+    // pelabuhan.</p><p>Laras menulis surat &amp; menunggu kapal 100%
+    // penuh.</p><p>Kapal tiba.</p><p>the secure\n   ancestral hall</p>":
+    // entities decoded, whitespace collapsed, numbered like the reader's p-N.
+    seed_paragraphs(
+        &harness,
+        book_id,
+        &[
+            "Kabut turun di pelabuhan.",
+            "Laras menulis surat & menunggu kapal 100% penuh.",
+            "Kapal tiba.",
+            "the secure ancestral hall",
+        ],
+    )
+    .await;
     let search = |q: &str| {
         Request::builder()
             .uri(format!("/api/v1/books/{book_id}/search?q={}", urlencode(q)))
@@ -830,6 +848,14 @@ async fn test_book_text_search_finds_paragraphs() {
         "wildcards stay literal"
     );
 
+    let (_, body) = harness.send_json_request(search("secure ancestral")).await;
+    assert_eq!(
+        body["data"][0]["paragraph"], 4,
+        "a phrase broken across source lines: {body}"
+    );
+    let (_, body) = harness.send_json_request(search("surat & menunggu")).await;
+    assert_eq!(body["data"][0]["paragraph"], 2, "a decoded entity: {body}");
+
     let (resp, _) = harness.send_json_request(search("k")).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let (draft_id, _) = seed_book_with_chapter(&harness, "draft").await;
@@ -844,6 +870,23 @@ async fn test_book_text_search_finds_paragraphs() {
     harness.cleanup().await;
 }
 
+/// Writes chapter 1's paragraph index the way the worker does.
+async fn seed_paragraphs(harness: &TestHarness, book_id: Uuid, texts: &[&str]) {
+    use sea_orm::ConnectionTrait;
+    for (n, text) in texts.iter().enumerate() {
+        harness
+            .state
+            .db
+            .execute(sea_orm::Statement::from_sql_and_values(
+                sea_orm::DatabaseBackend::Postgres,
+                "INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) VALUES ($1, 1, $2, $3, lower($3))",
+                [book_id.into(), (n as i32 + 1).into(), (*text).into()],
+            ))
+            .await
+            .expect("paragraph seed must succeed");
+    }
+}
+
 fn urlencode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
@@ -853,4 +896,443 @@ fn urlencode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// A draft, an archived book, and an id that never existed answer with one
+/// identical 404, so the catalog is no oracle for unpublished manuscripts.
+#[tokio::test]
+async fn test_unpublished_and_missing_books_answer_the_same_404() {
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_catalog(&harness)
+        .await
+        .expect("live DB required (db-up)");
+    let mut archived: books::ActiveModel = books::Entity::find_by_id(seeded.book3_id)
+        .one(&harness.state.db)
+        .await
+        .unwrap()
+        .expect("seeded book")
+        .into();
+    archived.status = Set("archived".to_string());
+    archived.update(&harness.state.db).await.unwrap();
+
+    let mut answers = Vec::new();
+    for id in [seeded.draft_id, seeded.book3_id, Uuid::new_v4()] {
+        let req = Request::builder()
+            .uri(format!("/api/v1/books/{id}"))
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{json}");
+        answers.push(json["error"].clone());
+    }
+    assert!(
+        answers.iter().all(|a| *a == answers[0]),
+        "bodies differ: {answers:?}"
+    );
+    harness.cleanup().await;
+}
+
+async fn seed_dated_book(
+    harness: &TestHarness,
+    theme: &str,
+    year: Option<i32>,
+    description: &str,
+) -> Uuid {
+    let now = Utc::now();
+    let book_id = harness.track_book(Uuid::new_v4());
+    books::ActiveModel {
+        id: Set(book_id),
+        title: Set(format!("Keyset {year:?}")),
+        author: Set("Keyset Author".to_string()),
+        language: Set("en".to_string()),
+        primary_theme: Set(theme.to_string()),
+        sub_theme: Set(None),
+        description: Set(description.to_string()),
+        cover_url: Set(String::new()),
+        epub_storage_path: Set(String::new()),
+        total_words: Set(100),
+        estimated_reading_minutes: Set(1),
+        source_name: Set("Test".to_string()),
+        source_url: Set(None),
+        license: Set("Public Domain".to_string()),
+        publication_year: Set(year),
+        status: Set("published".to_string()),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("book seed must succeed");
+    book_id
+}
+
+async fn catalog_ids(harness: &TestHarness, query: &str) -> Vec<String> {
+    let req = Request::builder()
+        .uri(format!("/api/v1/books?{query}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    json["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .map(|b| b["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+/// Walking the catalog page by page reaches every published book exactly
+/// once, books without a publication year included, at any page size.
+#[tokio::test]
+async fn test_catalog_cursor_reaches_every_book_once() {
+    let harness = TestHarness::new().await;
+    // A theme of its own keeps books other tests publish out of the walk.
+    let theme = format!("Keyset {}", Uuid::new_v4().simple());
+    for year in [
+        Some(2001),
+        Some(2001),
+        Some(1999),
+        None,
+        None,
+        Some(2010),
+        None,
+    ] {
+        seed_dated_book(&harness, &theme, year, "").await;
+    }
+    let theme_q = urlencode(&theme);
+    let everything = catalog_ids(&harness, &format!("theme={theme_q}&limit=100")).await;
+    assert_eq!(everything.len(), 7, "{everything:?}");
+
+    for limit in [1, 3] {
+        let mut walked: Vec<String> = Vec::new();
+        let mut cursor = String::new();
+        for _ in 0..10 {
+            let page =
+                catalog_ids(&harness, &format!("theme={theme_q}&limit={limit}{cursor}")).await;
+            let Some(last) = page.last() else { break };
+            cursor = format!("&cursor={last}");
+            walked.extend(page);
+        }
+        assert_eq!(
+            walked, everything,
+            "limit={limit} must walk the same order once"
+        );
+    }
+    harness.cleanup().await;
+}
+
+/// The catalog query reads `idx_books_published_year_id` in its own order,
+/// with and without a cursor, so no page pays for a sort.
+#[tokio::test]
+async fn test_catalog_page_plan_reads_the_index_without_a_sort() {
+    use sea_orm::{ConnectionTrait, QueryTrait, Statement, TransactionTrait};
+    let harness = TestHarness::new().await;
+    let cursor = books::Model {
+        id: Uuid::new_v4(),
+        title: String::new(),
+        author: String::new(),
+        language: "en".to_string(),
+        primary_theme: String::new(),
+        sub_theme: None,
+        description: String::new(),
+        cover_url: String::new(),
+        epub_storage_path: String::new(),
+        total_words: 0,
+        estimated_reading_minutes: 0,
+        source_name: String::new(),
+        source_url: None,
+        license: String::new(),
+        publication_year: Some(1950),
+        status: "published".to_string(),
+        created_at: Utc::now().into(),
+        updated_at: Utc::now().into(),
+    };
+    let undated = books::Model {
+        publication_year: None,
+        ..cursor.clone()
+    };
+    let backend = harness.state.db.get_database_backend();
+    for page_after in [None, Some(&cursor), Some(&undated)] {
+        let published = books::Entity::find().filter(books::Column::Status.eq("published"));
+        let sql = infra::repositories::book_repository::catalog_page(published, page_after, 20)
+            .build(backend)
+            .to_string();
+        let txn = harness.state.db.begin().await.expect("begin");
+        // A small dev table makes a sort cheap; with sorting penalised, a plan
+        // still sorts only when the order is one the index cannot give.
+        for switch in ["enable_seqscan", "enable_bitmapscan", "enable_sort"] {
+            txn.execute(Statement::from_string(
+                backend,
+                format!("SET LOCAL {switch} = OFF"),
+            ))
+            .await
+            .expect("planner switch");
+        }
+        let plan: String = txn
+            .query_all(Statement::from_string(backend, format!("EXPLAIN {sql}")))
+            .await
+            .expect("EXPLAIN")
+            .iter()
+            .filter_map(|row| row.try_get_by_index::<String>(0).ok())
+            .collect::<Vec<_>>()
+            .join("\n");
+        txn.rollback().await.expect("rollback");
+        assert!(
+            plan.contains("idx_books_published_year_id"),
+            "{sql}\n{plan}"
+        );
+        assert!(!plan.contains("Sort"), "{sql}\n{plan}");
+    }
+    harness.cleanup().await;
+}
+
+/// Words only the description holds are found: the query is parsed with
+/// the same `simple` config the index uses, not the database's `english`.
+#[tokio::test]
+async fn test_catalog_search_finds_words_only_in_the_description() {
+    let harness = TestHarness::new().await;
+    let theme = format!("Keyset {}", Uuid::new_v4().simple());
+    let book_id =
+        seed_dated_book(&harness, &theme, None, "The running stories of the harbour").await;
+    let req = Request::builder()
+        .uri("/api/v1/books/search?q=running%20stories")
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .expect("data array")
+        .iter()
+        .filter_map(|b| b["id"].as_str())
+        .collect();
+    assert!(ids.contains(&book_id.to_string().as_str()), "{json}");
+    harness.cleanup().await;
+}
+
+async fn seed_reader(harness: &TestHarness) -> (Uuid, String) {
+    let now = Utc::now();
+    let user_id = harness.track_user(Uuid::new_v4());
+    let email = format!("tz_{}@baca.local", Uuid::new_v4());
+    users::ActiveModel {
+        id: Set(user_id),
+        email: Set(email.clone()),
+        password_hash: Set(Some("test_password_hash".to_string())),
+        display_name: Set("Pembaca WIB".to_string()),
+        role: Set("reader".to_string()),
+        avatar_url: Set(None),
+        is_active: Set(true),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(&harness.state.db)
+    .await
+    .expect("user seed must succeed");
+    let token = infra::generate_access_token(
+        user_id,
+        &email,
+        "reader",
+        harness.state.config.jwt_secret(),
+        1440,
+    )
+    .expect("token");
+    (user_id, token)
+}
+
+async fn heartbeat(
+    harness: &TestHarness,
+    token: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .uri("/api/v1/activity/heartbeat")
+        .method("POST")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    (resp.status(), json)
+}
+
+/// The first minute of reading unlocks First Step on a database where no one
+/// has listed the badges yet, as on a fresh production install: the award
+/// must not depend on `GET /badges` having seeded the master rows.
+#[tokio::test]
+async fn test_first_minute_unlocks_a_badge_before_any_badge_listing() {
+    let harness = TestHarness::new().await;
+    let book = common::seed_book(&harness, "published").await;
+    harness.track_book(book);
+    let (user, token) = seed_reader(&harness).await;
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 60}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    let unlocked = infra::list_user_badges(&harness.state.db, user)
+        .await
+        .expect("user badges");
+    assert!(
+        unlocked.iter().any(|b| b.badge_id == "first_step"),
+        "{unlocked:?}"
+    );
+}
+
+/// A streak day is the reader's own: reading is logged on their calendar
+/// day, a reader whose local yesterday counted reaches day two today, and an
+/// offset no clock uses is refused.
+#[tokio::test]
+async fn test_streak_days_follow_the_readers_clock() {
+    use infra::entities::{reading_activity_logs, user_reading_streaks};
+    use sea_orm::QueryOrder;
+    let harness = TestHarness::new().await;
+    let book = common::seed_book(&harness, "published").await;
+    harness.track_book(book);
+    let db = &harness.state.db;
+
+    // The same instant is a different calendar day at UTC+14 and UTC-12.
+    let mut dates = Vec::new();
+    for offset in [840, -720] {
+        let (user, token) = seed_reader(&harness).await;
+        let (status, json) = heartbeat(
+            &harness,
+            &token,
+            serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": offset}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        let logged = reading_activity_logs::Entity::find()
+            .filter(reading_activity_logs::Column::UserId.eq(user))
+            .order_by_desc(reading_activity_logs::Column::CreatedAt)
+            .one(db)
+            .await
+            .expect("query")
+            .expect("logged");
+        let expected = domain::local_date(logged.created_at.with_timezone(&Utc), offset);
+        assert_eq!(logged.activity_date, expected, "offset {offset}");
+        dates.push(logged.activity_date);
+    }
+    // 26 hours apart: whatever the instant, the two days differ.
+    assert!(dates[0] > dates[1], "{dates:?}");
+
+    // Read 23:00 yesterday (WIB), now 06:30: the second day of a streak.
+    let (user, token) = seed_reader(&harness).await;
+    let today = domain::local_date(Utc::now(), 420);
+    let yesterday = today.pred_opt().expect("a day before");
+    user_reading_streaks::ActiveModel {
+        user_id: Set(user),
+        current_streak_days: Set(1),
+        longest_streak_days: Set(1),
+        total_reading_seconds: Set(300),
+        total_xp: Set(0),
+        last_activity_date: Set(Some(yesterday)),
+        updated_at: Set(Utc::now().into()),
+    }
+    .insert(db)
+    .await
+    .expect("streak seed");
+    reading_activity_logs::ActiveModel {
+        user_id: Set(user),
+        book_id: Set(book),
+        seconds_spent: Set(290),
+        activity_date: Set(today),
+        created_at: Set(Utc::now().into()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("log seed");
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 420}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["current_streak_days"], 2, "{json}");
+
+    let req = Request::builder()
+        .uri("/api/v1/me/streak?utc_offset_minutes=420")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, streak) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{streak}");
+    assert_eq!(streak["data"]["today_seconds"], 320, "{streak}");
+
+    let (_, token) = seed_reader(&harness).await;
+    let (status, json) = heartbeat(
+        &harness,
+        &token,
+        serde_json::json!({"book_id": book, "seconds_spent": 30, "utc_offset_minutes": 9999}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+    assert_eq!(json["error"]["code"], "VALIDATION_FAILED");
+    harness.cleanup().await;
+}
+
+/// The shelf lists every unfinished book, most recently read first, and
+/// never one that has since left the catalog.
+#[tokio::test]
+async fn test_reading_shelf_lists_every_unfinished_book() {
+    let harness = TestHarness::new().await;
+    let (_, token) = seed_reader(&harness).await;
+    let mut books_read = Vec::new();
+    for percent in [45.0, 30.0, 10.0] {
+        let (book, chapter) = seed_book_with_chapter(&harness, "published").await;
+        let req = Request::builder()
+            .uri(format!("/api/v1/progress/{book}"))
+            .method("PUT")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"chapter_id": chapter, "last_anchor_cfi": "p-1", "completion_percentage": percent})
+                    .to_string(),
+            ))
+            .expect("valid request");
+        let (resp, json) = harness.send_json_request(req).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{json}");
+        books_read.push(book);
+    }
+    books::Entity::update_many()
+        .col_expr(
+            books::Column::Status,
+            sea_orm::sea_query::Expr::value("archived"),
+        )
+        .filter(books::Column::Id.eq(books_read[2]))
+        .exec(&harness.state.db)
+        .await
+        .expect("archive");
+
+    let req = Request::builder()
+        .uri("/api/v1/progress/reading")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, json) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "{json}");
+    let ids: Vec<&str> = json["data"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|p| p["book_id"].as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [books_read[1].to_string(), books_read[0].to_string()],
+        "{json}"
+    );
+    assert_eq!(json["data"][1]["completion_percentage"], 45.0);
+
+    let req = Request::builder()
+        .uri("/api/v1/progress/reading")
+        .body(Body::empty())
+        .expect("valid request");
+    let (resp, _) = harness.send_json_request(req).await;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    harness.cleanup().await;
 }

@@ -1,6 +1,7 @@
 //! Quote finder, insight cards, and the spoiler-free recap, rendered as
 //! paper cards inside a sheet.
 
+use crate::components::auth::friendly_error;
 use crate::components::focus::{close_after_event, manage_sheet_focus};
 use crate::components::icons;
 use crate::components::toast::use_toasts;
@@ -78,7 +79,7 @@ fn share_quote(toasts: crate::components::toast::Toasts, text: String, source: S
             return;
         }
         if api::copy_text(&body).await {
-            toasts.info(lang.text("quote_saved"));
+            toasts.info(lang.text("quote_copied"));
         } else {
             toasts.error(lang.text("error_generic"));
         }
@@ -86,7 +87,14 @@ fn share_quote(toasts: crate::components::toast::Toasts, text: String, source: S
 }
 
 #[component]
-pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
+pub fn QuoteFinder(
+    book_id: String,
+    show: RwSignal<bool>,
+    /// The book's language, so its passages are read and hyphenated in it.
+    #[prop(default = None)]
+    text_lang: Option<String>,
+) -> impl IntoView {
+    let text_lang = StoredValue::new(text_lang);
     let (lang, _) = use_lang();
     let toasts = use_toasts();
     let (query, set_query) = signal(String::new());
@@ -145,7 +153,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     set_saved.update(|s| s.push(row.chunk_id));
                     toasts.info(lang.get_untracked().text(message));
                 }
-                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+                Err(e) => toasts.error(friendly_error(&e, lang.get_untracked())),
             }
         });
     };
@@ -172,7 +180,8 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                 })}
                 {move || results.get().into_iter().map(|r| {
                     let id = book.get_value();
-                    let jump = format!("/read/{id}?chapter={}", r.chapter_number);
+                    let at = r.cfi_range.as_deref().map(|a| format!("&at={a}")).unwrap_or_default();
+                    let jump = format!("/read/{id}?chapter={}{at}", r.chapter_number);
                     let label = format!("{} {} · {:.0}% {}", lang.get().text("chapter"), r.chapter_number, r.similarity_score * 100.0, lang.get().text("similarity"));
                     let is_saved = saved.get().contains(&r.chunk_id);
                     let share_text = r.content.clone();
@@ -181,7 +190,7 @@ pub fn QuoteFinder(book_id: String, show: RwSignal<bool>) -> impl IntoView {
                     view! {
                         <li class="quote-row">
                             <div class="quote-meta"><span>{label}</span><span>"\u{2756}"</span></div>
-                            <blockquote>{r.content.clone()}</blockquote>
+                            <blockquote lang=text_lang.get_value()>{r.content.clone()}</blockquote>
                             <div class="quote-actions">
                                 <a href=jump class="btn btn-primary">{move || lang.get().text("quote_jump")}</a>
                                 <button class="btn btn-ghost" disabled=is_saved on:click=move |_| save(row_for_save.clone())>

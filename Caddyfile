@@ -8,6 +8,8 @@
 # DEVELOPMENT (default): Caddy runs on the host alongside `make dev-server`
 # (Axum :8080) and `make dev-web` (Trunk :3000). Targets use
 # `host.docker.internal` so the container reaches host-bound dev servers.
+# On Linux that is the Docker gateway, not loopback: start the API with
+# `APP_HOST=0.0.0.0` and Trunk with `--address 0.0.0.0` when using this.
 # Run: docker run -p 80:80 -p 443:443 -p 443:443/udp \
 #        -v $PWD/Caddyfile:/etc/caddy/Caddyfile caddy:2-alpine
 # Visit https://localhost (self-signed via Caddy local CA).

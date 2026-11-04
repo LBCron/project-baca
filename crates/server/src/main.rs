@@ -5,7 +5,6 @@ use infra::{
 };
 use sea_orm::DatabaseConnection;
 use server::{create_app, AppState};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -100,8 +99,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 api_key: String::new(),
                 model_name: config.ai.model_name.clone(),
                 dimension: config.ai.dimension,
+                daily_budget: 0,
             })
-            .unwrap_or_else(|_| unreachable!("fastembed provider always succeeds"))
+            .map_err(|e| format!("FastEmbed fallback failed to start: {e}"))?
         }
     };
 
@@ -124,10 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::clone(&config),
         embedding,
         storage,
+        argon2: infra::Argon2Gate::new(config.server.argon2_max_concurrency),
     });
     let app = create_app(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port()));
+    let addr = config.bind_addr()?;
     info!("Server listening on http://{}", addr);
     if !config.is_production() {
         info!("OpenAPI Swagger UI available on http://{}/swagger-ui", addr);

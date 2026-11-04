@@ -20,7 +20,10 @@ use crate::i18n::use_lang;
 use crate::storage::{self, OfflineChapterRecord};
 use crate::theme::{ReaderPrefs, ReadingTheme, FONT_SIZE_MAX, FONT_SIZE_MIN, LEADING_PRESETS};
 use flip::{Dir, DragStart, Flipper, Geometry, Mode, TurnPlan};
-use layout::{anchor_index, columns_for, paddings, page_of, paragraphs, window_width};
+use layout::{
+    anchor_index, columns_for, paddings, page_of, page_of_spot, paragraphs, spot_on, watch_size,
+    window_width, Spot,
+};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_params_map, use_query_map};
@@ -42,6 +45,8 @@ const CHAPTER_SWIPE_PX: f64 = 48.0;
 const EDGE_ZONE: f64 = 0.22;
 /// Anchor hint meaning "open on the last page" (stepping back a chapter).
 const ANCHOR_END: &str = "end";
+/// Anchor hint meaning "return to the spot being read" after a relayout.
+const ANCHOR_SPOT: &str = "spot";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Zone {
@@ -134,6 +139,17 @@ fn selection_is_collapsed() -> bool {
         .unwrap_or(true)
 }
 
+/// Copy key that explains why a chapter did not load.
+fn load_failure(err: &str) -> &'static str {
+    if api::is_not_found(err) {
+        "not_found"
+    } else if api::is_online() {
+        "chapter_load_failed"
+    } else {
+        "offline_notice"
+    }
+}
+
 /// Stores a guest's position on this device.
 fn persist_guest(book: &str, update: &ReadingProgressUpdateDto) {
     let Ok(book_id) = book.parse::<uuid::Uuid>() else {
@@ -222,6 +238,13 @@ pub fn ReaderPage() -> impl IntoView {
 
     let (book, set_book) = signal(None::<BookDetailDto>);
     let (chapter, set_chapter) = signal(None::<ChapterDetailDto>);
+    crate::i18n::use_page_title(move |_| {
+        let book = book.get()?.title;
+        Some(match chapter.get() {
+            Some(c) if !c.title.trim().is_empty() => format!("{} \u{00B7} {book}", c.title),
+            _ => book,
+        })
+    });
     let (chapter_no, set_chapter_no) = signal(start_chapter);
     let (error, set_error) = signal(None::<String>);
     let (offline, set_offline) = signal(false);
@@ -235,6 +258,7 @@ pub fn ReaderPage() -> impl IntoView {
     let (column_width, set_column_width) = signal(0.0f64);
     let (anchor, set_anchor) = signal(String::from("p-1"));
     let (pending_anchor, set_pending_anchor) = signal(None::<String>);
+    let spot = StoredValue::new(None::<Spot>);
     let (turning, set_turning) = signal(false);
     let (streak, set_streak) = signal(None::<i32>);
     let (queued, set_queued) = signal(0usize);
@@ -254,6 +278,19 @@ pub fn ReaderPage() -> impl IntoView {
     // (chapter, paragraph) a search hit opened, highlighted once it lands.
     let (flash, set_flash) = signal(None::<(i32, usize)>);
     let wants_recap = use_query_map().get_untracked().get("recap").is_some();
+    // A quote search hit opens on its paragraph, lit like an in-book hit.
+    let start_anchor = use_query_map()
+        .get_untracked()
+        .get("at")
+        .filter(|a| anchor_index(a).is_some());
+    if let Some(index) = start_anchor.as_deref().and_then(anchor_index) {
+        set_flash.set(Some((start_chapter, index)));
+        // Read once: a reload afterwards returns to the saved place, not the hit.
+        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+            let url = format!("/read/{}?chapter={start_chapter}", book_id.get_value());
+            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
+        }
+    }
     let recap_open = RwSignal::new(wants_recap && start_chapter > 1);
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let book_ref = NodeRef::<leptos::html::Div>::new();
@@ -285,9 +322,6 @@ pub fn ReaderPage() -> impl IntoView {
 
     let load_chapter = move |number: i32, anchor_hint: Option<String>| {
         cancel_flip();
-        set_pending_anchor.set(anchor_hint);
-        set_page.set(0);
-        set_finished.set(false);
         let id = book_id.get_value();
         let generation = load_generation.get_value() + 1;
         load_generation.set_value(generation);
@@ -305,16 +339,46 @@ pub fn ReaderPage() -> impl IntoView {
                 return;
             }
             match loaded {
+                // The reader moves only onto text it can show: the chapter
+                // number, the URL and the position to save follow the text.
                 Ok((detail, from_device)) => {
+                    let moved = number != chapter_no.get_untracked();
+                    if moved {
+                        set_chapter_no.set(number);
+                        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+                            let url = format!("/read/{id}?chapter={number}");
+                            let _ = history.replace_state_with_url(
+                                &wasm_bindgen::JsValue::NULL,
+                                "",
+                                Some(&url),
+                            );
+                        }
+                    }
+                    spot.set_value(None);
+                    // On the chapter already open (first load, retry), a saved
+                    // position that answered first stays pending.
+                    if moved || anchor_hint.is_some() {
+                        set_pending_anchor.set(anchor_hint);
+                    }
+                    set_page.set(0);
+                    set_finished.set(false);
+                    set_chapter_end.set(false);
                     set_chapter.set(Some(detail));
                     set_error.set(None);
                     set_offline.set(from_device);
                 }
-                Err(e) => set_error.set(Some(e)),
+                // A chapter already on screen stays there; the error view
+                // takes over only while none has loaded yet.
+                Err(e) => {
+                    if chapter.with_untracked(Option::is_some) {
+                        toasts.error(lang.get_untracked().text(load_failure(&e)));
+                    }
+                    set_error.set(Some(e));
+                }
             }
         });
     };
-    load_chapter(start_chapter, None);
+    load_chapter(start_chapter, start_anchor.clone());
 
     spawn_local(async move {
         let id = book_id.get_value();
@@ -332,7 +396,10 @@ pub fn ReaderPage() -> impl IntoView {
                 .iter()
                 .find(|c| c.id == chapter_id)
                 .map(|c| c.chapter_number);
-            if saved_chapter.is_some() && saved_chapter == chapter_no.try_get_untracked() {
+            if start_anchor.is_none()
+                && saved_chapter.is_some()
+                && saved_chapter == chapter_no.try_get_untracked()
+            {
                 set_pending_anchor.set(Some(cfi));
             }
         }
@@ -374,6 +441,14 @@ pub fn ReaderPage() -> impl IntoView {
         if let Some(cfi) = pending_anchor.try_get_untracked().flatten() {
             if cfi == ANCHOR_END {
                 set_page.set(total - 1);
+            } else if cfi == ANCHOR_SPOT {
+                if let Some(p) = spot
+                    .try_get_value()
+                    .flatten()
+                    .and_then(|s| page_of_spot(&el, s))
+                {
+                    set_page.set(p.min(total - 1));
+                }
             } else if let Some(p) =
                 anchor_index(&cfi).and_then(|i| paragraphs(&el).into_iter().nth(i))
             {
@@ -408,7 +483,10 @@ pub fn ReaderPage() -> impl IntoView {
     });
 
     let percent = Memo::new(move |_| {
-        let Some(b) = book.get() else {
+        let (Some(b), Some(shown)) = (
+            book.get(),
+            chapter.with(|c| c.as_ref().map(|c| c.chapter_number)),
+        ) else {
             return 0.0f32;
         };
         let total = b.chapters.len() as f32;
@@ -418,7 +496,7 @@ pub fn ReaderPage() -> impl IntoView {
         let index = b
             .chapters
             .iter()
-            .position(|c| c.chapter_number == chapter_no.get())
+            .position(|c| c.chapter_number == shown)
             .unwrap_or(0) as f32;
         let fraction = (page.get() as f32 + 1.0) / pages.get().max(1) as f32;
         (((index + fraction) / total) * 100.0).clamp(0.0, 100.0)
@@ -485,6 +563,12 @@ pub fn ReaderPage() -> impl IntoView {
             .position(|p| page_of(p.offset_left(), width) >= current)
         {
             set_anchor.set(format!("p-{}", first + 1));
+        }
+        // Kept while it still lies on this page: rederived after a relayout,
+        // it would walk back to whatever paragraph now opens the page.
+        let kept = spot.get_value().and_then(|s| page_of_spot(&el, s)) == Some(current);
+        if !kept {
+            spot.set_value(spot_on(&el, current));
         }
         schedule_save();
     });
@@ -554,19 +638,18 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let go_chapter = move |number: i32, anchor_hint: Option<String>| {
-        set_chapter_no.set(number);
         set_menu_open.set(false);
-        set_chapter_end.set(false);
         load_chapter(number, anchor_hint);
-        if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
-            let url = format!("/read/{}?chapter={number}", book_id.get_value());
-            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
-        }
     };
+    // Until a chapter is on screen there is nothing to finish or leave.
+    let chapter_shown = move || chapter.with_untracked(Option::is_some);
 
     // Leaving a chapter forward shows its closing card the first time; the
     // next step forward, or the card's own button, moves on.
     let advance = move |number: i32| {
+        if !chapter_shown() {
+            return;
+        }
         let current = chapter_no.get_untracked();
         let first_time = ends_shown.with_value(|shown| !shown.contains(&current));
         if !chapter_end.get_untracked() && first_time {
@@ -581,7 +664,7 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let next = move || {
-        if flip_active() || finished.get_untracked() {
+        if flip_active() || finished.get_untracked() || !chapter_shown() {
             return;
         }
         let current = page.get_untracked();
@@ -591,16 +674,23 @@ pub fn ReaderPage() -> impl IntoView {
         }
         match following_chapter() {
             Some(n) => advance(n),
-            None => {
+            // Without the book's chapter list the end of this chapter is
+            // not known to be the end of the book.
+            None if book.with_untracked(Option::is_some) => {
                 set_finished.set(true);
                 toasts.info(lang.get_untracked().text("book_end"));
             }
+            None => {}
         }
     };
 
     let prev = move || {
         if flip_active() {
             return;
+        }
+        // Stepping back abandons a next chapter still on its way.
+        if chapter_shown() {
+            load_generation.update_value(|g| *g += 1);
         }
         if finished.get_untracked() {
             set_finished.set(false);
@@ -865,7 +955,10 @@ pub fn ReaderPage() -> impl IntoView {
         spawn_local(async move {
             match keep_quote(book_uuid, ch.id, text).await {
                 Ok(message) => toasts.info(lang.get_untracked().text(message)),
-                Err(_) => toasts.error(lang.get_untracked().text("error_generic")),
+                Err(e) => toasts.error(crate::components::auth::friendly_error(
+                    &e,
+                    lang.get_untracked(),
+                )),
             }
         });
     };
@@ -916,12 +1009,34 @@ pub fn ReaderPage() -> impl IntoView {
         });
     });
 
-    let resize = window_event_listener(leptos::ev::resize, move |_| {
+    // The return target is set only once the new column width is in place;
+    // set earlier, the anchor effect would paginate a half-updated layout.
+    let relayout = move || {
+        if !chapter_shown() {
+            return;
+        }
         cancel_flip();
-        set_pending_anchor.set(Some(anchor.get_untracked()));
-        measure(Box::new(move || request_animation_frame(paginate)));
-    });
+        measure(Box::new(move || {
+            if pending_anchor.try_get_untracked() == Some(None) {
+                let target = if spot.try_get_value().flatten().is_some() {
+                    ANCHOR_SPOT.to_string()
+                } else {
+                    anchor.get_untracked()
+                };
+                set_pending_anchor.set(Some(target));
+            }
+            request_animation_frame(paginate);
+        }));
+    };
+    let resize = window_event_listener(leptos::ev::resize, move |_| relayout());
     on_cleanup(move || resize.remove());
+    // The viewport's own size as well: a page scrollbar that comes and goes
+    // during a rotation changes the page width with no window `resize`.
+    Effect::new(move || {
+        if let Some(el) = viewport_ref.get() {
+            watch_size(&el, relayout);
+        }
+    });
 
     let online = window_event_listener(leptos::ev::online, move |_| {
         spawn_local(async move {
@@ -955,6 +1070,7 @@ pub fn ReaderPage() -> impl IntoView {
                     let request = ReadingHeartbeatRequest {
                         book_id: uuid,
                         seconds_spent: elapsed.clamp(1, 3600),
+                        utc_offset_minutes: Some(crate::format::utc_offset_minutes()),
                     };
                     if let Ok(resp) = api::heartbeat(&request).await {
                         if resp.streak_incremented {
@@ -987,6 +1103,35 @@ pub fn ReaderPage() -> impl IntoView {
     };
 
     let toggle_menu = move |_| set_menu_open.update(|m| *m = !*m);
+    // The type panel is not modal, but a keyboard reader lands in it when it
+    // opens and back on "Aa" when it closes and focus would fall to the page.
+    let type_button = NodeRef::<leptos::html::Button>::new();
+    Effect::new(move |was_open: Option<bool>| {
+        let open = menu_open.get();
+        if open {
+            request_animation_frame(|| {
+                // The chosen theme first; a selector list would match in
+                // document order and always take the first swatch.
+                let first = [".type-sheet .swatch.active", ".type-sheet button"]
+                    .iter()
+                    .find_map(|s| document().query_selector(s).ok().flatten())
+                    .and_then(|el| el.dyn_into::<web_sys::HtmlElement>().ok());
+                if let Some(first) = first {
+                    let _ = first.focus();
+                }
+            });
+        } else if was_open == Some(true) {
+            let lost = document()
+                .active_element()
+                .is_none_or(|el| el.tag_name().eq_ignore_ascii_case("body"));
+            if lost {
+                if let Some(button) = type_button.get_untracked() {
+                    let _ = button.focus();
+                }
+            }
+        }
+        open
+    });
     let chapter_end_title = move || {
         lang.get()
             .text_with("chapter_end_title", "n", &roman(chapter_no.get()))
@@ -1033,7 +1178,12 @@ pub fn ReaderPage() -> impl IntoView {
         <div class="reader" data-reading=move || prefs.get().theme.attr() class:spread=move || spread.get() class:dim=move || dim.get()>
             <header class="reader-bar">
                 <a href=format!("/book/{}", book_id.get_value()) class="btn-icon" aria-label=move || lang.get().text("reader_back")>{icons::back()}</a>
-                <button class="reader-title" aria-label=move || lang.get().text("open_chapters") aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
+                // The name starts with what the button shows, so a voice
+                // command naming the visible chapter reaches it.
+                <button class="reader-title" aria-label=move || {
+                    let shown = format!("{} {} {}", lang.get().text("chapter"), roman(chapter_no.get()), chapter.get().map(|c| c.title).unwrap_or_default());
+                    format!("{}, {}", shown.trim_end(), lang.get().text("open_chapters"))
+                } aria-expanded=move || drawer_open.get() on:click=move |_| drawer_open.set(true)>
                     <span class="kicker">{move || format!("{} {}", lang.get().text("chapter"), roman(chapter_no.get()))}</span>
                     <span class="label">{move || chapter.get().map(|c| c.title).unwrap_or_default()}{icons::arrow_down()}</span>
                 </button>
@@ -1050,7 +1200,7 @@ pub fn ReaderPage() -> impl IntoView {
                         }
                     })}
                     <button class="btn-icon btn-search" aria-label=move || lang.get().text("book_search") on:click=move |_| search_open.set(true)>{icons::search()}</button>
-                    <button class="btn-icon btn-type" aria-label=move || lang.get().text("reader_settings") aria-expanded=move || menu_open.get() on:click=toggle_menu>"Aa"</button>
+                    <button class="btn-icon btn-type" node_ref=type_button aria-label=move || lang.get().text("reader_settings") aria-expanded=move || menu_open.get() on:click=toggle_menu>"Aa"</button>
                 </div>
             </header>
 
@@ -1082,13 +1232,7 @@ pub fn ReaderPage() -> impl IntoView {
                                 None => view! { <div class="skeleton" style="height: 60vh" aria-busy="true"></div> }.into_any(),
                                 Some(err) => {
                                     let not_found = api::is_not_found(&err);
-                                    let message = if not_found {
-                                        "not_found"
-                                    } else if api::is_online() {
-                                        "chapter_load_failed"
-                                    } else {
-                                        "offline_notice"
-                                    };
+                                    let message = load_failure(&err);
                                     view! {
                                         <div class="reader-end">
                                             <p>{move || lang.get().text(message)}</p>
@@ -1101,7 +1245,7 @@ pub fn ReaderPage() -> impl IntoView {
                                     }.into_any()
                                 }
                             },
-                            Some(c) => view! { <div class="chapter-body" inner_html=c.html_content></div> }.into_any(),
+                            Some(c) => view! { <div class="chapter-body" lang=move || book.get().and_then(|b| crate::i18n::text_lang(&b.language)) inner_html=c.html_content></div> }.into_any(),
                         }}
                     </div>
                     <span class="spine" aria-hidden="true"></span>

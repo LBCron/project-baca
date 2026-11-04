@@ -14,3 +14,15 @@
 
 # Vendored minified library: its mangled symbols (n, T, me) pollute the graph.
 crates/web/tests/a11y/axe.min.js
+
+# Owner token of the GBrain source; never index it.
+knowledge/.gbrain-owner.json
+.claude/
+
+# Generated or binary assets with nothing to extract: launcher icons, Tauri
+# schemas, visual goldens, font licenses.
+apps/tauri/icons/
+apps/tauri/gen/android/app/src/main/res/
+apps/tauri/gen/schemas/
+crates/web/tests/visual/test_visual.py-snapshots/
+crates/web/fonts/

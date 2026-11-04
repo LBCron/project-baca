@@ -37,6 +37,36 @@ pub fn reading_minutes(words: i32) -> i32 {
     (words / WORDS_PER_MINUTE).max(1)
 }
 
+/// Minutes the device clock was east of UTC at `at` (WIB 420), by the
+/// browser's own zone rules, so a date past a daylight-saving change still
+/// reads right. Outside a browser (native unit tests) there is no zone: 0.
+pub fn utc_offset_minutes_at(at: chrono::DateTime<chrono::Utc>) -> i32 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(
+            at.timestamp_millis() as f64
+        ));
+        // getTimezoneOffset counts minutes west of UTC.
+        -(date.get_timezone_offset() as i32)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = at;
+        0
+    }
+}
+
+/// The device's offset now, sent with reading activity so a streak day is
+/// the reader's own.
+pub fn utc_offset_minutes() -> i32 {
+    utc_offset_minutes_at(chrono::Utc::now())
+}
+
+/// `at` on the reader's wall clock, `offset_minutes` east of UTC.
+pub fn local_time(at: chrono::DateTime<chrono::Utc>, offset_minutes: i32) -> chrono::NaiveDateTime {
+    (at + chrono::Duration::minutes(i64::from(offset_minutes))).naive_utc()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
