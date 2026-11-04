@@ -21,6 +21,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-off migration runner (make prod-migrate): the migrations and the
+  # runner of the checked-out tag, mounted read-only.
+  migrate:
+    image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
+    profiles: ["ops"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /work
+    entrypoint: ["bash", "scripts/migrate.sh"]
+    command: ["up"]
+    environment:
+      MIGRATE_DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+    volumes:
+      - ./migrations:/work/migrations:ro
+      - ./scripts/migrate.sh:/work/scripts/migrate.sh:ro
+
   redis:
     image: redis:7-alpine
     restart: always

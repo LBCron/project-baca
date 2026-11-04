@@ -2,23 +2,40 @@
 set -euo pipefail
 
 # Project Baca — Database Migration Runner
-# Executes paired SQL migrations (.up.sql and .down.sql) against PostgreSQL 17
+# Executes paired SQL migrations (.up.sql and .down.sql) against PostgreSQL 17.
+# With MIGRATE_DATABASE_URL set it talks to that database with a local psql
+# (production, the compose `migrate` service); otherwise to the dev compose
+# Postgres. Each file runs in one transaction together with its
+# schema_migrations row, under an advisory lock, so a failed file leaves
+# nothing behind and concurrent runs apply each file once.
 
 DB_USER="${DB_USER:-baca_user}"
 DB_NAME="${DB_NAME:-project_baca_db}"
-MIGRATIONS_DIR="migrations"
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-migrations}"
+# Any fixed bigint; every runner of this schema must agree on it.
+LOCK_KEY=7262417015
 
 psql_cmd() {
-    docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 "$@"
+    if [[ -n "${MIGRATE_DATABASE_URL:-}" ]]; then
+        psql "$MIGRATE_DATABASE_URL" -X -v ON_ERROR_STOP=1 "$@"
+    else
+        docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -X -v ON_ERROR_STOP=1 "$@"
+    fi
+}
+
+# Feeds stdin to psql as one transaction that first takes the migration lock.
+locked_tx() {
+    { echo "SELECT pg_advisory_xact_lock(${LOCK_KEY}) \\gset"; cat; } | psql_cmd -q -1 -f -
 }
 
 init_table() {
-    psql_cmd -q -c "
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version VARCHAR(100) PRIMARY KEY,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-    "
+    locked_tx <<'SQL'
+SET LOCAL client_min_messages = warning;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(100) PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+SQL
 }
 
 migrate_up() {
@@ -40,17 +57,29 @@ migrate_up() {
         basename=$(basename "$file")
         local version="${basename%.up.sql}"
 
-        local is_applied
-        is_applied=$(psql_cmd -t -A -c "SELECT count(*) FROM schema_migrations WHERE version = '${version}';")
-
-        if [[ "$is_applied" -eq 0 ]]; then
-            echo "Applying: ${version}..."
-            psql_cmd < "$file"
-            psql_cmd -q -c "INSERT INTO schema_migrations (version) VALUES ('${version}');"
-            echo "Applied: ${version}."
+        # Checked again under the lock: another runner may have applied it
+        # while this one waited.
+        local out
+        if ! out=$(locked_tx <<SQL
+SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '${version}') AS applied \\gset
+\\if :applied
+\\echo Skipped: ${version} (already applied).
+\\else
+\\echo Applying: ${version}...
+$(cat "$file")
+;
+INSERT INTO schema_migrations (version) VALUES ('${version}');
+\\echo Applied: ${version}.
+\\endif
+SQL
+); then
+            echo "$out"
+            echo "Failed: ${version}; nothing of it was applied." >&2
+            exit 1
+        fi
+        echo "$out"
+        if [[ "$out" == *"Applied: ${version}."* ]]; then
             applied_count=$((applied_count + 1))
-        else
-            echo "Skipped: ${version} (already applied)."
         fi
     done
 
@@ -74,8 +103,11 @@ migrate_down() {
     fi
 
     echo "Rolling back: ${last_version}..."
-    psql_cmd < "$down_file"
-    psql_cmd -q -c "DELETE FROM schema_migrations WHERE version = '${last_version}';"
+    locked_tx <<SQL
+$(cat "$down_file")
+;
+DELETE FROM schema_migrations WHERE version = '${last_version}';
+SQL
     echo "Rolled back: ${last_version}."
 }
 
