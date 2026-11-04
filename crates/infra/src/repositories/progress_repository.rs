@@ -382,6 +382,10 @@ async fn check_and_award_badges(
     if missing.is_empty() {
         return Ok(0);
     }
+    // The master rows are otherwise seeded by the first badge listing; on a
+    // fresh install a reader can earn a badge before anyone lists them, and
+    // the insert below would break the foreign key.
+    crate::repositories::badge_repository::seed_default_badges_if_empty(db).await?;
 
     let now = Utc::now();
     let mut values_sql = String::new();

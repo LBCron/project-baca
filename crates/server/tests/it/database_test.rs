@@ -659,23 +659,26 @@ async fn test_db_in_book_search_uses_the_trigram_index() {
     let _ = harness.live_only().await.expect("live DB required (db-up)");
     let book_id = Uuid::new_v4();
     let txn = harness.state.db.begin().await.expect("begin");
-    // A book of 10,000 paragraphs, rolled back at the end. A dev table
-    // holds little besides it, so a sequential scan would look cheapest;
-    // in production every other book makes it the dearest, which
-    // `enable_seqscan = off` stands in for.
+    // A long book, 50,000 paragraphs, rolled back at the end: the case the
+    // index is for. On a book of 10,000 an index scan on the primary key and
+    // a filter is about as cheap (a few ms), and a fresh database picks it.
+    // `enable_seqscan = off` stands in for the rest of a production catalog,
+    // and a statistics target that samples every row keeps the estimate the
+    // same from run to run.
     txn.execute_unprepared(&format!(
         "SET LOCAL statement_timeout = 0; SET LOCAL enable_seqscan = off; \
+         SET LOCAL default_statistics_target = 1000; \
          INSERT INTO books (id, title, author, language, primary_theme, description, cover_url, \
            epub_storage_path, total_words, estimated_reading_minutes, source_name, license, status, \
            created_at, updated_at) \
          VALUES ('{book_id}', 'Plan Tome', 'Plan', 'en', 'Test', '', '', '', 1, 1, 'Test', 'Private', \
            'published', NOW(), NOW()); \
          INSERT INTO chapters (id, book_id, chapter_number, title, word_count, html_content, created_at) \
-         SELECT gen_random_uuid(), '{book_id}', c, 'Chapter ' || c, 1, '', NOW() FROM generate_series(1, 20) c; \
+         SELECT gen_random_uuid(), '{book_id}', c, 'Chapter ' || c, 1, '', NOW() FROM generate_series(1, 100) c; \
          INSERT INTO chapter_paragraphs (book_id, chapter_number, n, text, folded) \
          SELECT '{book_id}', c, n, t, lower(t) FROM ( \
            SELECT c, n, 'the harbour lay quiet ' || md5((c * 10000 + n)::text) AS t \
-           FROM generate_series(1, 20) c, generate_series(1, 500) n) s; \
+           FROM generate_series(1, 100) c, generate_series(1, 500) n) s; \
          ANALYZE chapter_paragraphs; ANALYZE chapters;"
     ))
     .await

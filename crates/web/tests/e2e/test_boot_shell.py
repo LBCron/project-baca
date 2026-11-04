@@ -67,7 +67,10 @@ def test_wide_screens_and_other_routes_show_no_static_heading(browser: Browser):
 def test_a_reader_with_a_book_to_resume_gets_no_fresh_visitor_heading(browser: Browser, book_with_chapters: str):
     """The app greets a guest who has read a page with the book to resume, so
     on the next visit the fresh-visitor heading must not stand in for it."""
-    context = browser.new_context(color_scheme="dark", viewport={"width": 375, "height": 812})
+    # The service worker would serve the WASM from its cache on the second
+    # visit, past the route that blocks it.
+    context = browser.new_context(color_scheme="dark", viewport={"width": 375, "height": 812},
+                                  service_workers="block")
     try:
         page = context.new_page()
         page.goto(f"{WEB}/read/{book_with_chapters}?chapter=1", wait_until="domcontentloaded")
