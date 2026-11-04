@@ -71,8 +71,8 @@ const ENTRIES: &[(&str, &str, &str)] = &[
     ("hero_head_b", "dibaca dengan cara baru.", "read anew."),
     (
         "hero_desc",
-        "Tanpa iklan, tanpa linimasa. Kamu membuka halaman, membaca, dan melanjutkan kapan saja. Lupa alur setelah lama berhenti? Rotaria merangkum bab-bab sebelumnya tanpa membocorkan yang akan datang.",
-        "No ads, no feed. Open a page, read, and pick up whenever you like. Lost the thread after a long pause? Rotaria recaps the chapters behind you without revealing what lies ahead.",
+        "Halaman baca tanpa iklan, tanpa linimasa. Kamu membuka halaman, membaca, dan melanjutkan kapan saja. Lupa alur setelah lama berhenti? Rotaria merangkum bab-bab sebelumnya tanpa membocorkan yang akan datang.",
+        "No ads on the page you read, no feed. Open a page, read, and pick up whenever you like. Lost the thread after a long pause? Rotaria recaps the chapters behind you without revealing what lies ahead.",
     ),
     (
         "search_ph",
@@ -191,6 +191,7 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "Rotaria — sirkulasi buku domain publik. Sumber: Standard Ebooks, Project Gutenberg, Wikisource.",
         "Rotaria — public domain books in circulation. Sources: Standard Ebooks, Project Gutenberg, Wikisource.",
     ),
+    ("footer_rights", "Hak cipta dilindungi.", "All rights reserved."),
     ("auth_title_login", "Masuk ke Rotaria", "Sign in to Rotaria"),
     ("auth_title_register", "Buat akun", "Create an account"),
     ("auth_title_otp", "Periksa kotak masukmu", "Check your inbox"),
