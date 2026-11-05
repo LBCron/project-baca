@@ -12,7 +12,15 @@ updates:
       day: monday
     cooldown:
       default-days: 7
+    # sea-orm 2 needs sqlx 0.9, which pgvector does not support yet.
+    ignore:
+      - dependency-name: sea-orm
+        update-types: ["version-update:semver-major"]
     groups:
+      # leptos, its router, and meta share one reactive runtime; a lone bump
+      # links two runtimes into the bundle.
+      leptos:
+        patterns: ["leptos", "leptos_*"]
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: pip

@@ -13,9 +13,9 @@ gallery = []
 
 [dependencies]
 shared = { workspace = true }
-leptos = { version = "0.7.7", features = ["csr"] }
-leptos_router = { version = "0.7.7" }
-leptos_meta = { version = "0.7.7" }
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = { version = "0.8" }
+leptos_meta = { version = "0.8" }
 console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "Storage", "File", "FileList", "FormData", "Navigator", "ShareData", "Clipboard", "KeyboardEvent", "NodeList", "CssStyleDeclaration", "VisibilityState", "History", "Location", "ScrollIntoViewOptions", "ScrollBehavior", "ScrollLogicalPosition", "DomRect", "Node", "DomTokenList", "PointerEvent", "Selection", "DomRectList", "MediaQueryList", "Headers", "RequestInit", "ResizeObserver"] }
