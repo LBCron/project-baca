@@ -55,7 +55,7 @@ async-trait = "0.1"
 mockall = "0.15"
 pretty_assertions = "1.4"
 claims = "0.8"
-rstest = "0.27"
+rstest = "0.28"
 
 # WebAssembly bundle only (`make build-web`): size over speed, whole-program
 # LTO, one codegen unit. The server keeps the default release profile.
