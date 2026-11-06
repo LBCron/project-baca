@@ -72,8 +72,8 @@ pub const REDIS_RETRY_AFTER_SECS: u64 = 5;
 pub async fn init_redis_conn(client: &redis::Client) -> Result<RedisConn, AppError> {
     let config = redis::aio::ConnectionManagerConfig::new()
         .set_number_of_retries(0)
-        .set_connection_timeout(Duration::from_secs(1))
-        .set_response_timeout(Duration::from_secs(3));
+        .set_connection_timeout(Some(Duration::from_secs(1)))
+        .set_response_timeout(Some(Duration::from_secs(3)));
     redis::aio::ConnectionManager::new_with_config(client.clone(), config)
         .await
         .map_err(|e| {

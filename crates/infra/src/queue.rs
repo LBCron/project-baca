@@ -202,7 +202,7 @@ pub async fn list_dlq_entries(
                 .map
                 .iter()
                 .filter_map(|(k, v)| {
-                    redis::from_redis_value::<String>(v)
+                    redis::from_redis_value_ref::<String>(v)
                         .ok()
                         .map(|s| (k.clone(), s))
                 })
@@ -232,7 +232,7 @@ pub async fn replay_dlq_entry(
     let job_id: String = entry
         .map
         .get("job_id")
-        .and_then(|v| redis::from_redis_value::<String>(v).ok())
+        .and_then(|v| redis::from_redis_value_ref::<String>(v).ok())
         .ok_or_else(|| AppError::Internal("DLQ entry without job_id".to_string()))?;
 
     let job: HashMap<String, String> = conn
