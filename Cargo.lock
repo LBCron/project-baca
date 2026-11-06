@@ -2058,7 +2058,7 @@ dependencies = [
  "dotenvy",
  "jsonwebtoken",
  "lettre",
- "rand 0.8.8",
+ "rand 0.10.3",
  "redis",
  "reqwest",
  "sea-orm",

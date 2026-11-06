@@ -5,7 +5,9 @@
 //! code (three misses lock it for five minutes) and per address over a day,
 //! and the codes mailed to one address are capped per hour and per day.
 
-use rand::Rng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::RngExt;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -57,8 +59,9 @@ pub fn hash_otp(otp: &str) -> String {
 
 /// Generates a cryptographically secure 6-digit numeric OTP string
 pub fn generate_numeric_otp() -> String {
-    let mut rng = rand::rngs::OsRng;
-    let otp: u32 = rng.gen_range(100000..=999999);
+    // Straight from the OS, which panics only when the OS has no entropy,
+    // as rand 0.8's OsRng did.
+    let otp: u32 = UnwrapErr(SysRng).random_range(100000..=999999);
     format!("{:06}", otp)
 }
 
