@@ -1,9 +1,6 @@
 //! Argon2id password hashing and verification complying with OWASP guidelines.
 
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2, Params,
-};
+use argon2::{Argon2, Params, PasswordHasher, PasswordVerifier};
 use shared::AppError;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,23 +19,18 @@ pub fn hash_password(password: &str) -> Result<String, AppError> {
     let params = Params::new(19456, 2, 1, None)
         .map_err(|e| AppError::Internal(format!("Invalid Argon2 parameters: {e}")))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-    let salt = SaltString::generate(&mut OsRng);
-
+    // 16-byte salt from the OS (argon2's default `getrandom` feature).
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| AppError::Internal(format!("Password hashing failed: {e}")))
 }
 
 /// Verify a plaintext password against an Argon2id hash string
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, AppError> {
-    let parsed_hash = match PasswordHash::new(password_hash) {
-        Ok(h) => h,
-        Err(_) => return Ok(false),
-    };
-
+    // Cost parameters come from the PHC string; an unparsable one is a miss.
     Ok(Argon2::default()
-        .verify_password(password.as_bytes(), &parsed_hash)
+        .verify_password(password.as_bytes(), password_hash)
         .is_ok())
 }
 
