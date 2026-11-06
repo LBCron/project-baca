@@ -64,7 +64,7 @@ services:
   # S3_ENDPOINT=http://minio:9000).
   minio:
     profiles: ["minio"]
-    image: cgr.dev/chainguard/minio:latest@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
+    image: cgr.dev/chainguard/minio:latest@sha256:aea6c163749e1caca37f907976dcf337177ddf5f558808f2aa591618fd3a6eef
     restart: always
     logging: *logging
     command: server /data --console-address ":9001"
