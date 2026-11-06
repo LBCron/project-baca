@@ -2,7 +2,8 @@
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::{
-    config::{timeout::TimeoutConfig, Region},
+    config::{http::HttpResponse, timeout::TimeoutConfig, Region},
+    error::{DisplayErrorContext, SdkError},
     primitives::ByteStream,
     Client,
 };
@@ -77,16 +78,10 @@ impl StorageService {
             .send()
             .await;
         let Err(e) = probe else {
-            return Ok(());
+            return self.ensure_writable(bucket).await;
         };
-        let status = e.raw_response().map(|r| r.status().as_u16());
-        let service_error = e.into_service_error();
-        if !service_error.is_no_such_bucket() {
-            return Err(AppError::Internal(format!(
-                "Storage bucket '{bucket}' is not accessible with the configured credentials \
-                 (HTTP {}): {service_error:?}",
-                status.map_or_else(|| "no response".to_string(), |s| s.to_string())
-            )));
+        if !e.as_service_error().is_some_and(|s| s.is_no_such_bucket()) {
+            return Err(refused(bucket, "is not accessible", e));
         }
         match self.client.create_bucket().bucket(bucket).send().await {
             Ok(_) => Ok(()),
@@ -103,6 +98,28 @@ impl StorageService {
                 }
             }
         }
+    }
+
+    /// A read-only token passes the listing above and fails only on the first
+    /// upload, so boot writes and deletes one empty object as well.
+    async fn ensure_writable(&self, bucket: &str) -> Result<(), AppError> {
+        let key = format!(".boot-probe/{}", uuid::Uuid::new_v4());
+        self.client
+            .put_object()
+            .bucket(bucket)
+            .key(&key)
+            .body(ByteStream::from_static(b""))
+            .send()
+            .await
+            .map_err(|e| refused(bucket, "refuses writes", e))?;
+        self.client
+            .delete_object()
+            .bucket(bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| refused(bucket, "refuses deletes", e))?;
+        Ok(())
     }
 
     /// Stores raw bytes under `key` in the EPUB bucket (admin upload path).
@@ -204,6 +221,25 @@ impl StorageService {
     }
 }
 
+/// Boot-probe failure naming the bucket, the HTTP status, and the store's
+/// error code, without the raw response the SDK's Debug output appends.
+fn refused<E>(bucket: &str, what: &str, e: SdkError<E, HttpResponse>) -> AppError
+where
+    E: std::error::Error + 'static,
+{
+    let status = e.raw_response().map_or_else(
+        || "no response".to_string(),
+        |r| r.status().as_u16().to_string(),
+    );
+    let detail = match e.as_service_error() {
+        Some(service) => service.to_string(),
+        None => DisplayErrorContext(&e).to_string(),
+    };
+    AppError::Internal(format!(
+        "Storage bucket '{bucket}' {what} with the configured credentials (HTTP {status}): {detail}"
+    ))
+}
+
 /// Live against the dev MinIO (`make db-up`).
 #[cfg(test)]
 mod tests {
@@ -233,6 +269,60 @@ mod tests {
         let again = StorageService::init(&config).await;
         drop_buckets(&service).await;
         again.expect("existing buckets are accepted without a create");
+    }
+
+    /// Runs `mc` inside the dev MinIO container against its own root alias.
+    fn minio_admin(command: &str) {
+        let status = std::process::Command::new("docker")
+            .args(["exec", "project_baca_minio", "sh", "-c"])
+            .arg(format!(
+                "mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null && {command}"
+            ))
+            .status()
+            .expect("docker exec into the dev MinIO");
+        assert!(status.success(), "mc failed: {command}");
+    }
+
+    #[tokio::test]
+    async fn init_leaves_no_probe_object_behind() {
+        let config = config_with_buckets("clean");
+        let service = StorageService::init(&config).await.expect("init succeeds");
+        let mut leftovers = 0;
+        for bucket in [&service.bucket_epubs, &service.bucket_covers] {
+            let listing = service.client.list_objects_v2().bucket(bucket).send().await;
+            leftovers += listing.map_or(1, |l| l.key_count().unwrap_or(0));
+        }
+        drop_buckets(&service).await;
+        assert_eq!(leftovers, 0);
+    }
+
+    #[tokio::test]
+    async fn init_with_read_only_credentials_fails_on_the_write_probe() {
+        // List and read only, like an R2 "Object Read" token; MinIO's built-in
+        // `readonly` policy also refuses listing, so it would fail earlier.
+        minio_admin(
+            r#"printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation","s3:GetObject"],"Resource":["arn:aws:s3:::*"]}]}' > /tmp/list-read.json && \
+             mc admin policy create local list-read /tmp/list-read.json >/dev/null && \
+             mc admin user add local probe-readonly probe-readonly-secret >/dev/null && \
+             { mc admin policy detach local list-read --user probe-readonly >/dev/null 2>&1; \
+               mc admin policy attach local list-read --user probe-readonly >/dev/null; }"#,
+        );
+        let config = StorageConfig {
+            access_key_id: "probe-readonly".to_string(),
+            secret_access_key: "probe-readonly-secret".to_string(),
+            ..StorageConfig::default()
+        };
+        let err = StorageService::init(&config)
+            .await
+            .expect_err("a token that can list but not write must not pass init");
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!(
+                "Storage bucket '{}' refuses writes",
+                config.bucket_epubs
+            )) && msg.contains("HTTP 403"),
+            "{msg}"
+        );
     }
 
     #[tokio::test]
