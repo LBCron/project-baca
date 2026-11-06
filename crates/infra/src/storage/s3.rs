@@ -307,15 +307,23 @@ mod tests {
              { mc admin policy detach local list-read --user probe-readonly >/dev/null 2>&1; \
                mc admin policy attach local list-read --user probe-readonly >/dev/null; }"#,
         );
+        // The buckets exist before the read-only init, as on R2; otherwise the
+        // probe would stop at CreateBucket on a fresh store.
+        let owner = StorageService::init(&config_with_buckets("ro"))
+            .await
+            .expect("root creates the buckets");
         let config = StorageConfig {
             access_key_id: "probe-readonly".to_string(),
             secret_access_key: "probe-readonly-secret".to_string(),
+            bucket_epubs: owner.bucket_epubs.clone(),
+            bucket_covers: owner.bucket_covers.clone(),
             ..StorageConfig::default()
         };
-        let err = StorageService::init(&config)
-            .await
-            .expect_err("a token that can list but not write must not pass init");
-        let msg = err.to_string();
+        let result = StorageService::init(&config).await;
+        drop_buckets(&owner).await;
+        let msg = result
+            .expect_err("a token that can list but not write must not pass init")
+            .to_string();
         assert!(
             msg.contains(&format!(
                 "Storage bucket '{}' refuses writes",
