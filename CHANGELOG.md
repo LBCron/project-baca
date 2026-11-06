@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Changed
+- Dependencies: sha2 0.11, rand 0.10, and argon2 0.6 (from 0.10, 0.8, and 0.5). Password hashes keep the same Argon2id parameters and PHC layout, and hashes stored before the upgrade still verify; OTP digests, refresh tokens, and session ids keep their format, so Redis keys and stored values stay valid.
+
 ## [0.1.3] — 2026-11-07
 
 ### Added
