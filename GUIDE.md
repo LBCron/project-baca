@@ -60,11 +60,13 @@ Credentials and bucket names are in `.env.example`. At boot the server checks bo
 
 ```bash
 make migrate-up seed-dev
-make dev-server        # cargo-watch when installed, else cargo run -p server
-make dev-web           # trunk serve on 127.0.0.1:3000 (make dev-web-release for the shipped bundle)
+make dev backend       # (re)start the API on :8080 from this checkout, wait until healthy
+make dev frontend      # trunk serve on 127.0.0.1:3000 from this checkout (make dev-web-release for the shipped bundle)
+make dev stop          # stop both
 make worker            # after make worker-install
 ```
 
+- `make dev` is the controller for tests and live checks: ports 8080 and 3000 are shared by every checkout and worktree, so it records which checkout runs each, takes a port over from another checkout of this repo (never from a foreign process), links the main checkout's `.env` into a new worktree, shares `$MAIN/target`, and logs to `~/.local/state/rotaria-dev/`. `make dev-server` (cargo-watch) and `make dev-web` stay for hands-on editing.
 - Swagger UI `/swagger-ui`, OpenAPI `/api-docs/openapi.json` outside production.
 - Every response carries a server-minted `x-request-id`; client values are ignored.
 - Migrations: `make migrate-up`, `make migrate-down`, `make migrate-status` over paired SQL files in `migrations/`. Each file and its `schema_migrations` row run in one transaction under an advisory lock, so a failed file leaves nothing and two runs at once apply each file once (`make test-migrate`). With `MIGRATE_DATABASE_URL` set, `scripts/migrate.sh` talks to that database with a local `psql` instead of the dev compose service.

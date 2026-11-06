@@ -7,12 +7,23 @@ DB_NAME ?= project_baca_db
 CARGO_WATCH ?= $(shell which cargo-watch 2>/dev/null)
 TRUNK ?= $(shell which trunk 2>/dev/null)
 
-# Starts the development environment
+# Dev controller: `make dev backend`, `make dev frontend`, `make dev stop`.
+# It owns ports 8080 and 3000 across all checkouts and waits until each
+# service answers (scripts/dev.sh); tests that need a server start it here.
+DEV_SERVICES := backend frontend stop
+
 dev:
+ifeq ($(filter $(DEV_SERVICES),$(MAKECMDGOALS)),)
 	@echo "Project Baca — Development Environment"
-	@echo "Run 'make dev-server' for backend (auto-reload on save)"
-	@echo "Run 'make dev-web' for frontend WASM (Trunk hot-reload)"
-	@echo "Run 'make db-up' to start database and services"
+	@echo "make dev backend    (re)start the API on :8080 from this checkout, with its services"
+	@echo "make dev frontend   serve the web on :3000 from this checkout (Trunk hot-reload)"
+	@echo "make dev stop       stop both"
+else
+	@scripts/dev.sh $(filter $(DEV_SERVICES),$(MAKECMDGOALS))
+endif
+
+$(DEV_SERVICES):
+	@$(if $(filter dev,$(MAKECMDGOALS)),:,echo "use: make dev $@" >&2; exit 2)
 
 # Starts backend with live reload
 dev-server:
@@ -145,7 +156,7 @@ test-domain:
 	@cargo test -p domain
 
 test-web:
-	@echo "Running web test pyramid (requires db-up, dev-server :8080, dev-web :3000)..."
+	@echo "Running web test pyramid (requires make dev backend frontend)..."
 	@cargo test -p web --lib
 	@cd crates/web/tests && ~/.venvs/webapp-testing/bin/python -m pytest e2e/ component/ integration/ --browser chromium -q
 
@@ -304,5 +315,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
