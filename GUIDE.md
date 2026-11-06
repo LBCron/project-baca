@@ -142,7 +142,7 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 |---|---|---|
 | `.github/workflows/ci.yml` | push to `develop` or `main`, pull requests, nightly, manual (heavy jobs per section 5) | `zizmor`: workflow audit, red on a medium or high finding. `audit`: `make audit`. `check`: `make check` and the version check. `backend`: the dev compose stack (`.github/actions/dev-stack`), domain, infra, and server unit tests, the functional suites, live auth tests, load-stress, worker unit and live tests. `web`: `make build-web` (size budget, no inline script), then the API and the release bundle served by Trunk, `make test-web` and the axe suite on Chromium |
 | `.github/workflows/codeql.yml` | pull requests to `main` or `develop`, push to `main`, Mondays, manual | CodeQL for Actions, JavaScript, Python, and Rust (`build-mode: none`); the generated Kotlin of the Tauri Android shell is left out because it cannot be built on the runner |
-| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
+| `.github/workflows/release.yml` | tag `vX.Y.Z` | the tag must equal the workspace version; images `ghcr.io/aprxty3/project-baca/{server,worker,edge}` for `linux/amd64` and `linux/arm64` (each built natively, arm64 on `ubuntu-24.04-arm`, then joined into one multi-arch tag) tagged `X.Y.Z` and `X.Y`, each with an SBOM, provenance, and a GitHub attestation; a GitHub release with the CHANGELOG section as notes (pre-release while the major version is 0) |
 
 Production host: a shallow clone of the deployed tag in `/srv/rotaria/repo` (`git clone --depth 1 --branch vX.Y.Z https://github.com/aprxty3/project-baca.git /srv/rotaria/repo`) holds the compose file, `migrations/`, and `.env.production` with `ROTARIA_VERSION=X.Y.Z`. Deploy: check out the new tag (`git fetch --depth 1 origin tag vX.Y.Z && git checkout vX.Y.Z`), set `ROTARIA_VERSION`, then `make prod-pull prod-migrate prod-up`. Roll back by setting the previous tag and version and running `make prod-pull prod-up`; migrations are expand/contract, so the older server runs on the newer schema. The repository and the GHCR packages are public, so clone and pull need no credentials. When the repository turns private before the beta, the host gets a read-only deploy key for the clone and `docker login ghcr.io` with a `read:packages` token used only by that host, and the packages are republished as private. `make prod-build` builds the same images from the checkout instead, tagged with `ROTARIA_VERSION`.
 
@@ -170,8 +170,15 @@ Cutting a release:
 Verifying a released image (anonymous pull works while the packages are public; ADR-40):
 
 ```bash
-gh attestation verify oci://ghcr.io/aprxty3/project-baca/server:X.Y.Z -R aprxty3/project-baca
-docker buildx imagetools inspect ghcr.io/aprxty3/project-baca/server:X.Y.Z --format '{{json .SBOM}}'
+for i in server worker edge; do
+  ref=ghcr.io/aprxty3/project-baca/$i:X.Y.Z
+  docker buildx imagetools inspect "$ref"   # lists linux/amd64 and linux/arm64
+  gh attestation verify "oci://$ref" -R aprxty3/project-baca
+  for p in linux/amd64 linux/arm64; do
+    docker buildx imagetools inspect "$ref" --format "{{ json (index .SBOM \"$p\") }}" | head -c 120; echo
+    docker buildx imagetools inspect "$ref" --format "{{ json (index .Provenance \"$p\") }}" | head -c 120; echo
+  done
+done
 ```
 
 Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.

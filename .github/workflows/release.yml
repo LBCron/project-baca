@@ -34,26 +34,26 @@ jobs:
           name: release-notes
           path: release-notes.md
 
+  # Each architecture builds natively (an emulated arm64 Rust build takes
+  # ten times longer) and pushes by digest; `manifests` joins the two into
+  # one tagged multi-arch image. The production hosts are arm64.
   images:
-    name: Image ${{ matrix.image }}
+    name: Image ${{ matrix.image }} (${{ matrix.arch }})
     needs: notes
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
-      # Sigstore signing and the attestation store, for provenance.
-      id-token: write
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
+        image: [server, worker, edge]
+        arch: [amd64, arm64]
         include:
-          - image: server
-            dockerfile: Dockerfile.server
-          - image: worker
-            dockerfile: Dockerfile.worker
-          - image: edge
-            dockerfile: Dockerfile.edge
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,9 +68,6 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}/${{ matrix.image }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.title=Rotaria ${{ matrix.image }}
             org.opencontainers.image.licenses=LicenseRef-Proprietary
@@ -78,24 +75,81 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          file: Dockerfile.${{ matrix.image }}
+          platforms: linux/${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
           # mode=max records build args, so no secret may ever be one.
           provenance: mode=max
           sbom: true
+      - env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: mkdir -p digests && touch "digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifests:
+    name: Manifest ${{ matrix.image }}
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Sigstore signing and the attestation store, for provenance.
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [server, worker, edge]
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-${{ matrix.image }}-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - id: merge
+        working-directory: digests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          test "$(ls | wc -l)" -eq 2
+          tags=()
+          while read -r tag; do tags+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          docker buildx imagetools create "${tags[@]}" $(printf "${IMAGE}@sha256:%s " *)
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}" --raw > index.json
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' index.json
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository }}/${{ matrix.image }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
           push-to-registry: true
 
   publish:
     name: GitHub release
-    needs: [notes, images]
+    needs: [notes, manifests]
     runs-on: ubuntu-latest
     permissions:
       contents: write

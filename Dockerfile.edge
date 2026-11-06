@@ -3,7 +3,9 @@
 # The API shares the site's origin, so the default relative base lets one
 # image serve any DOMAIN; override with --build-arg API_BASE_URL=... when the
 # API lives elsewhere.
-FROM rust:1.94-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS webbuild
+# Trixie, not bookworm: the aarch64 Trunk binary needs glibc 2.39 and
+# bookworm ships 2.36. The stage only emits WASM and static files.
+FROM rust:1.98-trixie@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546 AS webbuild
 # Prebuilt Trunk, pinned like CI (.github/workflows/ci.yml): compiling the
 # latest one needs a newer rustc than this image and takes minutes. The
 # tarball is checked against scripts/trunk.sha256 for either build arch.
