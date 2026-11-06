@@ -297,6 +297,13 @@ prod-logs:
 prod-backfill-paragraphs:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml run --rm worker python worker.py --backfill-paragraphs
 
+# Hardens the production host over SSH (GUIDE section 8). HOST is the admin
+# login with passwordless sudo; CHECK=1 only verifies; DEPLOY_PUBKEY installs
+# the deploy key behind its forced command.
+prod-provision:
+	@test -n "$(HOST)" || { echo "Usage: make prod-provision HOST=<admin>@<host> [CHECK=1] [DEPLOY_PUBKEY='ssh-ed25519 ...']"; exit 2; }
+	@ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)" < scripts/provision_host.sh
+
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
 purge-test-debris:
@@ -315,5 +322,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
