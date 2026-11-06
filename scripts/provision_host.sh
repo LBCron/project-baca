@@ -77,7 +77,7 @@ ufw_do() {
 }
 
 preflight() {
-    ((EUID == 0)) || die "run as root (sudo bash $0)"
+    ((EUID == 0)) || die "run as root through sudo from the admin account"
     # shellcheck source=/dev/null
     . /etc/os-release
     [[ ${ID:-} == ubuntu ]] || die "expects Ubuntu, found ${ID:-unknown}"
