@@ -127,6 +127,27 @@ mod tests {
         assert!(!valid);
     }
 
+    /// Hash written by argon2 0.5 before the crate upgrade; stored hashes
+    /// must keep verifying across argon2 releases.
+    const LEGACY_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$+rRVNarSMsOtcCUyWVMhzg$gtawrOhAO0n1vrR8hxub3Ybi/oZ0jLF6JgXYf835fAo";
+
+    #[test]
+    fn hashes_from_earlier_releases_still_verify() {
+        assert!(verify_password("Rotaria-lama-0.5!", LEGACY_PHC).expect("legacy hash parses"));
+        assert!(!verify_password("Rotaria-lama-0.5?", LEGACY_PHC).expect("legacy hash parses"));
+    }
+
+    #[test]
+    fn new_hashes_keep_parameters_and_salt_length() {
+        let hash = hash_password("Whatever123!").expect("Hashing should succeed");
+        let salt_and_digest = hash
+            .strip_prefix("$argon2id$v=19$m=19456,t=2,p=1$")
+            .expect("same algorithm, version and cost");
+        let (salt, digest) = salt_and_digest.split_once('$').expect("salt then digest");
+        assert_eq!(salt.len(), 22, "16-byte salt, unpadded base64");
+        assert_eq!(digest.len(), 43, "32-byte output, unpadded base64");
+    }
+
     #[test]
     fn test_dummy_argon2_hash_validity() {
         let valid =

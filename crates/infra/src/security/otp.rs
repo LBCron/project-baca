@@ -220,6 +220,24 @@ mod tests {
     }
 
     #[test]
+    fn otp_hash_is_lowercase_sha256_hex() {
+        assert_eq!(
+            hash_otp("123456"),
+            "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92"
+        );
+    }
+
+    #[test]
+    fn otps_are_six_digits_without_a_leading_zero() {
+        for _ in 0..1000 {
+            let otp = generate_numeric_otp();
+            assert_eq!(otp.len(), 6);
+            assert!(otp.bytes().all(|b| b.is_ascii_digit()));
+            assert_ne!(otp.as_bytes()[0], b'0');
+        }
+    }
+
+    #[test]
     fn registrations_of_one_address_never_share_a_key() {
         let a = registration_key("x@example.com", Uuid::new_v4());
         let b = registration_key("x@example.com", Uuid::new_v4());
