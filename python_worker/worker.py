@@ -12,6 +12,7 @@ this module without Redis/MinIO/Postgres running.
 
 Usage:
     .venv/bin/python worker.py [--once]   # --once: process a single message then exit
+    .venv/bin/python worker.py --healthcheck   # exit 0 while the loop is alive
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import re
 import signal
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -37,6 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 # Configuration
@@ -645,12 +648,12 @@ def make_db(settings: Settings):
 
     # pg8000.dbapi.connect accepts a full URL via the `host` parameter? No:
     # parse DATABASE_URL into parts explicitly.
-    from urllib.parse import urlparse
+    from urllib.parse import unquote, urlparse
 
     parts = urlparse(settings.database_url)
     return pg8000.dbapi.connect(
-        user=parts.username or "baca_user",
-        password=parts.password or "",
+        user=unquote(parts.username or "baca_user"),
+        password=unquote(parts.password or ""),
         host=parts.hostname or "localhost",
         port=parts.port or 5432,
         database=(parts.path or "/project_baca_db").lstrip("/"),
@@ -1214,6 +1217,28 @@ def _raise_shutdown(signum, _frame) -> None:
     raise WorkerShutdown(signal.Signals(signum).name)
 
 
+# The container healthcheck (`worker.py --healthcheck`) reads this file's age:
+# the idle loop touches it every few seconds, a running job's claim refresh
+# at least once a minute.
+HEARTBEAT_FILE = Path(tempfile.gettempdir()) / "rotaria-worker.alive"
+HEARTBEAT_MAX_AGE_S = 120.0
+
+
+def mark_alive() -> None:
+    try:
+        HEARTBEAT_FILE.touch()
+    except OSError:
+        pass  # Ingestion goes on; the healthcheck reports the worker unhealthy.
+
+
+def is_alive() -> bool:
+    try:
+        age = time.time() - HEARTBEAT_FILE.stat().st_mtime
+    except OSError:
+        return False
+    return age <= HEARTBEAT_MAX_AGE_S
+
+
 def claim_heartbeat_seconds(reclaim_idle_ms: int) -> float:
     """Refresh often enough that an entry never looks idle to `XAUTOCLAIM`."""
     return max(0.2, min(60.0, reclaim_idle_ms / 3000))
@@ -1232,6 +1257,7 @@ def keep_claimed(redis_client, settings: Settings, consumer: str, msg_id: str):
 
     def beat() -> None:
         while not stop.wait(interval):
+            mark_alive()
             try:
                 redis_client.xclaim(
                     settings.stream, settings.group, consumer, 0, [msg_id], justid=True
@@ -1309,6 +1335,7 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
     # pending list: one entry failing for good cannot hold the rest back.
     cursor = "0-0"
     while True:
+        mark_alive()
         entries, cursor = reclaim_idle(redis_client, settings, consumer, cursor)
         if not entries:
             try:
@@ -1424,6 +1451,8 @@ def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, rea
 
 
 def main() -> None:
+    if "--healthcheck" in sys.argv[1:]:
+        sys.exit(0 if is_alive() else 1)
     if "--backfill-paragraphs" in sys.argv[1:]:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
         LOG.info("indexed the paragraphs of %d chapters", backfill_paragraphs(Settings()))

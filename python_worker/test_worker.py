@@ -1043,3 +1043,57 @@ class ReclaimTest(unittest.TestCase):
         client = mock.Mock()
         client.xautoclaim.side_effect = RuntimeError("NOGROUP")
         self.assertEqual(worker.reclaim_idle(client, worker.Settings(), "c"), ([], "0-0"))
+
+
+class LivenessTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        patcher = mock.patch.object(worker, "HEARTBEAT_FILE", Path(self.dir.name) / "alive")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_heartbeat_is_unhealthy(self):
+        self.assertFalse(worker.is_alive())
+
+    def test_fresh_heartbeat_is_healthy_and_a_stale_one_is_not(self):
+        worker.mark_alive()
+        self.assertTrue(worker.is_alive())
+        stale = worker.time.time() - worker.HEARTBEAT_MAX_AGE_S - 1
+        worker.os.utime(worker.HEARTBEAT_FILE, (stale, stale))
+        self.assertFalse(worker.is_alive())
+
+    def test_an_idle_loop_beats(self):
+        client = mock.Mock()
+        client.xautoclaim.return_value = ["0-0", [], []]
+        client.xreadgroup.return_value = []
+        with mock.patch.object(worker, "make_redis", return_value=client), \
+             mock.patch.object(worker, "ensure_group"):
+            worker.run(once=True, settings=worker.Settings())
+        self.assertTrue(worker.is_alive())
+
+    def test_a_long_job_keeps_beating(self):
+        settings = worker.Settings(reclaim_idle_ms=300)
+        with worker.keep_claimed(mock.Mock(), settings, "c1", "5-0"):
+            worker.time.sleep(0.4)
+        self.assertTrue(worker.is_alive())
+
+    def test_unwritable_heartbeat_does_not_stop_the_worker(self):
+        with mock.patch.object(worker, "HEARTBEAT_FILE", worker.Path("/nonexistent-dir/alive")):
+            worker.mark_alive()
+            self.assertFalse(worker.is_alive())
+
+
+class DatabaseUrlTest(unittest.TestCase):
+    def test_percent_encoded_credentials_are_decoded(self):
+        dbapi = mock.Mock()
+        pg8000 = mock.Mock(dbapi=dbapi)
+        settings = worker.Settings(database_url="postgres://rotaria_app:p%40ss%2Fw@db:5432/rotaria")
+        with mock.patch.dict("sys.modules", {"pg8000": pg8000, "pg8000.dbapi": dbapi}):
+            worker.make_db(settings)
+        dbapi.connect.assert_called_once_with(
+            user="rotaria_app", password="p@ss/w", host="db", port=5432, database="rotaria"
+        )

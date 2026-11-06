@@ -23,8 +23,11 @@ services:
       POSTGRES_USER: baca_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: project_baca_db
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}
     volumes:
       - pgdata_prod:/var/lib/postgresql/data
+      # Runs only on an empty volume; an existing one takes `make prod-db-role`.
+      - ./scripts/postgres_app_role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U baca_user -d project_baca_db"]
       interval: 10s
@@ -32,7 +35,8 @@ services:
       retries: 5
 
   # One-off migration runner (make prod-migrate): the migrations and the
-  # runner of the checked-out tag, mounted read-only.
+  # runner of the checked-out tag, mounted read-only. It connects as the
+  # schema owner; server and worker connect as rotaria_app.
   migrate:
     image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
     profiles: ["ops"]
@@ -133,7 +137,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set a 32+ char secret}
       JWT_ACCESS_EXPIRY_MINUTES: 60
       JWT_REFRESH_EXPIRY_DAYS: 14
-      DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+      DATABASE_URL: postgres://rotaria_app:${POSTGRES_APP_PASSWORD}@postgres:5432/project_baca_db
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_REGION: ${S3_REGION:-auto}
@@ -153,12 +157,6 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
       EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-gemini-embedding-2}
       EMBEDDING_DIMENSION: 768
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health | grep -q '\"status\":\"healthy\"' || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
 
   worker:
     image: ghcr.io/aprxty3/project-baca/worker:${ROTARIA_VERSION:?set ROTARIA_VERSION}
@@ -183,7 +181,7 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      DATABASE_URL: postgres://baca_user:${POSTGRES_PASSWORD}@postgres:5432/project_baca_db
+      DATABASE_URL: postgres://rotaria_app:${POSTGRES_APP_PASSWORD}@postgres:5432/project_baca_db
       S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
       S3_REGION: ${S3_REGION:-auto}
       S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?set S3 keys}
@@ -203,6 +201,7 @@ services:
     logging: *logging
     mem_limit: 128m
     cpus: 0.5
+    networks: [default, tunnel]
     depends_on:
       - server
     ports:
@@ -220,6 +219,9 @@ services:
 networks:
   store:
     internal: true
+  # The edge's only way in from the Cloudflare Tunnel connector, which must not
+  # reach the server past the edge's client-address rewrite.
+  tunnel:
 
 volumes:
   pgdata_prod:

@@ -32,3 +32,11 @@ RUN make build-web-edge
 FROM caddy:2-alpine@sha256:e70b164da81ef698b3ad19af799ea6086ce6d9e48ed4079eb9fe26f6fbf14ee5
 COPY Caddyfile.prod /etc/caddy/Caddyfile
 COPY --from=webbuild /app/crates/web/dist /srv/web
+# Caddy keeps certificates and autosaved config under /data and /config (the
+# compose volumes take this ownership when first created); the binary carries
+# cap_net_bind_service, so it binds ports 80 and 443 without root.
+RUN mkdir -p /data /config && chown 10001:10001 /data /config
+USER 10001:10001
+# The admin API answers only inside the container.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO /dev/null http://127.0.0.1:2019/config/ || exit 1
