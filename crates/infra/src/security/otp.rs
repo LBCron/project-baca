@@ -49,9 +49,10 @@ fn redis_error(context: &str, e: redis::RedisError) -> AppError {
 
 /// Computes SHA-256 hex digest of OTP string
 pub fn hash_otp(otp: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(otp.as_bytes());
-    format!("{:x}", hasher.finalize())
+    Sha256::digest(otp.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Generates a cryptographically secure 6-digit numeric OTP string
