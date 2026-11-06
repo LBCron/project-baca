@@ -90,8 +90,15 @@ launch() {
 	local svc=$1
 	shift
 	: >"$STATE/$svc.log"
-	# The service must not inherit the controller lock, or it would hold it for life.
-	setsid "$@" >>"$STATE/$svc.log" 2>&1 </dev/null {LOCK_FD}>&- &
+	# The service outlives this call, so it keeps no descriptor beyond stdio: an
+	# inherited flock (the controller's or a caller's) would be held for life.
+	(
+		for fd in /proc/self/fd/*; do
+			fd=${fd##*/}
+			if ((fd > 2)); then eval "exec $fd>&-"; fi
+		done
+		exec setsid "$@"
+	) >>"$STATE/$svc.log" 2>&1 </dev/null &
 	echo $! >"$STATE/$svc.pgid"
 	echo "$ROOT" >"$STATE/$svc.owner"
 }
