@@ -41,13 +41,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 validator = { version = "0.21", features = ["derive"] }
 utoipa = { version = "6.0", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "10.0", features = ["axum"] }
-argon2 = "0.5"
+argon2 = "0.6"
 aws-credential-types = "1"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
-sha2 = "0.10"
+sha2 = "0.11"
 # HS256 only, on the aws-lc-rs backend rustls already links.
 jsonwebtoken = { version = "10.3", default-features = false, features = ["aws_lc_rs"] }
-rand = "0.8"
+rand = "0.10"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 # Same TLS stack as reqwest (rustls + webpki roots + ring), no OpenSSL.
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "builder", "hostname", "tokio1", "tokio1-rustls-tls"] }

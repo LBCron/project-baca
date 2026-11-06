@@ -1,9 +1,6 @@
 //! Argon2id password hashing and verification complying with OWASP guidelines.
 
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2, Params,
-};
+use argon2::{Argon2, Params, PasswordHasher, PasswordVerifier};
 use shared::AppError;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,23 +19,18 @@ pub fn hash_password(password: &str) -> Result<String, AppError> {
     let params = Params::new(19456, 2, 1, None)
         .map_err(|e| AppError::Internal(format!("Invalid Argon2 parameters: {e}")))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-    let salt = SaltString::generate(&mut OsRng);
-
+    // 16-byte salt from the OS (argon2's default `getrandom` feature).
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| AppError::Internal(format!("Password hashing failed: {e}")))
 }
 
 /// Verify a plaintext password against an Argon2id hash string
 pub fn verify_password(password: &str, password_hash: &str) -> Result<bool, AppError> {
-    let parsed_hash = match PasswordHash::new(password_hash) {
-        Ok(h) => h,
-        Err(_) => return Ok(false),
-    };
-
+    // Cost parameters come from the PHC string; an unparsable one is a miss.
     Ok(Argon2::default()
-        .verify_password(password.as_bytes(), &parsed_hash)
+        .verify_password(password.as_bytes(), password_hash)
         .is_ok())
 }
 
@@ -125,6 +117,27 @@ mod tests {
     fn test_verify_password_invalid_hash() {
         let valid = verify_password("Password", "invalid_hash_string").expect("Should not panic");
         assert!(!valid);
+    }
+
+    /// Hash written by argon2 0.5 before the crate upgrade; stored hashes
+    /// must keep verifying across argon2 releases.
+    const LEGACY_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$+rRVNarSMsOtcCUyWVMhzg$gtawrOhAO0n1vrR8hxub3Ybi/oZ0jLF6JgXYf835fAo";
+
+    #[test]
+    fn hashes_from_earlier_releases_still_verify() {
+        assert!(verify_password("Rotaria-lama-0.5!", LEGACY_PHC).expect("legacy hash parses"));
+        assert!(!verify_password("Rotaria-lama-0.5?", LEGACY_PHC).expect("legacy hash parses"));
+    }
+
+    #[test]
+    fn new_hashes_keep_parameters_and_salt_length() {
+        let hash = hash_password("Whatever123!").expect("Hashing should succeed");
+        let salt_and_digest = hash
+            .strip_prefix("$argon2id$v=19$m=19456,t=2,p=1$")
+            .expect("same algorithm, version and cost");
+        let (salt, digest) = salt_and_digest.split_once('$').expect("salt then digest");
+        assert_eq!(salt.len(), 22, "16-byte salt, unpadded base64");
+        assert_eq!(digest.len(), 43, "32-byte output, unpadded base64");
     }
 
     #[test]

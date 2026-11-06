@@ -5,7 +5,9 @@
 //! code (three misses lock it for five minutes) and per address over a day,
 //! and the codes mailed to one address are capped per hour and per day.
 
-use rand::Rng;
+use rand::rand_core::UnwrapErr;
+use rand::rngs::SysRng;
+use rand::RngExt;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -49,15 +51,17 @@ fn redis_error(context: &str, e: redis::RedisError) -> AppError {
 
 /// Computes SHA-256 hex digest of OTP string
 pub fn hash_otp(otp: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(otp.as_bytes());
-    format!("{:x}", hasher.finalize())
+    Sha256::digest(otp.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Generates a cryptographically secure 6-digit numeric OTP string
 pub fn generate_numeric_otp() -> String {
-    let mut rng = rand::rngs::OsRng;
-    let otp: u32 = rng.gen_range(100000..=999999);
+    // Straight from the OS, which panics only when the OS has no entropy,
+    // as rand 0.8's OsRng did.
+    let otp: u32 = UnwrapErr(SysRng).random_range(100000..=999999);
     format!("{:06}", otp)
 }
 
@@ -217,6 +221,24 @@ mod tests {
         let hash2 = hash_otp(otp);
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 64);
+    }
+
+    #[test]
+    fn otp_hash_is_lowercase_sha256_hex() {
+        assert_eq!(
+            hash_otp("123456"),
+            "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92"
+        );
+    }
+
+    #[test]
+    fn otps_are_six_digits_without_a_leading_zero() {
+        for _ in 0..1000 {
+            let otp = generate_numeric_otp();
+            assert_eq!(otp.len(), 6);
+            assert!(otp.bytes().all(|b| b.is_ascii_digit()));
+            assert_ne!(otp.as_bytes()[0], b'0');
+        }
     }
 
     #[test]
