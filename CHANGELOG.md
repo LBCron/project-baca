@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Added
+- `make prod-provision HOST=` hardens the production host in place with `scripts/provision_host.sh`: SSH by key only without root login, ufw admitting only SSH and Beszel from the owner's hub (rules for 80, 443, 5432, and 6379 removed), unattended security upgrades with a 02:00 WIB reboot window, time sync, swap, Docker from its own repository, a `deploy` user without sudo whose key runs only a forced command, and `.env.production` at mode 0600. It verifies after every run, `CHECK=1` only verifies, and a rerun changes nothing (GUIDE section 8).
+
 ### Changed
 - Dependencies: redis 1.8 (from 0.27). Stream names, entry fields, the consumer group, and every Redis key and TTL are unchanged, so the worker needs no update.
 - The production compose is one file for the one production host (ADR-46). Postgres, Redis, and the bundled MinIO sit on an internal network with no route out and no published port, joined only by server, worker, and migrate; the edge cannot reach them. Redis demands a password: set `REDIS_PASSWORD` in `.env.production` (`openssl rand -hex 32`) before the next `make prod-up`. The edge runs the GHCR release image of `ROTARIA_VERSION` like server and worker, so `make prod-pull` fetches all three and a host never builds the web bundle. Every service has a memory and CPU limit (ARCHITECTURE section 8). `.env.production.example` now names `rotaria.site`.
