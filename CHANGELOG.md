@@ -4,6 +4,8 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-11-07
+
 ### Added
 - Release images for `linux/arm64` next to `linux/amd64`, so the server, worker, and edge run on the arm64 production host (Oracle Ampere A1). Each architecture builds on a native runner and the release joins them into one multi-arch tag with the same SBOM, provenance, and attestation.
 

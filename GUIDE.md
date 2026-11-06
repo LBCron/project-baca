@@ -170,8 +170,15 @@ Cutting a release:
 Verifying a released image (anonymous pull works while the packages are public; ADR-40):
 
 ```bash
-gh attestation verify oci://ghcr.io/aprxty3/project-baca/server:X.Y.Z -R aprxty3/project-baca
-docker buildx imagetools inspect ghcr.io/aprxty3/project-baca/server:X.Y.Z --format '{{json .SBOM}}'
+for i in server worker edge; do
+  ref=ghcr.io/aprxty3/project-baca/$i:X.Y.Z
+  docker buildx imagetools inspect "$ref"   # lists linux/amd64 and linux/arm64
+  gh attestation verify "oci://$ref" -R aprxty3/project-baca
+  for p in linux/amd64 linux/arm64; do
+    docker buildx imagetools inspect "$ref" --format "{{ json (index .SBOM \"$p\") }}" | head -c 120; echo
+    docker buildx imagetools inspect "$ref" --format "{{ json (index .Provenance \"$p\") }}" | head -c 120; echo
+  done
+done
 ```
 
 Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.
