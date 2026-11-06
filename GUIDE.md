@@ -148,6 +148,37 @@ Branches: work lands on `develop`; `main` takes what is ready to release.
 
 Production host: a shallow clone of the deployed tag in `/srv/rotaria/repo` (`git clone --depth 1 --branch vX.Y.Z https://github.com/aprxty3/project-baca.git /srv/rotaria/repo`) holds the compose file, `migrations/`, and `.env.production` with `ROTARIA_VERSION=X.Y.Z`. Deploy: check out the new tag (`git fetch --depth 1 origin tag vX.Y.Z && git checkout vX.Y.Z`), set `ROTARIA_VERSION`, then `make prod-pull prod-migrate prod-up`. Roll back by setting the previous tag and version and running `make prod-pull prod-up`; migrations are expand/contract, so the older server runs on the newer schema. The repository and the GHCR packages are public, so clone and pull need no credentials. When the repository turns private before the beta, the host gets a read-only deploy key for the clone and `docker login ghcr.io` with a `read:packages` token used only by that host, and the packages are republished as private. `make prod-build` builds the same images from the checkout instead, tagged with `ROTARIA_VERSION`.
 
+Host hardening: `make prod-provision HOST=ubuntu@<vps2>` pipes `scripts/provision_host.sh` to the host and runs it as root through passwordless `sudo` from the admin account; it refuses to start when that account has no SSH key. Each run converges, then verifies and exits 1 on a failed check; a second run prints `no change`. `CHECK=1` only verifies. It manages: the drop-in `/etc/ssh/sshd_config.d/00-rotaria.conf` (keys only, no root login, validated with `sshd -t` before a reload that keeps open sessions); the ufw rules below, adding SSH and Beszel before it deletes any rule that allows 80, 443, 5432, or 6379 (a rule that mixes those with a kept port is left for a person and fails the check); `/etc/apt/apt.conf.d/52rotaria-unattended-upgrades`; time sync (chrony, the 26.04 default); a 4 GB `/swapfile` when the host has no swap; Docker from `download.docker.com` when Docker is missing; the `deploy` user; `/srv/rotaria`. It leaves alone every other ufw rule, `/etc/ufw/before.rules` (Oracle's instance-services rules), `/etc/ufw/after.rules` (the ufw-docker `DOCKER-USER` block), and a Docker that is already installed.
+
+| Inbound to VPS-2 | From | Why |
+|---|---|---|
+| `22/tcp` | internet | SSH with keys only, no root login (ADR-47); deploys from GitHub Actions |
+| `45876/tcp` | `10.0.0.100` only | Beszel hub on VPS-1 reaching the agent |
+| anything else | - | denied; the site is reached only through the outbound Cloudflare Tunnel |
+
+Ports published by Docker bypass ufw, and the ufw-docker block admits `10.0.0.0/8` in `DOCKER-USER`, so the production compose publishes no port; the check fails when a container publishes 5432 or 6379.
+
+VCN security list (OCI Console, Networking, the VCN, Security Lists; stateful, egress open for the Tunnel, apt, GHCR, and R2):
+
+| Ingress | Source | Why |
+|---|---|---|
+| TCP 22 | `0.0.0.0/0` | SSH (ADR-47) |
+| TCP 45876 | `10.0.0.100/32` | Beszel |
+| ICMP type 3 code 4 | `0.0.0.0/0` | path MTU discovery (Oracle default) |
+| ICMP type 3 | VCN CIDR | Oracle default |
+
+No ingress for 80, 443, 5432, or 6379.
+
+Fallback when SSH is lost: OCI Console, the instance, Console connection (serial console through Cloud Shell). The serial login asks for a local password, so the admin account keeps one in the owner's password manager (`sudo passwd ubuntu`); SSH still refuses passwords. Without it, reboot from the console and edit the GRUB entry to boot a root shell.
+
+Checks after a run: `make prod-provision HOST=ubuntu@<vps2> CHECK=1`; from outside, `nmap -Pn <public IP>` finds only 22; from VPS-1, `nc -zv -w 3 10.0.0.44 5432` and `6379` fail; Beszel still shows VPS-2.
+
+Reboot window: unattended-upgrades installs Ubuntu security updates daily and, when one needs it, reboots at 19:00 host time (UTC, 02:00 WIB); the stack returns through Docker's restart policies. Docker's own repository is not an unattended origin, so Docker is upgraded by hand at a deploy (`sudo apt-get install --only-upgrade docker-ce docker-ce-cli containerd.io docker-compose-plugin`).
+
+Deploy user: `deploy` has no sudo and a locked password. Every key in `~deploy/.ssh/authorized_keys` starts with `restrict,command="/usr/local/bin/rotaria-deploy"`, so it gets no shell and no forwarding; until the deploy command is installed there, that path holds a placeholder that exits 1. `DEPLOY_PUBKEY='ssh-ed25519 ...'` rewrites the file with that one key.
+
+`.env.production` stays mode 0600 (the script enforces it). Its encrypted copy, `age -r <owner's age public key> .env.production`, lives in R2 at `rotaria-backups/env/env.production.<date>.age`, refreshed after every change; neither copy is ever committed.
+
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and third-party production `image:` carries an `@sha256:` digest (the project's own images go by release tag). Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
 Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, Dependabot version updates open one grouped minor-and-patch pull request per ecosystem against `develop` each Monday (releases at least 7 days old), CodeQL (`.github/workflows/codeql.yml`: Actions, JavaScript, Python, Rust without a build; on pull requests, pushes to `main`, and Mondays) uploads to the Security tab, and an advisory exception in `deny.toml` carries its reason and review date, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).

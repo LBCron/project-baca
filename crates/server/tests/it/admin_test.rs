@@ -1016,7 +1016,7 @@ async fn test_admin_dlq_replay_is_idempotent() {
         .filter(|e| {
             e.map
                 .get("job_id")
-                .and_then(|v| redis::from_redis_value::<String>(v).ok())
+                .and_then(|v| redis::from_redis_value_ref::<String>(v).ok())
                 .as_deref()
                 == Some(job_id.as_str())
         })
@@ -1277,7 +1277,7 @@ async fn test_concurrent_dlq_replays_requeue_once() {
         .filter(|e| {
             e.map
                 .get("job_id")
-                .and_then(|v| redis::from_redis_value::<String>(v).ok())
+                .and_then(|v| redis::from_redis_value_ref::<String>(v).ok())
                 .as_deref()
                 == Some(job_id.as_str())
         })
