@@ -2147,8 +2147,7 @@ async fn test_refresh_of_a_revoked_session_is_refused() {
     let (access, refresh) = provision_verified_user(&harness, &mut redis, "zombie", &ip).await;
     let sid = infra::verify_access_token(&access, harness.state.config.jwt_secret())
         .unwrap()
-        .sid
-        .expect("session id");
+        .sid;
     infra::revoke_session_tokens(&mut redis, sid, 3600)
         .await
         .unwrap();
@@ -2218,10 +2217,7 @@ async fn test_device_sign_out_revokes_every_access_token_of_the_session() {
                 .sid
         })
         .collect();
-    assert!(
-        sids[0].is_some() && sids.iter().all(|s| *s == sids[0]),
-        "{sids:?}"
-    );
+    assert!(sids.iter().all(|s| *s == sids[0]), "{sids:?}");
 
     let (resp, body) = harness
         .send_json_request(login_req(&email, common::PROVISIONED_PASSWORD, &ip))
@@ -2560,11 +2556,14 @@ async fn test_access_token_for_another_audience_gets_a_generic_401() {
         exp: now + 600,
         iat: now,
         jti: Uuid::new_v4(),
-        sid: Some(Uuid::new_v4()),
-        aud: Some("another-api".into()),
+        sid: Uuid::new_v4(),
+        aud: "another-api".into(),
     };
     let token = jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
+        &jsonwebtoken::Header {
+            typ: Some(infra::ACCESS_TOKEN_TYPE.into()),
+            ..jsonwebtoken::Header::default()
+        },
         &claims,
         &jsonwebtoken::EncodingKey::from_secret(harness.state.config.jwt_secret().as_bytes()),
     )
@@ -2588,27 +2587,54 @@ async fn test_access_token_for_another_audience_gets_a_generic_401() {
     );
 }
 
-/// An access token issued before tokens carried `aud` and `typ` keeps
-/// working until it expires, so a deploy signs no reader out.
+/// Only a complete access token is honoured: a validly signed token typed
+/// `JWT`, or missing `aud` or the session id that per-device sign-out
+/// revokes, answers 401, while the same claims complete are accepted.
 #[tokio::test]
-async fn test_access_token_from_before_the_deploy_still_works() {
+async fn test_access_token_without_type_audience_or_session_is_refused() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
     let ip = common::unique_ip("198.18");
-    let (access, refresh) = provision_verified_user(&harness, &mut redis, "legacy", &ip).await;
-    let mut claims =
-        infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
-    claims.aud = None;
-    let legacy = jsonwebtoken::encode(
-        &jsonwebtoken::Header::default(),
-        &claims,
-        &jsonwebtoken::EncodingKey::from_secret(harness.state.config.jwt_secret().as_bytes()),
-    )
-    .unwrap();
-    let resp = harness.send_request(me_req(&legacy)).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let (resp, body) = harness.send_json_request(refresh_req(&refresh, &ip)).await;
-    assert_eq!(resp.status(), StatusCode::OK, "{body}");
+    let (access, _) = provision_verified_user(&harness, &mut redis, "strict", &ip).await;
+    let claims = infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
+    let full = serde_json::to_value(&claims).unwrap();
+    let sign = |typ: &str, claims: &serde_json::Value| {
+        jsonwebtoken::encode(
+            &jsonwebtoken::Header {
+                typ: Some(typ.into()),
+                ..jsonwebtoken::Header::default()
+            },
+            claims,
+            &jsonwebtoken::EncodingKey::from_secret(harness.state.config.jwt_secret().as_bytes()),
+        )
+        .unwrap()
+    };
+    let without = |claim: &str| {
+        let mut claims = full.clone();
+        claims.as_object_mut().unwrap().remove(claim);
+        claims
+    };
+
+    let resp = harness
+        .send_request(me_req(&sign(infra::ACCESS_TOKEN_TYPE, &full)))
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the complete token re-signed"
+    );
+    for (case, token) in [
+        ("typ JWT", sign("JWT", &full)),
+        ("no aud", sign(infra::ACCESS_TOKEN_TYPE, &without("aud"))),
+        ("no sid", sign(infra::ACCESS_TOKEN_TYPE, &without("sid"))),
+    ] {
+        let (resp, body) = harness.send_json_request(me_req(&token)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{case}");
+        assert_eq!(
+            body["error"]["message"], "Invalid or expired access token",
+            "{case}"
+        );
+    }
     harness.cleanup().await;
 }
 

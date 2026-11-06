@@ -24,7 +24,7 @@ pub struct AuthUser {
     pub email: String,
     pub role: String,
     pub jti: Uuid,
-    pub sid: Option<Uuid>,
+    pub sid: Uuid,
     pub exp: usize,
 }
 
@@ -71,15 +71,13 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
             )));
         }
 
-        if let Some(sid) = claims.sid {
-            if is_session_revoked(&mut redis_conn, sid)
-                .await
-                .map_err(|e| auth_state_unavailable("Session check failed", e))?
-            {
-                return Err(HttpError(AppError::Unauthorized(
-                    "Access token has been revoked. Please log in again.".to_string(),
-                )));
-            }
+        if is_session_revoked(&mut redis_conn, claims.sid)
+            .await
+            .map_err(|e| auth_state_unavailable("Session check failed", e))?
+        {
+            return Err(HttpError(AppError::Unauthorized(
+                "Access token has been revoked. Please log in again.".to_string(),
+            )));
         }
 
         if is_user_token_revoked(&mut redis_conn, claims.sub, claims.iat)

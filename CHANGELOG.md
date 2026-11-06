@@ -6,6 +6,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Security
 - Production refuses to boot when `CORS_ALLOWED_ORIGINS` holds `*`, `null`, an origin with a path or trailing slash, or a plain `http://` origin other than the Tauri app's `http://tauri.localhost`. Cross-origin preflights are cached for two hours (`Access-Control-Max-Age: 7200`), and the app can read `x-request-id` and `retry-after` from cross-origin responses. No response sets a cookie or `Access-Control-Allow-Credentials`; sessions stay bearer-only (ADR-48).
+- An access token is accepted only with `typ: at+jwt`, `aud`, `exp`, and a session id (`sid`); a validly signed token typed `JWT` or missing `aud` or `sid` answers 401, so signing a device out revokes every token it holds. Tokens issued before 0.1.2 no longer work; no production deploy has issued any.
 
 ## [0.1.3] — 2026-11-07
 

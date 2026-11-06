@@ -560,10 +560,8 @@ pub async fn logout(
                     0
                 };
                 let _ = blacklist_access_token(&mut redis_conn, claims.jti, remaining).await;
-                if let Some(sid) = claims.sid {
-                    let lifetime = state.config.auth.refresh_expiry_days * 86400;
-                    let _ = revoke_session_tokens(&mut redis_conn, sid, lifetime).await;
-                }
+                let lifetime = state.config.auth.refresh_expiry_days * 86400;
+                let _ = revoke_session_tokens(&mut redis_conn, claims.sid, lifetime).await;
             }
         }
     }
@@ -865,7 +863,7 @@ pub async fn list_my_sessions(
                 created_at: chrono::DateTime::from_timestamp(r.created_at, 0).unwrap_or_default(),
                 last_seen_at: chrono::DateTime::from_timestamp(r.last_seen_at, 0)
                     .unwrap_or_default(),
-                current: r.jti == auth.jti || Some(r.sid) == auth.sid,
+                current: r.jti == auth.jti || r.sid == auth.sid,
             },
             None => SessionDto {
                 id,
