@@ -5,7 +5,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ## [Unreleased]
 
 ### Added
-- Release images for `linux/arm64` next to `linux/amd64`, so the server, worker, and edge run on the arm64 production hosts (Oracle Ampere A1). Each architecture builds on a native runner and the release joins them into one multi-arch tag with the same SBOM, provenance, and attestation.
+- Release images for `linux/arm64` next to `linux/amd64`, so the server, worker, and edge run on the arm64 production host (Oracle Ampere A1). Each architecture builds on a native runner and the release joins them into one multi-arch tag with the same SBOM, provenance, and attestation.
 
 ### Changed
 - Dependencies: leptos, leptos_router, and leptos_meta 0.8 together (one reactive runtime in the bundle), the Rust 1.98 build image, pg8000 1.31.6, rstest 0.28, and a patch group that drops the unmaintained `pin-utils` (RUSTSEC-2026-0441). Dependabot now groups the leptos family and holds sea-orm 2 until pgvector supports sqlx 0.9.
