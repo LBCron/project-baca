@@ -23,8 +23,8 @@ Open-access e-reader for public-domain literature: a paginated reader that turns
 cp .env.example .env            # SMTP_SECURITY=none keeps Mailpit working
 make db-up                      # Postgres, Redis, MinIO, Mailpit
 make migrate-up seed-dev        # schema plus four CC0 books
-make dev-server                 # API on :8080
-make dev-web                    # PWA on :3000
+make dev backend                # API on :8080
+make dev frontend               # PWA on :3000
 make worker-install worker      # optional: ingestion worker for EPUB uploads
 ```
 

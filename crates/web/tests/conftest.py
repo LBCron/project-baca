@@ -1,7 +1,7 @@
 """Shared pytest fixtures for the Rotaria web suite.
 
-Requires: `make db-up`, `make seed-dev`, Axum on :8080 (`make dev-server`),
-Trunk on :3000 (`make dev-web`).
+Requires: `make seed-dev` and `make dev backend frontend` (Axum on :8080,
+Trunk on :3000).
 """
 import json
 import re
