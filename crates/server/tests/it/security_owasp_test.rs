@@ -833,49 +833,59 @@ async fn test_counter_keys_always_expire() {
 }
 
 /// A revoked token earns no per-user AI bucket: the hit lands in the guest
-/// bucket of the caller's address.
+/// bucket of the caller's address, whether the token was logged out or its
+/// device was signed out from another one (session revoked, jti not listed).
 #[tokio::test]
 async fn test_revoked_token_counts_in_the_guest_ai_bucket() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_test_ip();
-    let (access, refresh) =
-        common::provision_verified_user(&harness, &mut redis, "aibucket", &ip).await;
-    let claims = infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
-    let logout = Request::builder()
-        .method("POST")
-        .uri("/api/v1/auth/logout")
-        .header(common::CLIENT_IP_HEADER, &ip)
-        .header("authorization", format!("Bearer {access}"))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({ "refresh_token": refresh }).to_string(),
-        ))
-        .unwrap();
-    assert_eq!(harness.send_request(logout).await.status(), StatusCode::OK);
+    for session_only in [false, true] {
+        let ip = unique_test_ip();
+        let (access, refresh) =
+            common::provision_verified_user(&harness, &mut redis, "aibucket", &ip).await;
+        let claims =
+            infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
+        if session_only {
+            infra::revoke_session_tokens(&mut redis, claims.sid, 3600)
+                .await
+                .unwrap();
+        } else {
+            let logout = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/logout")
+                .header(common::CLIENT_IP_HEADER, &ip)
+                .header("authorization", format!("Bearer {access}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "refresh_token": refresh }).to_string(),
+                ))
+                .unwrap();
+            assert_eq!(harness.send_request(logout).await.status(), StatusCode::OK);
+        }
 
-    let user_key = format!("rate_limit:ai:user:{}", claims.sub);
-    let guest_key = format!("rate_limit:ai:guest:{ip}");
-    let _: () = redis.del(&[&user_key, &guest_key]).await.unwrap();
-    let search = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/api/v1/books/{}/quotes/search",
-            uuid::Uuid::new_v4()
-        ))
-        .header(common::CLIENT_IP_HEADER, &ip)
-        .header("authorization", format!("Bearer {access}"))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({ "query": "laut" }).to_string(),
-        ))
-        .unwrap();
-    harness.send_request(search).await;
+        let user_key = format!("rate_limit:ai:user:{}", claims.sub);
+        let guest_key = format!("rate_limit:ai:guest:{ip}");
+        let _: () = redis.del(&[&user_key, &guest_key]).await.unwrap();
+        let search = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/books/{}/quotes/search",
+                uuid::Uuid::new_v4()
+            ))
+            .header(common::CLIENT_IP_HEADER, &ip)
+            .header("authorization", format!("Bearer {access}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "query": "laut" }).to_string(),
+            ))
+            .unwrap();
+        harness.send_request(search).await;
 
-    let user_hits: Option<i64> = redis.get(&user_key).await.unwrap();
-    let guest_hits: Option<i64> = redis.get(&guest_key).await.unwrap();
-    assert_eq!(user_hits, None);
-    assert_eq!(guest_hits, Some(1));
+        let user_hits: Option<i64> = redis.get(&user_key).await.unwrap();
+        let guest_hits: Option<i64> = redis.get(&guest_key).await.unwrap();
+        assert_eq!(user_hits, None, "session_only={session_only}");
+        assert_eq!(guest_hits, Some(1), "session_only={session_only}");
+    }
     harness.cleanup().await;
 }
 

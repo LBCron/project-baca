@@ -11,8 +11,8 @@ use axum::{
     Json,
 };
 use infra::{
-    hit_window, is_token_blacklisted, is_user_token_revoked, verify_access_token, Claims,
-    ServerConfig,
+    hit_window, is_session_revoked, is_token_blacklisted, is_user_token_revoked,
+    verify_access_token, Claims, ServerConfig,
 };
 use shared::{ApiResponse, AppError};
 use std::net::IpAddr;
@@ -384,8 +384,9 @@ async fn bearer_user(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
     token_still_live(state, &claims).await.then_some(claims.sub)
 }
 
-/// False when the token was blacklisted or its user revoked after issue.
-/// A Redis error also answers false; `enforce` then fails closed on its own.
+/// False when the token was blacklisted, its device signed out, or its user
+/// revoked after issue: the same checks as the bearer extractor. A Redis
+/// error also answers false; `enforce` then fails closed on its own.
 async fn token_still_live(state: &AppState, claims: &Claims) -> bool {
     let Ok(mut redis) = state.get_redis_conn().await else {
         return false;
@@ -393,10 +394,11 @@ async fn token_still_live(state: &AppState, claims: &Claims) -> bool {
     matches!(
         is_token_blacklisted(&mut redis, claims.jti).await,
         Ok(false)
-    ) && matches!(
-        is_user_token_revoked(&mut redis, claims.sub, claims.iat).await,
-        Ok(false)
-    )
+    ) && matches!(is_session_revoked(&mut redis, claims.sid).await, Ok(false))
+        && matches!(
+            is_user_token_revoked(&mut redis, claims.sub, claims.iat).await,
+            Ok(false)
+        )
 }
 
 /// Caps unauthenticated catalog and insight reads per IP. Mounted only when
