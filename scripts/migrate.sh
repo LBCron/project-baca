@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     version VARCHAR(100) PRIMARY KEY,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Default privileges hand every new table to the production app role; the
+-- ledger stays the owner's (scripts/postgres_app_role.sh). No-op in dev.
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'rotaria_app') THEN
+        REVOKE ALL ON schema_migrations FROM rotaria_app;
+    END IF;
+END
+$$;
 SQL
 }
 

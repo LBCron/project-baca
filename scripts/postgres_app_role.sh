@@ -8,12 +8,14 @@ set -euo pipefail
 #
 # Runs from /docker-entrypoint-initdb.d on an empty volume, and through
 # `make prod-db-role` on an existing one; safe to rerun, and a rerun applies
-# a changed POSTGRES_APP_PASSWORD.
+# a changed POSTGRES_APP_PASSWORD. The password reaches psql through the
+# environment (\getenv), never its argv, which `ps` on the host shows.
 
 : "${POSTGRES_USER:?}" "${POSTGRES_DB:?}" "${POSTGRES_APP_PASSWORD:?set POSTGRES_APP_PASSWORD}"
 
 psql -v ON_ERROR_STOP=1 -X -q --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-    -v owner="$POSTGRES_USER" -v db="$POSTGRES_DB" -v app_password="$POSTGRES_APP_PASSWORD" <<'SQL'
+    -v owner="$POSTGRES_USER" -v db="$POSTGRES_DB" <<'SQL'
+\getenv app_password POSTGRES_APP_PASSWORD
 SELECT 'CREATE ROLE rotaria_app' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'rotaria_app') \gexec
 ALTER ROLE rotaria_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
     PASSWORD :'app_password';
@@ -26,5 +28,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rotaria_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
     GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO rotaria_app;
+-- The migration ledger stays the owner's: an app that could delete its rows
+-- would make the next run reapply or skip migrations (scripts/migrate.sh
+-- revokes it again when it creates the table on a new volume).
+SELECT 'REVOKE ALL ON schema_migrations FROM rotaria_app'
+WHERE to_regclass('public.schema_migrations') IS NOT NULL \gexec
 SQL
 echo "rotaria_app ready on ${POSTGRES_DB}."

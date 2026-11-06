@@ -288,8 +288,10 @@ prod-migrate:
 
 # rotaria_app, the role server and worker use, on a database volume that
 # existed before it (a new volume gets it at init); rerun after changing
-# POSTGRES_APP_PASSWORD.
+# POSTGRES_APP_PASSWORD. `up` first recreates postgres when its environment
+# or mounts changed, so the script runs with the current password.
 prod-db-role:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d --wait postgres
 	@docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres /docker-entrypoint-initdb.d/10-app-role.sh
 
 prod-migrate-status:
