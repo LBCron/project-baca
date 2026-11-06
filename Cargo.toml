@@ -38,7 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-validator = { version = "0.19", features = ["derive"] }
+validator = { version = "0.21", features = ["derive"] }
 utoipa = { version = "6.0", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-swagger-ui = { version = "10.0", features = ["axum"] }
 argon2 = "0.5"
