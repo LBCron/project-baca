@@ -792,6 +792,28 @@ mod tests {
         assert!(token.len() > 30);
     }
 
+    #[test]
+    fn refresh_tokens_are_a_uuid_and_sixteen_hex_digits() {
+        let token = generate_refresh_token();
+        let (uuid, suffix) = token
+            .strip_prefix("rt_")
+            .and_then(|rest| rest.rsplit_once('_'))
+            .expect("rt_<uuid>_<hex>");
+        assert!(Uuid::parse_str(uuid).is_ok());
+        assert_eq!(suffix.len(), 16);
+        assert!(suffix
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    }
+
+    #[test]
+    fn session_ids_are_lowercase_sha256_hex_of_the_token() {
+        assert_eq!(
+            session_id("123456"),
+            "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92"
+        );
+    }
+
     const SECRET: &str = "super-secret-test-jwt-key-minimum-32-chars!";
 
     fn signed(header: &Header, aud: Option<&str>) -> String {
