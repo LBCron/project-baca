@@ -98,6 +98,7 @@ adb shell am start -a android.intent.action.VIEW -d rotaria://book/<book uuid> i
 | `make test-live` | the 9 ignored live tests, single-threaded | `db-up` |
 | `make test-performance`, `make test-performance-release` | 4 p95 latency benchmarks | `db-up`, idle machine |
 | `make test-load-stress` | 200 concurrent tasks and rate-limit saturation | `db-up` |
+| `make test-edge-ip` | `Caddyfile.prod` in Docker: a tunnel-subnet peer names the client through `CF-Connecting-IP`, any other peer (another private subnet included) is the client, no other address header reaches the API | Docker |
 | `make worker-test`, `make worker-test-live` | 27 worker unit tests; dead letters, claim refresh, and SIGTERM release on probe streams | nothing; `db-up` |
 | `make test-web` | `cargo test -p web --lib` plus Playwright e2e, component, integration | `db-up`, API on :8080, web on :3000, Mailpit |
 | `make test-web-full` | builds the release bundle into `target/web-release` (size budget, no inline script), then adds visual goldens, axe a11y, and Firefox smoke | same; serve the release bundle with `make dev-web-release` |
@@ -216,4 +217,4 @@ done
 
 Each image carries an SBOM and SLSA provenance in `mode=max`, which records build args, so no secret is ever passed as one.
 
-The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain set through `DOMAIN`.
+The edge image is built with `API_BASE_URL=/api/v1`, so one image serves any domain.

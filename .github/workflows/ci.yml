@@ -117,6 +117,8 @@ jobs:
       - uses: ./.github/actions/dev-stack
       - name: Migration runner (failed, concurrent, repeated runs)
         run: make test-migrate
+      - name: Edge client address (Caddyfile.prod in Docker)
+        run: make test-edge-ip
       - name: Domain, infra, and server unit tests
         run: |
           make test-domain

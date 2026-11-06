@@ -92,6 +92,11 @@ migrate-status:
 test-migrate:
 	@./scripts/test_migrate.sh
 
+# Caddyfile.prod's client address in Docker: CF-Connecting-IP only from the
+# tunnel subnet, the peer otherwise, no other address header upstream.
+test-edge-ip:
+	@./scripts/test_edge_client_ip.sh
+
 # Test suites
 test: test-all
 
@@ -330,5 +335,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
