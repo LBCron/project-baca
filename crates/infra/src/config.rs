@@ -5,6 +5,20 @@ use serde::{Deserialize, Serialize};
 use shared::AppError;
 use std::env;
 
+/// Origins of the Tauri app's WebView: `tauri://` on macOS, iOS, and Linux,
+/// `http://tauri.localhost` on Windows and Android.
+const TAURI_ORIGINS: [&str; 2] = ["tauri://localhost", "http://tauri.localhost"];
+
+/// Whether `origin` is a Tauri origin or exactly how a browser serializes an
+/// https origin (lowercase host, no default port, path, slash, or userinfo),
+/// so an allowlist entry can only ever match one real origin.
+fn is_production_origin(origin: &str) -> bool {
+    TAURI_ORIGINS.contains(&origin)
+        || reqwest::Url::parse(origin).is_ok_and(|url| {
+            url.scheme() == "https" && url.origin().ascii_serialization() == origin
+        })
+}
+
 /// Core Axum HTTP Server configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerConfig {
@@ -485,6 +499,18 @@ impl AppConfig {
                 "SMTP_SECURITY=none is refused in production: OTP codes and SMTP credentials would cross the network in cleartext".to_string(),
             ));
         }
+        if self.is_production() {
+            if let Some(origin) = self
+                .server
+                .cors_allowed_origins
+                .iter()
+                .find(|o| !is_production_origin(o))
+            {
+                return Err(AppError::ValidationError(format!(
+                    "CORS_ALLOWED_ORIGINS entry '{origin}' is refused in production: list exact https origins (no '*', 'null', path, trailing slash, or plain http) plus the Tauri origins {TAURI_ORIGINS:?}"
+                )));
+            }
+        }
         if self.is_production()
             && (!self.server.trust_proxy_headers || self.server.trusted_ip_header.is_empty())
         {
@@ -616,6 +642,13 @@ mod tests {
         config.server.env = "production".to_string();
         config.server.trust_proxy_headers = true;
         config.server.public_rate_limit_per_minute = 600;
+        config.server.cors_allowed_origins = [
+            "https://rotaria.site",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ]
+        .map(String::from)
+        .to_vec();
         config.auth.jwt_secret = "a".repeat(48);
         config.email.otp_hourly_budget = 100;
         config.ai.daily_budget = 5000;
@@ -680,6 +713,48 @@ mod tests {
         let mut config = production();
         config.server.trusted_ip_header = String::new();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn production_cors_accepts_exact_origins_only() {
+        for good in [
+            "https://rotaria.site",
+            "https://staging.rotaria.site:8443",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ] {
+            assert!(is_production_origin(good), "{good}");
+        }
+        for bad in [
+            "*",
+            "null",
+            "https://rotaria.site/",
+            "https://rotaria.site/api",
+            "https://rotaria.site:443",
+            "https://Rotaria.site",
+            "https://user@rotaria.site",
+            "https://rotaria.site?x=1",
+            "http://rotaria.site",
+            "http://localhost:3000",
+            "tauri://localhost/",
+            "rotaria.site",
+            "",
+        ] {
+            assert!(!is_production_origin(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn production_refuses_a_loose_cors_entry_and_development_does_not() {
+        for bad in ["*", "https://rotaria.site/"] {
+            let mut config = production();
+            config.server.cors_allowed_origins.push(bad.to_string());
+            let err = config.validate().unwrap_err().to_string();
+            assert!(err.contains("CORS_ALLOWED_ORIGINS"), "{err}");
+        }
+        let mut dev = AppConfig::default();
+        dev.server.cors_allowed_origins.push("*".to_string());
+        assert!(dev.validate().is_ok(), "localhost origins in development");
     }
 
     #[test]

@@ -443,7 +443,8 @@ fn swagger_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
 /// Assembles Axum Router with Swagger UI, sub-routers, and middleware pipeline
 pub fn create_app(state: Arc<AppState>) -> Router {
     // Browsers only: origins, methods, and headers restricted. Any other
-    // origin gets no ACAO header, so credentialed cross-site reads fail closed.
+    // origin gets no ACAO header. No credentials mode: auth is a bearer
+    // header, never a cookie, so a cross-site request carries no credential.
     let allowed_origins = state.config.server.cors_allowed_origins.clone();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
@@ -464,7 +465,10 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             axum::http::header::AUTHORIZATION,
             axum::http::header::CONTENT_TYPE,
             REQUEST_ID_HEADER.clone(),
-        ]);
+        ])
+        // Two hours is Chromium's ceiling; the app then skips a preflight per call.
+        .max_age(std::time::Duration::from_secs(7200))
+        .expose_headers([REQUEST_ID_HEADER.clone(), axum::http::header::RETRY_AFTER]);
 
     let auth_router = routes::credential_routes()
         .layer(axum_mw::from_fn_with_state(

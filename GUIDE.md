@@ -39,7 +39,7 @@ Credentials and bucket names are in `.env.example`. At boot the server checks bo
 | Variable | Default | Meaning |
 |---|---|---|
 | `APP_ENV`, `APP_HOST`, `APP_PORT` | `development`, `0.0.0.0`, `8080` | `production` refuses the default JWT secret and unmounts Swagger; `.env.example` sets `APP_HOST=127.0.0.1` so the dev API stays off the network (the Android emulator reaches it at 10.0.2.2), while the server image keeps `0.0.0.0` |
-| `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist; the last two are the Tauri app WebView origins |
+| `CORS_ALLOWED_ORIGINS` | localhost:3000 origins, `tauri://localhost`, `http://tauri.localhost` | comma-separated allowlist of exact origins; the last two are the Tauri app WebView origins. `production` refuses `*`, `null`, a path or trailing slash, and plain `http://` other than `http://tauri.localhost`; the production compose sets `https://${DOMAIN}` and the two Tauri origins |
 | `LOG_FORMAT` | `text` | `json` for NDJSON logs |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_IP_HEADER` | `false`, `x-forwarded-for` | with trust on, the client address is read from that one header only (`cf-connecting-ip` behind Cloudflare) |
 | `PUBLIC_RATE_LIMIT_PER_MINUTE` | `0` (off) | per-client cap on unauthenticated reads; production compose sets 600 |
