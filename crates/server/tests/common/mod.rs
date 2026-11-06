@@ -481,7 +481,7 @@ pub fn redis_url_via(config: &AppConfig, port: u16) -> String {
 #[allow(dead_code)]
 pub fn redis_upstream(config: &AppConfig) -> String {
     let client = redis::Client::open(config.redis.url.as_str()).expect("valid REDIS_URL");
-    match &client.get_connection_info().addr {
+    match client.get_connection_info().addr() {
         redis::ConnectionAddr::Tcp(host, port) => format!("{host}:{port}"),
         other => panic!("relay supports plain TCP Redis only, got {other:?}"),
     }

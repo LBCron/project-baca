@@ -7,6 +7,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 ### Added
 - `make prod-provision HOST=` hardens the production host in place with `scripts/provision_host.sh`: SSH by key only without root login, ufw admitting only SSH and Beszel from the owner's hub (rules for 80, 443, 5432, and 6379 removed), unattended security upgrades with a 02:00 WIB reboot window, time sync, swap, Docker from its own repository, a `deploy` user without sudo whose key runs only a forced command, and `.env.production` at mode 0600. It verifies after every run, `CHECK=1` only verifies, and a rerun changes nothing (GUIDE section 8).
 
+### Changed
+- Dependencies: redis 1.8 (from 0.27). Stream names, entry fields, the consumer group, and every Redis key and TTL are unchanged, so the worker needs no update.
+
 ## [0.1.3] — 2026-11-07
 
 ### Added
