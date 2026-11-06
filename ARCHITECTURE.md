@@ -123,7 +123,23 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 ## 8. Deployment
 
-- `docker-compose.prod.yml` with `.env.production.example`: postgres, redis, server, worker, and edge (Caddy on 80 and 443 TCP and UDP), all on the default compose network, plus MinIO behind the `minio` profile for a host without R2; least-privilege roles, keys, and networks are issue #47. Server and worker run the GHCR release images of `ROTARIA_VERSION` (`build:` stays for `make prod-build`) and get 30 s to drain on stop; Redis writes an append-only file (`everysec`); every service logs through the rotating `local` driver. Targets: `make prod-pull`, `prod-build`, `prod-up`, `prod-down`, `prod-logs`.
+- One `docker-compose.prod.yml` with `.env.production.example` runs the whole production host (ADR-46): postgres, redis, server, worker, edge (Caddy on 80 and 443 TCP and UDP), `migrate` behind the `ops` profile, and MinIO behind the `minio` profile for local tests. Postgres, Redis, and MinIO sit only on the `store` network (`internal: true`: no route out, no published port), which server, worker, and migrate join; server, worker, and edge share the default network, the only one with egress (R2, SMTP, Gemini). Redis demands `REDIS_PASSWORD` (`requirepass`), which server and worker send in `REDIS_URL`. Server, worker, and edge run the GHCR release images of `ROTARIA_VERSION` (`build:` stays for `make prod-build`); server and worker get 30 s to drain on stop; Redis writes an append-only file (`everysec`); every service logs through the rotating `local` driver. Targets: `make prod-pull`, `prod-build`, `prod-up`, `prod-migrate`, `prod-down`, `prod-logs`.
+- Every service carries `mem_limit` and `cpus`, so one runaway container is killed in its own cgroup instead of starving Postgres on the 12 GB, 2 OCPU host. `cpus` are ceilings, not reservations: their sum may pass 2, but no service can take both cores.
+
+| Service | `mem_limit` | `cpus` | Basis |
+|---|---|---|---|
+| postgres | 2 GB | 1.0 | shared buffers plus the HNSW index as the catalog grows |
+| redis | 256 MB | 0.25 | sessions, counters, and streams; under 10 MB measured |
+| server | 512 MB | 1.0 | 100 parallel logins peaked at 189 MB |
+| worker | 768 MB | 1.0 | the largest real book peaks near 100 MB |
+| edge | 128 MB | 0.5 | 33 MB measured under 40 parallel clients |
+| migrate (one-off) | 256 MB | 0.5 | psql |
+| embedding model (#173) | 4 GB reserved | | not in the compose yet |
+| backup (#52) | 256 MB reserved | | not in the compose yet |
+| cloudflared (#45) | 128 MB reserved | | not in the compose yet |
+| Total | 8.25 GB | | about 3.75 GB left for the OS and page cache |
+
+Measured on a local `make prod-up` (2026-11-07, empty catalog, one EPUB ingested, 400 catalog reads at 40 in parallel): postgres 60 MB, server 10 MB, worker 43 MB, edge 33 MB, redis 10 MB. Raise a limit when `docker stats` on the host shows a service near it.
 - `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. Release builds minify HTML, CSS, and the glue. The edge image runs `make build-web-edge`, the same build plus brotli 11 and gzip copies (`scripts/precompress.py`) that Caddy sends as they are (`file_server { precompressed br gzip }`); the Tauri bundle leaves them out.
 - Server and worker images run as uid 10001; the dev compose binds every port to `127.0.0.1`, and `Caddyfile.prod` drops the `Server` banner on every response, errors included.
 - With `APP_ENV=production` the server exits non-zero when Postgres, Redis, or either storage bucket is unreachable at boot, and `restart: always` retries; development keeps running without them. Storage is R2 (`apac`) with an Object Read and Write token scoped to the two buckets: boot probes each bucket with a one-key listing (such a token may be refused HeadBucket), sends CreateBucket only for a missing one, then writes and deletes an empty `.boot-probe/` object so a read-only token fails at boot rather than at the first upload.

@@ -6,6 +6,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Changed
 - Dependencies: redis 1.8 (from 0.27). Stream names, entry fields, the consumer group, and every Redis key and TTL are unchanged, so the worker needs no update.
+- The production compose is one file for the one production host (ADR-46). Postgres, Redis, and the bundled MinIO sit on an internal network with no route out and no published port, joined only by server, worker, and migrate; the edge cannot reach them. Redis demands a password: set `REDIS_PASSWORD` in `.env.production` (`openssl rand -hex 32`) before the next `make prod-up`. The edge runs the GHCR release image of `ROTARIA_VERSION` like server and worker, so `make prod-pull` fetches all three and a host never builds the web bundle. Every service has a memory and CPU limit (ARCHITECTURE section 8). `.env.production.example` now names `rotaria.site`.
 
 ## [0.1.3] — 2026-11-07
 

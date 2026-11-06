@@ -269,7 +269,7 @@ prod-build:
 	@echo "Building production images..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml build
 
-# Server and worker images of ROTARIA_VERSION from GHCR (public, no login).
+# Server, worker, and edge images of ROTARIA_VERSION from GHCR (public, no login).
 prod-pull:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml pull
 
