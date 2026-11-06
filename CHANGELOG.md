@@ -4,6 +4,9 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ## [Unreleased]
 
+### Changed
+- Dependencies: redis 1.8 (from 0.27). Stream names, entry fields, the consumer group, and every Redis key and TTL are unchanged, so the worker needs no update.
+
 ## [0.1.3] — 2026-11-07
 
 ### Added
