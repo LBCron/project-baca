@@ -93,7 +93,8 @@ test-migrate:
 	@./scripts/test_migrate.sh
 
 # Caddyfile.prod's client address in Docker: CF-Connecting-IP only from the
-# tunnel subnet, the peer otherwise, no other address header upstream.
+# connector's address, the peer otherwise (the host's bridge gateway
+# included), no other address header upstream.
 test-edge-ip:
 	@./scripts/test_edge_client_ip.sh
 

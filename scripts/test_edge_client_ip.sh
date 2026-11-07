@@ -2,16 +2,19 @@
 set -euo pipefail
 
 # Runs Caddyfile.prod in Docker in front of a header-echo upstream named
-# `server` and checks the client address the API would see: a peer on the
-# trusted tunnel subnet names the client through CF-Connecting-IP; any other
-# peer, one on another private subnet included, is the client itself; no
-# other address header ever reaches the upstream. Needs only Docker.
+# `server` and checks the client address the API would see: only the
+# connector's fixed address names the client through CF-Connecting-IP; any
+# other peer (another container on the tunnel subnet, the host through the
+# bridge gateway, another private subnet) is the client itself; no other
+# address header ever reaches the upstream. Needs Docker and curl.
 
 cd "$(dirname "$0")/.."
 CADDY_IMAGE=$(awk '/^FROM caddy:/ {print $2; exit}' Dockerfile.edge)
 PY_IMAGE=$(awk '/^FROM python:/ {print $2; exit}' Dockerfile.worker)
 TAG="rotaria-edge-ip-$$"
-TRUSTED_SUBNET=10.203.54.0/29
+TUNNEL_SUBNET=10.203.54.0/29
+CONNECTOR_IP=10.203.54.2
+EDGE_IP=10.203.54.3
 OTHER_SUBNET=10.203.55.0/29
 
 cleanup() {
@@ -31,20 +34,24 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
 '
 
-docker network create --subnet "$TRUSTED_SUBNET" "$TAG-tunnel" >/dev/null
+docker network create --subnet "$TUNNEL_SUBNET" "$TAG-tunnel" >/dev/null
 docker network create --subnet "$OTHER_SUBNET" "$TAG-other" >/dev/null
 docker network create "$TAG-app" >/dev/null
 docker run -d --name "$TAG-server" --network "$TAG-app" --network-alias server \
     "$PY_IMAGE" python -c "$ECHO_SERVER" >/dev/null
-docker run -d --name "$TAG-edge" --network "$TAG-app" -e TRUSTED_PROXY_SUBNET="$TRUSTED_SUBNET" \
+docker run -d --name "$TAG-edge" --network "$TAG-app" -e TRUSTED_PROXY="$CONNECTOR_IP" \
     -v "$PWD/Caddyfile.prod:/etc/caddy/Caddyfile:ro" "$CADDY_IMAGE" >/dev/null
-docker network connect "$TAG-tunnel" "$TAG-edge"
+docker network connect --ip "$EDGE_IP" "$TAG-tunnel" "$TAG-edge"
 docker network connect "$TAG-other" "$TAG-edge"
 
+SPOOFED=(-H "CF-Connecting-IP: 1.2.3.4" -H "X-Forwarded-For: 6.6.6.6" -H "X-Real-IP: 7.7.7.7"
+    -H "True-Client-IP: 8.8.8.8" -H "Forwarded: for=9.9.9.9")
+
 # Prints the upstream's view of the request headers as JSON, sent from a
-# fresh container on the given network with every spoofable address header.
+# fresh container on the given network (and address, when given) with every
+# spoofable address header.
 probe() {
-    docker run --rm --network "$1" "$CADDY_IMAGE" sh -c '
+    docker run --rm --network "$1" ${2:+--ip "$2"} "$CADDY_IMAGE" sh -c '
         for i in $(seq 1 50); do
             out=$(wget -qO- -T 3 \
                 --header "CF-Connecting-IP: 1.2.3.4" \
@@ -74,8 +81,25 @@ sys.exit(0 if ok else 1)
 ' "$1" "$2" "$3"
 }
 
+# The same request from the host itself, which reaches the edge's tunnel
+# address through the bridge gateway, inside the tunnel subnet.
+probe_host() {
+    local gateway
+    gateway=$(docker network inspect "$TAG-tunnel" -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}')
+    for _ in $(seq 1 50); do
+        if out=$(curl -sf -m 3 "${SPOOFED[@]}" "http://$EDGE_IP/api/v1/probe"); then
+            printf '%s\nPEER %s\n' "$out" "$gateway"
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
 status=0
-check "trusted tunnel peer uses CF-Connecting-IP" 1.2.3.4 "$(probe "$TAG-tunnel")" || status=1
+check "connector address uses CF-Connecting-IP" 1.2.3.4 "$(probe "$TAG-tunnel" "$CONNECTOR_IP")" || status=1
+check "other peer on the tunnel subnet is the client" peer "$(probe "$TAG-tunnel" 10.203.54.4)" || status=1
+check "host through the bridge gateway is the client" peer "$(probe_host)" || status=1
 check "peer on another private subnet is the client" peer "$(probe "$TAG-other")" || status=1
 check "peer on the app network is the client" peer "$(probe "$TAG-app")" || status=1
 exit $status

@@ -7,11 +7,11 @@
 
 {
 	servers {
-		# Client address: only a peer on the tunnel network (the connector)
-		# may name the client, through the CF-Connecting-IP header Cloudflare
-		# overwrites on every request. Any other peer, a private address
-		# included, is the client itself.
-		trusted_proxies static {$TRUSTED_PROXY_SUBNET}
+		# Client address: only the connector's fixed address may name the
+		# client, through the CF-Connecting-IP header Cloudflare overwrites on
+		# every request. Any other peer, a private address or the host's
+		# bridge gateway included, is the client itself.
+		trusted_proxies static {$TRUSTED_PROXY}
 		client_ip_headers CF-Connecting-IP
 	}
 	# A stop lets in-flight requests finish before compose kills the edge.

@@ -11,10 +11,12 @@
 x-logging: &logging
   driver: local
 
-# The tunnel network's fixed subnet: the edge trusts CF-Connecting-IP only
-# from a peer inside it (Caddyfile.prod). No other service and no published
-# port may join that network.
+# The tunnel network's fixed addresses. The edge trusts CF-Connecting-IP only
+# from cloudflared's own address (Caddyfile.prod): not the subnet, whose
+# gateway (.1) is the host itself, so a host process cannot name a client.
+# No other service and no published port may join that network.
 x-tunnel-subnet: &tunnel_subnet 10.203.53.0/29
+x-cloudflared-ip: &cloudflared_ip 10.203.53.2
 
 services:
   postgres:
@@ -206,12 +208,18 @@ services:
     logging: *logging
     mem_limit: 128m
     cpus: 0.5
-    networks: [default, tunnel]
+    # Matches Caddy's grace_period, so in-flight requests finish on a stop.
+    stop_grace_period: 30s
+    networks:
+      default:
+      tunnel:
+        # Pinned so it can never take cloudflared's address first.
+        ipv4_address: 10.203.53.3
     depends_on:
       - server
     # No published port: every request arrives through cloudflared.
     environment:
-      TRUSTED_PROXY_SUBNET: *tunnel_subnet
+      TRUSTED_PROXY: *cloudflared_ip
     volumes:
       - caddy_data:/data
       - caddy_config:/config
@@ -225,7 +233,9 @@ services:
     logging: *logging
     mem_limit: 128m
     cpus: 0.25
-    networks: [tunnel]
+    networks:
+      tunnel:
+        ipv4_address: *cloudflared_ip
     depends_on:
       - edge
     command: ["tunnel", "--no-autoupdate", "run"]
