@@ -39,7 +39,7 @@ endif
 # Starts frontend with Trunk native hot-reload
 dev-web:
 	@echo "Starting frontend development server (Trunk hot-reload)..."
-	@cd crates/web && trunk serve
+	@cd crates/web && trunk serve --cargo-profile wasm-dev
 
 # Serves the release bundle (wasm-release profile, wasm-opt) on :3000, for
 # running the web suite against release optimisations; the `gallery` feature

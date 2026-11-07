@@ -33,7 +33,7 @@ FAKE_SIZES = (11, 24)
 FAKE_TITLES = ("Sherlock Test", "scan")
 TEST_COVER_HOSTS = ("https://assets.baca.local/%", "https://example.com/%")
 TEST_COVER_PATHS = ("/covers/test.jpg",)
-TEST_SOURCE_NAMES = ("Test", "Test Source", "Draft")
+TEST_SOURCE_NAMES = ("Test", "Test Source", "Draft", "Probe")
 TEST_EMAIL_DOMAINS = ("baca.local", "example.com", "test.local")
 
 

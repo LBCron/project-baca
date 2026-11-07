@@ -61,7 +61,7 @@ Credentials and bucket names are in `.env.example`. At boot the server checks bo
 ```bash
 make migrate-up seed-dev
 make dev backend       # (re)start the API on :8080 from this checkout, wait until healthy
-make dev frontend      # trunk serve on 127.0.0.1:3000 from this checkout (make dev-web-release for the shipped bundle)
+make dev frontend      # trunk serve on 127.0.0.1:3000 from this checkout, cargo profile wasm-dev (make dev-web-release for the shipped bundle)
 make dev stop          # stop both
 make worker            # after make worker-install
 ```

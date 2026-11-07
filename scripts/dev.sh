@@ -141,7 +141,7 @@ frontend() {
 	fi
 	stop_service frontend
 	cd crates/web
-	launch frontend trunk serve
+	launch frontend trunk serve --cargo-profile wasm-dev
 	cd "$ROOT"
 	wait_ready frontend "http://127.0.0.1:3000/" "${DEV_FRONTEND_TIMEOUT:-1200}"
 }
