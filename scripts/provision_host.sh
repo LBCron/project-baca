@@ -12,14 +12,14 @@
 # Environment:
 #   DEPLOY_PUBKEY  one public key for the deploy user, installed behind the forced command
 #   BESZEL_HUB     address of the Beszel hub (default 10.0.0.100)
-#   REBOOT_TIME    unattended-upgrades reboot time, host clock (default 19:00, 02:00 WIB on UTC)
+#   REBOOT_TIME    unattended-upgrades reboot time, host clock (default 04:00 WIB in the host's zone)
 #   SWAP_SIZE      swapfile size when the host has no swap (default 4G)
 # shellcheck disable=SC2015 # ok() always succeeds, so `test && ok || bad` is an if-else
 set -euo pipefail
 
 BESZEL_HUB=${BESZEL_HUB:-10.0.0.100}
 BESZEL_PORT=45876
-REBOOT_TIME=${REBOOT_TIME:-19:00}
+REBOOT_TIME=${REBOOT_TIME:-$(date -d 'TZ="Asia/Jakarta" 04:00' +%H:%M)}
 SWAP_SIZE=${SWAP_SIZE:-4G}
 DEPLOY_PUBKEY=${DEPLOY_PUBKEY:-}
 DEPLOY_USER=deploy
@@ -27,7 +27,7 @@ DEPLOY_COMMAND=/usr/local/bin/rotaria-deploy
 APP_DIR=/srv/rotaria
 ENV_FILE=$APP_DIR/repo/.env.production
 SSHD_DROPIN=/etc/ssh/sshd_config.d/00-rotaria.conf
-APT_DROPIN=/etc/apt/apt.conf.d/52rotaria-unattended-upgrades
+APT_DROPIN=/etc/apt/apt.conf.d/99rotaria-unattended-upgrades
 DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 # Inbound ports the single-host design no longer opens (ADR-46): web edge and data stores.
 OBSOLETE_PORTS=(80 443 5432 6379)
@@ -148,6 +148,9 @@ remove_obsolete_rules() {
             log "skip    '$rule' mixes kept and obsolete ports; split it by hand"
             continue
         fi
+        # ufw matches a rule without its comment, and the quotes around one would
+        # reach ufw literally after word splitting.
+        rule=${rule% comment \'*}
         # shellcheck disable=SC2086 # the rule is ufw's own word list
         if [[ $rule == "ufw route "* ]]; then
             ufw_do route delete ${rule#ufw route }
@@ -230,7 +233,8 @@ ensure_app_dir() {
 
 ensure_unattended_upgrades() {
     ensure_packages unattended-upgrades
-    # Sorts after 50unattended-upgrades and 20auto-upgrades, so these values win.
+    # Sorts after every stock or hand-made drop-in that sets these keys (20auto-upgrades,
+    # 50unattended-upgrades, a 52unattended-reboot), so these values win.
     put_file "$APT_DROPIN" 644 root:root "// Managed by scripts/provision_host.sh (GUIDE section 8).
 APT::Periodic::Update-Package-Lists \"1\";
 APT::Periodic::Unattended-Upgrade \"1\";
@@ -336,7 +340,6 @@ verify_unattended_upgrades() {
         && grep -q "^Unattended-Upgrade::Automatic-Reboot-Time \"$REBOOT_TIME\";" <<<"$dump" \
         && ok "unattended-upgrades on, reboot at $REBOOT_TIME $(date +%Z)" || bad "unattended-upgrades not configured"
     systemctl is-enabled --quiet apt-daily-upgrade.timer && ok "apt-daily-upgrade.timer enabled" || bad "apt-daily-upgrade.timer disabled"
-    [[ $(date +%Z) == UTC ]] || log "note    host clock is $(date +%Z), so $REBOOT_TIME is not 02:00 WIB"
 }
 
 verify_deploy_user() {
