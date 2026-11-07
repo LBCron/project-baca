@@ -31,11 +31,9 @@ pub struct Claims {
     pub jti: Uuid,
     /// Session the token belongs to, the same across refreshes; signing a
     /// device out revokes every access token carrying it.
-    #[serde(default)]
-    pub sid: Option<Uuid>,
-    /// [`ACCESS_AUDIENCE`]; absent only on tokens issued before it existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aud: Option<String>,
+    pub sid: Uuid,
+    /// Always [`ACCESS_AUDIENCE`].
+    pub aud: String,
 }
 
 /// Generates a signed JWT access token with the specified expiration in minutes
@@ -93,8 +91,8 @@ pub fn issue_access_token(
         exp,
         iat: issued_at,
         jti,
-        sid: Some(sid),
-        aud: Some(ACCESS_AUDIENCE.to_string()),
+        sid,
+        aud: ACCESS_AUDIENCE.to_string(),
     };
     let header = Header {
         typ: Some(ACCESS_TOKEN_TYPE.to_string()),
@@ -110,32 +108,34 @@ pub fn issue_access_token(
     .map_err(|e| AppError::Internal(format!("Failed to sign JWT access token: {e}")))
 }
 
-/// Verifies and decodes a signed JWT access token. A wrong `aud` or `typ` is
-/// refused; the client hears one generic reason and the library's detail
-/// stays in the debug log.
+/// Verifies and decodes a signed JWT access token. Anything but `typ: at+jwt`
+/// with `exp`, `aud`, and a session id is refused, so every accepted token
+/// can be revoked per device; the client hears one generic reason and the
+/// library's detail stays in the debug log.
 pub fn verify_access_token(token: &str, secret: &str) -> Result<Claims, AppError> {
     let refuse = |reason: String| {
         tracing::debug!(target: "infra::jwt", reason, "Access token refused");
         AppError::Unauthorized("Invalid or expired access token".to_string())
     };
     let header = decode_header(token).map_err(|e| refuse(e.to_string()))?;
-    // shortcut: "JWT" and a missing aud are the tokens issued before typ and
-    // aud existed; drop both once every such token has expired (one access
-    // lifetime after the deploy).
+    if header.typ.as_deref() != Some(ACCESS_TOKEN_TYPE) {
+        return Err(refuse(format!("unexpected typ {:?}", header.typ)));
+    }
     let mut validation = Validation::default();
     validation.set_audience(&[ACCESS_AUDIENCE]);
-    match header.typ.as_deref() {
-        Some(ACCESS_TOKEN_TYPE) => validation.set_required_spec_claims(&["exp", "aud"]),
-        Some("JWT") => {}
-        other => return Err(refuse(format!("unexpected typ {other:?}"))),
-    }
-    decode::<Claims>(
+    validation.set_required_spec_claims(&["exp", "aud"]);
+    let claims = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     )
     .map(|data| data.claims)
-    .map_err(|e| refuse(e.to_string()))
+    .map_err(|e| refuse(e.to_string()))?;
+    // The nil id is never issued, and no revocation key is ever written for it.
+    if claims.sid.is_nil() {
+        return Err(refuse("nil sid".to_string()));
+    }
+    Ok(claims)
 }
 
 /// Blacklists an access token by its JTI in Redis until expiration
@@ -422,14 +422,14 @@ pub async fn revoke_other_sessions_keeping(
     redis: &mut crate::RedisConn,
     user_id: Uuid,
     current_jti: Uuid,
-    current_sid: Option<Uuid>,
+    current_sid: Uuid,
     access_ttl_seconds: u64,
 ) -> Result<usize, AppError> {
     let mut revoked = 0;
     for (hash, record) in list_sessions(redis, user_id).await {
         if record
             .as_ref()
-            .is_some_and(|r| r.jti == current_jti || Some(r.sid) == current_sid)
+            .is_some_and(|r| r.jti == current_jti || r.sid == current_sid)
         {
             continue;
         }
@@ -816,24 +816,37 @@ mod tests {
 
     const SECRET: &str = "super-secret-test-jwt-key-minimum-32-chars!";
 
-    fn signed(header: &Header, aud: Option<&str>) -> String {
-        let now = Utc::now().timestamp() as usize;
-        let claims = Claims {
-            sub: Uuid::new_v4(),
-            email: "reader@example.com".into(),
-            role: "reader".into(),
-            exp: now + 600,
-            iat: now,
-            jti: Uuid::new_v4(),
-            sid: Some(Uuid::new_v4()),
-            aud: aud.map(str::to_string),
-        };
-        encode(
-            header,
-            &claims,
-            &EncodingKey::from_secret(SECRET.as_bytes()),
-        )
-        .unwrap()
+    fn at_jwt() -> Header {
+        Header {
+            typ: Some(ACCESS_TOKEN_TYPE.into()),
+            ..Header::default()
+        }
+    }
+
+    /// Every claim an access token carries, as JSON so a test can drop one.
+    fn full_claims() -> serde_json::Value {
+        let now = Utc::now().timestamp();
+        serde_json::json!({
+            "sub": Uuid::new_v4(), "email": "reader@example.com", "role": "reader",
+            "exp": now + 600, "iat": now, "jti": Uuid::new_v4(),
+            "sid": Uuid::new_v4(), "aud": ACCESS_AUDIENCE,
+        })
+    }
+
+    fn with(claim: &str, value: serde_json::Value) -> serde_json::Value {
+        let mut claims = full_claims();
+        claims[claim] = value;
+        claims
+    }
+
+    fn without(claim: &str) -> serde_json::Value {
+        let mut claims = full_claims();
+        claims.as_object_mut().unwrap().remove(claim);
+        claims
+    }
+
+    fn signed(header: &Header, claims: &serde_json::Value) -> String {
+        encode(header, claims, &EncodingKey::from_secret(SECRET.as_bytes())).unwrap()
     }
 
     #[test]
@@ -845,66 +858,58 @@ mod tests {
             Some(ACCESS_TOKEN_TYPE)
         );
         let claims = verify_access_token(&token, SECRET).unwrap();
-        assert_eq!(claims.aud.as_deref(), Some(ACCESS_AUDIENCE));
+        assert_eq!(claims.aud, ACCESS_AUDIENCE);
+        assert!(!claims.sid.is_nil());
     }
 
     #[test]
     fn a_token_for_another_audience_or_type_is_refused() {
-        let typed = Header {
-            typ: Some(ACCESS_TOKEN_TYPE.into()),
-            ..Header::default()
-        };
-        assert!(verify_access_token(&signed(&typed, Some("other-api")), SECRET).is_err());
-        let id_token = Header {
-            typ: Some("id+jwt".into()),
-            ..Header::default()
-        };
-        assert!(verify_access_token(&signed(&id_token, Some(ACCESS_AUDIENCE)), SECRET).is_err());
-        // Only the legacy "JWT" type may lack an audience.
-        assert!(verify_access_token(&signed(&typed, None), SECRET).is_err());
+        assert!(verify_access_token(&signed(&at_jwt(), &full_claims()), SECRET).is_ok());
+        let other_aud = with("aud", serde_json::json!("other-api"));
+        assert!(verify_access_token(&signed(&at_jwt(), &other_aud), SECRET).is_err());
+        for typ in [Some("JWT"), Some("id+jwt"), None] {
+            let header = Header {
+                typ: typ.map(str::to_string),
+                ..Header::default()
+            };
+            assert!(
+                verify_access_token(&signed(&header, &full_claims()), SECRET).is_err(),
+                "typ {typ:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_token_issued_before_audience_existed_still_verifies() {
-        assert!(verify_access_token(&signed(&Header::default(), None), SECRET).is_ok());
+    fn a_token_without_exp_aud_or_session_is_refused() {
+        for claim in ["exp", "aud", "sid"] {
+            assert!(
+                verify_access_token(&signed(&at_jwt(), &without(claim)), SECRET).is_err(),
+                "{claim}"
+            );
+        }
+        for sid in [serde_json::json!(Uuid::nil()), serde_json::json!(null)] {
+            assert!(
+                verify_access_token(&signed(&at_jwt(), &with("sid", sid.clone())), SECRET).is_err(),
+                "sid {sid}"
+            );
+        }
     }
 
     #[test]
     fn a_token_whose_exp_is_not_a_number_is_refused() {
         // A non-numeric exp must never read as "absent", and a non-numeric
-        // nbf must not rescue an expired token, for both header types. nbf
-        // itself is not validated: no token here carries one.
+        // nbf must not rescue an expired token. nbf itself is not validated:
+        // no token here carries one.
         let now = Utc::now().timestamp();
-        let sign = |header: &Header, extra: serde_json::Value| {
-            let mut claims = serde_json::json!({
-                "sub": Uuid::new_v4(), "email": "r@example.com", "role": "reader",
-                "iat": now, "jti": Uuid::new_v4(), "aud": ACCESS_AUDIENCE,
-            });
+        for claims in [with("exp", serde_json::json!("9999999999")), {
+            let mut claims = with("exp", serde_json::json!(now - 3600));
+            claims["nbf"] = serde_json::json!("0");
             claims
-                .as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
-            encode(
-                header,
-                &claims,
-                &EncodingKey::from_secret(SECRET.as_bytes()),
-            )
-            .unwrap()
-        };
-        let typed = Header {
-            typ: Some(ACCESS_TOKEN_TYPE.into()),
-            ..Header::default()
-        };
-        for header in [Header::default(), typed] {
-            for extra in [
-                serde_json::json!({ "exp": "9999999999" }),
-                serde_json::json!({ "exp": now - 3600, "nbf": "0" }),
-            ] {
-                assert!(
-                    verify_access_token(&sign(&header, extra.clone()), SECRET).is_err(),
-                    "{extra}"
-                );
-            }
+        }] {
+            assert!(
+                verify_access_token(&signed(&at_jwt(), &claims), SECRET).is_err(),
+                "{claims}"
+            );
         }
     }
 
@@ -927,7 +932,8 @@ mod tests {
         for token in [
             expired,
             "not.a.jwt".to_string(),
-            signed(&Header::default(), Some("x")),
+            signed(&at_jwt(), &with("aud", serde_json::json!("x"))),
+            signed(&at_jwt(), &without("sid")),
         ] {
             match verify_access_token(&token, SECRET) {
                 Err(AppError::Unauthorized(message)) => {

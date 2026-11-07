@@ -9,6 +9,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but sound; leptos 0.7 macros pull it with no maintained drop-in. Review 2027-02-01 or at the next leptos minor." },
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; compile-time only, pulled by leptos 0.7 macros. Review 2027-02-01 or at the next leptos minor." },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; compile-time only, pulled by glib-macros 0.18 under Tauri's Linux webview. Review 2027-02-01 or at the next Tauri minor." },
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter is unsound (GHSA-wrw7-89jp-8q8g, Dependabot alert 2, dismissed tolerable_risk); Linux-only under Tauri's webview (tauri 2.12.5, wry 0.57.1, tao 0.37.2 require gtk ^0.18 and webkit2gtk 2.0.2 pins glib ^0.18), and neither the app nor that stack calls VariantStrIter or Variant::array_iter_str. Review 2027-02-01 or at the next Tauri minor." },
 ]
 
 [bans]

@@ -239,6 +239,36 @@ async fn test_redis_outage_answers_503_and_heals_without_restart() {
     harness.cleanup().await;
 }
 
+const PRODUCTION_CORS: &str = "https://rotaria.site,tauri://localhost,http://tauri.localhost";
+
+/// A wildcard or a malformed origin in the production allowlist stops the
+/// boot before anything listens.
+#[tokio::test]
+async fn test_production_boot_with_a_loose_cors_origin_exits_nonzero() {
+    for origins in ["*", "https://rotaria.site/,tauri://localhost"] {
+        let run = tokio::process::Command::new(env!("CARGO_BIN_EXE_server"))
+            .current_dir(std::env::temp_dir())
+            .env_clear()
+            .env("APP_ENV", "production")
+            .env("JWT_SECRET", "p".repeat(48))
+            .env("SMTP_SECURITY", "starttls")
+            .env("TRUST_PROXY_HEADERS", "true")
+            .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
+            .env("OTP_HOURLY_BUDGET", "100")
+            .env("AI_DAILY_BUDGET", "5000")
+            .env("CORS_ALLOWED_ORIGINS", origins)
+            .kill_on_drop(true)
+            .output();
+        let output = tokio::time::timeout(Duration::from_secs(30), run)
+            .await
+            .expect("server must refuse its config at once")
+            .expect("server binary must start");
+        assert!(!output.status.success(), "{origins}: {:?}", output.status);
+        let log = String::from_utf8_lossy(&output.stderr);
+        assert!(log.contains("CORS_ALLOWED_ORIGINS"), "{origins}: {log}");
+    }
+}
+
 /// A production process that cannot reach Postgres exits non-zero so the
 /// orchestrator restarts it, instead of serving errors forever.
 #[tokio::test]
@@ -255,6 +285,7 @@ async fn test_production_boot_without_postgres_exits_nonzero() {
         .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
         .env("OTP_HOURLY_BUDGET", "100")
         .env("AI_DAILY_BUDGET", "5000")
+        .env("CORS_ALLOWED_ORIGINS", PRODUCTION_CORS)
         .env("RUST_LOG", "server=info")
         .kill_on_drop(true)
         .output();
@@ -296,6 +327,7 @@ async fn test_production_boot_with_wrong_storage_secret_exits_nonzero() {
         .env("TRUSTED_IP_HEADER", "CF-Connecting-IP")
         .env("OTP_HOURLY_BUDGET", "100")
         .env("AI_DAILY_BUDGET", "5000")
+        .env("CORS_ALLOWED_ORIGINS", PRODUCTION_CORS)
         .env("RUST_LOG", "server=info")
         .kill_on_drop(true)
         .output();

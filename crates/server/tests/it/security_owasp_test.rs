@@ -833,48 +833,258 @@ async fn test_counter_keys_always_expire() {
 }
 
 /// A revoked token earns no per-user AI bucket: the hit lands in the guest
-/// bucket of the caller's address.
+/// bucket of the caller's address, whether the token was logged out or its
+/// device was signed out from another one (session revoked, jti not listed).
 #[tokio::test]
 async fn test_revoked_token_counts_in_the_guest_ai_bucket() {
     let harness = TestHarness::new().await;
     let mut redis = harness.live_only().await.expect("live Redis required");
-    let ip = unique_test_ip();
+    for session_only in [false, true] {
+        let ip = unique_test_ip();
+        let (access, refresh) =
+            common::provision_verified_user(&harness, &mut redis, "aibucket", &ip).await;
+        let claims =
+            infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
+        if session_only {
+            infra::revoke_session_tokens(&mut redis, claims.sid, 3600)
+                .await
+                .unwrap();
+        } else {
+            let logout = Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/logout")
+                .header(common::CLIENT_IP_HEADER, &ip)
+                .header("authorization", format!("Bearer {access}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "refresh_token": refresh }).to_string(),
+                ))
+                .unwrap();
+            assert_eq!(harness.send_request(logout).await.status(), StatusCode::OK);
+        }
+
+        let user_key = format!("rate_limit:ai:user:{}", claims.sub);
+        let guest_key = format!("rate_limit:ai:guest:{ip}");
+        let _: () = redis.del(&[&user_key, &guest_key]).await.unwrap();
+        let search = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/books/{}/quotes/search",
+                uuid::Uuid::new_v4()
+            ))
+            .header(common::CLIENT_IP_HEADER, &ip)
+            .header("authorization", format!("Bearer {access}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "query": "laut" }).to_string(),
+            ))
+            .unwrap();
+        harness.send_request(search).await;
+
+        let user_hits: Option<i64> = redis.get(&user_key).await.unwrap();
+        let guest_hits: Option<i64> = redis.get(&guest_key).await.unwrap();
+        assert_eq!(user_hits, None, "session_only={session_only}");
+        assert_eq!(guest_hits, Some(1), "session_only={session_only}");
+    }
+    harness.cleanup().await;
+}
+
+/// The production allowlist: the one web origin and the Tauri WebViews.
+const PRODUCTION_ORIGINS: [&str; 3] = [
+    "https://rotaria.site",
+    "tauri://localhost",
+    "http://tauri.localhost",
+];
+
+async fn production_cors_harness() -> TestHarness {
+    TestHarness::with_config(|c| {
+        c.server.cors_allowed_origins = PRODUCTION_ORIGINS.map(String::from).to_vec();
+    })
+    .await
+}
+
+fn login_preflight(origin: &str) -> Request<Body> {
+    Request::builder()
+        .method("OPTIONS")
+        .uri("/api/v1/auth/login")
+        .header(header::ORIGIN, origin)
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+        .header(
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            "authorization,content-type",
+        )
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_cors_admits_the_app_and_site_with_a_cached_preflight() {
+    let harness = production_cors_harness().await;
+    for origin in PRODUCTION_ORIGINS {
+        let resp = harness.send_request(login_preflight(origin)).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{origin}");
+        let headers = resp.headers();
+        assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], origin);
+        assert_eq!(headers[header::ACCESS_CONTROL_MAX_AGE], "7200", "{origin}");
+        assert!(
+            !headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+            "{origin}"
+        );
+    }
+
+    let req = Request::builder()
+        .uri("/health")
+        .header(header::ORIGIN, "http://tauri.localhost")
+        .body(Body::empty())
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    let headers = resp.headers();
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+    let exposed = headers[header::ACCESS_CONTROL_EXPOSE_HEADERS]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    for name in ["x-request-id", "retry-after"] {
+        assert!(exposed.contains(name), "{exposed}");
+    }
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_cors_refuses_lookalike_origins() {
+    let harness = production_cors_harness().await;
+    for origin in [
+        "https://evil.example",
+        "https://rotaria.site.evil.example",
+        "http://rotaria.site",
+        "https://www.rotaria.site",
+        "https://rotaria.site/",
+        "null",
+        "*",
+    ] {
+        let resp = harness.send_request(login_preflight(origin)).await;
+        assert!(
+            !resp
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "preflight from {origin}"
+        );
+        let req = Request::builder()
+            .uri("/health")
+            .header(header::ORIGIN, origin)
+            .body(Body::empty())
+            .unwrap();
+        let resp = harness.send_request(req).await;
+        assert!(
+            !resp
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            "read from {origin}"
+        );
+    }
+    harness.cleanup().await;
+}
+
+/// Sessions live in a bearer header only: no route, public or behind a
+/// token, sets a cookie or lets a cross-origin caller send credentials.
+#[tokio::test]
+async fn test_no_route_sets_a_cookie_or_allows_credentials() {
+    use utoipa::OpenApi;
+    let harness = production_cors_harness().await;
+    let mut redis = harness
+        .live_only()
+        .await
+        .expect("live Redis required (db-up)");
     let (access, refresh) =
-        common::provision_verified_user(&harness, &mut redis, "aibucket", &ip).await;
-    let claims = infra::verify_access_token(&access, harness.state.config.jwt_secret()).unwrap();
-    let logout = Request::builder()
+        common::provision_verified_user(&harness, &mut redis, "cookie", &unique_test_ip()).await;
+
+    let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/auth/logout")
-        .header(common::CLIENT_IP_HEADER, &ip)
-        .header("authorization", format!("Bearer {access}"))
-        .header("content-type", "application/json")
+        .uri("/api/v1/auth/refresh")
+        .header(header::ORIGIN, "https://rotaria.site")
+        .header(common::CLIENT_IP_HEADER, unique_test_ip())
+        .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            serde_json::json!({ "refresh_token": refresh }).to_string(),
+            serde_json::to_vec(&RefreshTokenRequest {
+                refresh_token: refresh,
+            })
+            .unwrap(),
         ))
         .unwrap();
-    assert_eq!(harness.send_request(logout).await.status(), StatusCode::OK);
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK, "a real refresh succeeds");
+    assert!(!resp.headers().contains_key(header::SET_COOKIE));
 
-    let user_key = format!("rate_limit:ai:user:{}", claims.sub);
-    let guest_key = format!("rate_limit:ai:guest:{ip}");
-    let _: () = redis.del(&[&user_key, &guest_key]).await.unwrap();
-    let search = Request::builder()
-        .method("POST")
-        .uri(format!(
-            "/api/v1/books/{}/quotes/search",
-            uuid::Uuid::new_v4()
-        ))
-        .header(common::CLIENT_IP_HEADER, &ip)
-        .header("authorization", format!("Bearer {access}"))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({ "query": "laut" }).to_string(),
-        ))
-        .unwrap();
-    harness.send_request(search).await;
+    let doc = serde_json::to_value(server::ApiDoc::openapi()).expect("spec serialises");
+    let mut routes: Vec<(String, String)> = doc["paths"]
+        .as_object()
+        .expect("paths")
+        .iter()
+        .flat_map(|(path, item)| {
+            let path = path.clone();
+            item.as_object()
+                .expect("path item")
+                .keys()
+                .map(move |method| (method.to_ascii_uppercase(), path.clone()))
+        })
+        .collect();
+    routes.extend([
+        ("GET".into(), "/health".into()),
+        ("GET".into(), "/book/{id}".into()),
+    ]);
+    // Sign-out routes go last so every other route still sees a live token.
+    routes.sort_by_key(|(_, path)| path.contains("logout") || path.contains("revoke"));
 
-    let user_hits: Option<i64> = redis.get(&user_key).await.unwrap();
-    let guest_hits: Option<i64> = redis.get(&guest_key).await.unwrap();
-    assert_eq!(user_hits, None);
-    assert_eq!(guest_hits, Some(1));
+    let id = Uuid::new_v4().to_string();
+    let (mut sent, mut served) = (0, 0);
+    for (method, path) in &routes {
+        let uri: String = path
+            .split('/')
+            .map(|seg| {
+                if seg.starts_with('{') {
+                    id.as_str()
+                } else {
+                    seg
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        for bearer in [None, Some(access.as_str())] {
+            let mut req = Request::builder()
+                .method(method.as_str())
+                .uri(&uri)
+                .header(header::ORIGIN, "http://tauri.localhost")
+                .header(common::CLIENT_IP_HEADER, unique_test_ip())
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(token) = bearer {
+                req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+            let body = if method == "GET" { "" } else { "{}" };
+            let resp = harness
+                .send_request(req.body(Body::from(body)).unwrap())
+                .await;
+            let headers = resp.headers();
+            assert!(
+                !headers.contains_key(header::SET_COOKIE),
+                "{method} {uri} ({}) sets a cookie",
+                resp.status()
+            );
+            assert!(
+                !headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS),
+                "{method} {uri} allows credentials"
+            );
+            sent += 1;
+            served += usize::from(bearer.is_some() && resp.status().is_success());
+        }
+    }
+    assert!(sent > 40, "walked only {sent} requests");
+    assert!(
+        served > 5,
+        "only {served} routes answered the token with 2xx"
+    );
+
     harness.cleanup().await;
 }
