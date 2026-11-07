@@ -270,46 +270,50 @@ app-android-build:
 	@cd apps/tauri && ROTARIA_API_BASE=$(APP_ANDROID_API_BASE) cargo tauri android build --apk --debug --target $(APP_ANDROID_TARGET)
 
 # Production compose stack (see .env.production.example). Dev stack stays
-# on docker-compose.yml with host ports 5433/6380/9005/9006.
+# on docker-compose.yml with host ports 5433/6380/9005/9006. A laptop run takes
+# PROD_ENV=<a copy without the real CLOUDFLARE_TUNNEL_TOKEN>: a second connector
+# on the production tunnel would take a share of rotaria.site's traffic.
+PROD_ENV ?= .env.production
+PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f docker-compose.prod.yml
 prod-build:
 	@echo "Building production images..."
-	@docker compose --env-file .env.production -f docker-compose.prod.yml build
+	@$(PROD_COMPOSE) build
 
 # Server, worker, and edge images of ROTARIA_VERSION from GHCR (public, no login).
 prod-pull:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml pull
+	@$(PROD_COMPOSE) pull
 
 prod-up:
 	@echo "Starting production stack..."
-	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+	@$(PROD_COMPOSE) up -d
 
 prod-down:
 	@echo "Stopping production stack..."
-	@docker compose --env-file .env.production -f docker-compose.prod.yml down
+	@$(PROD_COMPOSE) down
 
 # Pending migrations against the production database, each in its own
 # transaction under an advisory lock; safe to rerun and to run twice at once.
 prod-migrate:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate up
+	@$(PROD_COMPOSE) --profile ops run --rm migrate up
 
 # rotaria_app, the role server and worker use, on a database volume that
 # existed before it (a new volume gets it at init); rerun after changing
 # POSTGRES_APP_PASSWORD. `up` first recreates postgres when its environment
 # or mounts changed, so the script runs with the current password.
 prod-db-role:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d --wait postgres
-	@docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres /docker-entrypoint-initdb.d/10-app-role.sh
+	@$(PROD_COMPOSE) up -d --wait postgres
+	@$(PROD_COMPOSE) exec -T postgres /docker-entrypoint-initdb.d/10-app-role.sh
 
 prod-migrate-status:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate status
+	@$(PROD_COMPOSE) --profile ops run --rm migrate status
 
 prod-logs:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml logs -f
+	@$(PROD_COMPOSE) logs -f
 
 # After migrating and before the new server takes traffic: until it has run,
 # in-book search finds nothing in books ingested earlier.
 prod-backfill-paragraphs:
-	@docker compose --env-file .env.production -f docker-compose.prod.yml run --rm worker python worker.py --backfill-paragraphs
+	@$(PROD_COMPOSE) run --rm worker python worker.py --backfill-paragraphs
 
 # Hardens the production host over SSH (GUIDE section 8). HOST is the admin
 # login with passwordless sudo; CHECK=1 only verifies; DEPLOY_PUBKEY installs

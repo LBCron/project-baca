@@ -16,6 +16,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Fixed
 - After registering and then signing out, "Sign in" opens the email and password form again instead of the spent code step of the finished registration. A reader who closes the sheet while waiting for the emailed code still comes back to the code step.
+- `make prod-*` reads its env file from `PROD_ENV` (default `.env.production`), so a laptop run of the production stack uses a copy whose `CLOUDFLARE_TUNNEL_TOKEN` is a placeholder. With the real token a laptop `make prod-up` joined the production tunnel as a second connector and took a share of `rotaria.site`'s traffic.
 
 ### Security
 - Production refuses to boot when `CORS_ALLOWED_ORIGINS` holds `*`, `null`, an origin with a path or trailing slash, or a plain `http://` origin other than the Tauri app's `http://tauri.localhost`. Cross-origin preflights are cached for two hours (`Access-Control-Max-Age: 7200`), and the app can read `x-request-id` and `retry-after` from cross-origin responses. No response sets a cookie or `Access-Control-Allow-Credentials`; sessions stay bearer-only (ADR-48).
