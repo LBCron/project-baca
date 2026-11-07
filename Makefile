@@ -269,7 +269,7 @@ prod-build:
 	@echo "Building production images..."
 	@docker compose --env-file .env.production -f docker-compose.prod.yml build
 
-# Server and worker images of ROTARIA_VERSION from GHCR (public, no login).
+# Server, worker, and edge images of ROTARIA_VERSION from GHCR (public, no login).
 prod-pull:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml pull
 
@@ -285,6 +285,14 @@ prod-down:
 # transaction under an advisory lock; safe to rerun and to run twice at once.
 prod-migrate:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate up
+
+# rotaria_app, the role server and worker use, on a database volume that
+# existed before it (a new volume gets it at init); rerun after changing
+# POSTGRES_APP_PASSWORD. `up` first recreates postgres when its environment
+# or mounts changed, so the script runs with the current password.
+prod-db-role:
+	@docker compose --env-file .env.production -f docker-compose.prod.yml up -d --wait postgres
+	@docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres /docker-entrypoint-initdb.d/10-app-role.sh
 
 prod-migrate-status:
 	@docker compose --env-file .env.production -f docker-compose.prod.yml --profile ops run --rm migrate status
@@ -322,5 +330,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
