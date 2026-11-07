@@ -57,6 +57,17 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
     let close_ref = NodeRef::<leptos::html::Button>::new();
     manage_sheet_focus(show.into(), close_ref, close);
 
+    // Reset once hidden, not on success, so the closing sheet does not flash
+    // the login form. A registration still waiting for its code keeps it.
+    Effect::new(move |_| {
+        if !show.get()
+            && registration.get_untracked().is_none()
+            && mode.get_untracked() == Mode::Otp
+        {
+            set_mode.set(Mode::Login);
+        }
+    });
+
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         set_busy.set(true);
@@ -105,6 +116,8 @@ pub fn AuthSheet(show: RwSignal<bool>, on_authed: Callback<()>) -> impl IntoView
                     api::set_tokens(&access, &refresh);
                     set_password.set(String::new());
                     set_otp.set(String::new());
+                    set_name.set(String::new());
+                    set_registration.set(None);
                     close();
                     merge_guest();
                 }

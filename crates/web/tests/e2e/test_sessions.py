@@ -615,3 +615,46 @@ def test_two_reader_tabs_beat_without_errors(browser: Browser, book_with_chapter
     finally:
         context.close()
         _bearer("DELETE", "/me", tokens["access_token"])
+
+
+def _register_through_the_sheet(page: Page, email: str) -> None:
+    page.click(".guest-shelf .btn-primary")
+    page.click(".sheet [role='tab']:has-text('Register')")
+    page.fill(".sheet input[type='text']", "Sheet Reset")
+    page.fill(".sheet input[type='email']", email)
+    page.fill(".sheet input[type='password']", "SheetReset123!")
+    page.click(".sheet button[type='submit']")
+    expect(page.locator(".sheet .otp-input")).to_be_visible()
+
+
+def test_sign_in_after_register_and_sign_out_opens_the_login_form(clean_page: Page):
+    """A finished registration leaves no OTP step behind: signing out and
+    opening the sheet again, without a reload, asks for email and password."""
+    page = clean_page
+    email = f"sheet-reset-{int(time.time() * 1000)}@example.com"
+    goto(page, "/me")
+    _register_through_the_sheet(page, email)
+    page.fill(".otp-input", _mailpit_otp(email))
+    page.click(".sheet button[type='submit']")
+    expect(page.get_by_text("Sheet Reset").first).to_be_visible(timeout=15000)
+
+    page.get_by_role("button", name="Sign out", exact=True).last.click()
+    page.click(".guest-shelf .btn-primary")
+    expect(page.locator(".sheet input[type='email']")).to_be_visible()
+    expect(page.locator(".sheet .otp-input")).to_have_count(0)
+    expect(page.locator("#auth-title")).not_to_have_text("Check your inbox")
+    assert_no_page_errors(page)
+
+
+def test_closing_the_sheet_mid_registration_keeps_the_code_step(clean_page: Page):
+    """A reader who closes the sheet to fetch the emailed code comes back to
+    the code step, not to an empty form."""
+    page = clean_page
+    email = f"sheet-keep-{int(time.time() * 1000)}@example.com"
+    goto(page, "/me")
+    _register_through_the_sheet(page, email)
+    page.click(".sheet .sheet-head .btn-icon")
+    expect(page.locator(".sheet")).to_have_count(0)
+    page.click(".guest-shelf .btn-primary")
+    expect(page.locator(".sheet .otp-input")).to_be_visible()
+    assert_no_page_errors(page)
