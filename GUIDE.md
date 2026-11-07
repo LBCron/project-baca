@@ -180,6 +180,30 @@ Deploy user: `deploy` has no sudo and a locked password. Every key in `~deploy/.
 
 `.env.production` stays mode 0600 (the script enforces it). Its encrypted copy, `age -r <owner's age public key> .env.production`, lives in R2 at `rotaria-backups/env/env.production.<date>.age`, refreshed after every change; neither copy is ever committed.
 
+Cloudflare, zone `rotaria.site` (Free plan, set in the dashboard on 2026-11-07). Tunnel `rotaria-vps2`: its token is `CLOUDFLARE_TUNNEL_TOKEN` in `.env.production`; published application routes `rotaria.site` and `www.rotaria.site` go to `http://edge:80`; there is no `api` hostname (ADR-45). Until `cloudflared` runs on VPS-2 the site answers 530.
+
+| Setting | Value | Why |
+|---|---|---|
+| SSL/TLS encryption mode | Full (strict) | zone default; Tunnel hostnames do not use it |
+| Always Use HTTPS | On | the origin serves plain HTTP on `:80` and never redirects; must stay on for any deploy |
+| Minimum TLS version | 1.2 | |
+| HTTP/3 | On | |
+| DNSSEC | On; DS `2371 13 2 26F407985418052530DCCDC2B913858C6D0D1B8DBDAD752F859FBF5322B3D627` at Namecheap | |
+| Bot Fight Mode | Off | cannot be excepted per path and challenges API and app traffic; never put a challenge on `/api/*` |
+| Cloudflare managed ruleset | Always active | |
+| Leaked credentials mitigation, "Rate limit authentication requests" | not created | either takes the plan's only rate limiting rule |
+
+| Rule | Kind | Expression | Action |
+|---|---|---|---|
+| `api-versi-tak-dikenal` | custom | `(starts_with(http.request.uri.path, "/api/") and not starts_with(http.request.uri.path, "/api/v1/"))` | Block |
+| `metode-tak-dikenal` | custom | `(not http.request.method in {"GET" "HEAD" "POST" "PUT" "PATCH" "DELETE" "OPTIONS"})` | Block |
+| `non-api-hanya-baca` | custom | `(not starts_with(http.request.uri.path, "/api/") and not http.request.method in {"GET" "HEAD"})` | Block |
+| `auth-burst` | rate limiting | `(starts_with(http.request.uri.path, "/api/v1/auth/"))` | over 30 requests in 10 s per IP: Block for 10 s |
+| `api-tanpa-cache` | cache | `(starts_with(http.request.uri.path, "/api/") and not starts_with(http.request.uri.path, "/api/v1/covers/"))` | Bypass cache |
+| `wasm-cache` | cache | `(http.request.uri.path.extension eq "wasm")` | Eligible for cache, TTL from the origin |
+
+The Free plan allows 5 custom rules and one rate limiting rule (path only, counted per IP, 10 s period and timeout), so every other limit stays in the server. Cloudflare caches cover images for their full year without a rule; taking one down needs a purge per URL (manual QA, section 3).
+
 Every `uses:` names a full commit SHA with the version in a comment, every checkout sets `persist-credentials: false`, and every `FROM` and third-party production `image:` carries an `@sha256:` digest (the project's own images go by release tag). Trunk is checked against `scripts/trunk.sha256` in CI and in `Dockerfile.edge`; a new `TRUNK_VERSION` needs new lines there (the release's `.sha256` assets).
 
 Repository protection (rulesets, `gh api repos/aprxty3/project-baca/rulesets`): `main` takes changes only through a pull request with the `check`, `backend`, and `web` jobs green, never a force push or a deletion, and the owner (admin role) may bypass; `develop` refuses force pushes and deletion for everyone; tags `v*` can be created only by the owner and never moved or deleted. Dependabot alerts and security updates are on, Dependabot version updates open one grouped minor-and-patch pull request per ecosystem against `develop` each Monday (releases at least 7 days old), CodeQL (`.github/workflows/codeql.yml`: Actions, JavaScript, Python, Rust without a build; on pull requests, pushes to `main`, and Mondays) uploads to the Security tab, and an advisory exception in `deny.toml` carries its reason and review date, and vulnerabilities are reported privately through the Security tab ([SECURITY.md](SECURITY.md)).
