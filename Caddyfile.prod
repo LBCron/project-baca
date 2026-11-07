@@ -1,11 +1,24 @@
-# Project Baca — production edge gateway.
+# Project Baca — production edge gateway for rotaria.site (ADR-45).
 #
-# {$DOMAIN} comes from the compose environment (see .env.production.example).
-# ACME is automatic; when Cloudflare proxies the domain, set the
-# CF_DNS_TOKEN env and uncomment the dns line for DNS-01 challenges.
+# Cloudflare terminates TLS and HTTP/3 and reaches this site through the
+# Tunnel connector (cloudflared) on the compose `tunnel` network, so Caddy
+# serves plain HTTP on :80 and obtains no certificate.
 # Dev equivalent: Caddyfile (host-run, https://localhost, Trunk dev :3000).
 
-{$DOMAIN} {
+{
+	servers {
+		# Client address: only the connector's fixed address may name the
+		# client, through the CF-Connecting-IP header Cloudflare overwrites on
+		# every request. Any other peer, a private address or the host's
+		# bridge gateway included, is the client itself.
+		trusted_proxies static {$TRUSTED_PROXY}
+		client_ip_headers CF-Connecting-IP
+	}
+	# A stop lets in-flight requests finish before compose kills the edge.
+	grace_period 25s
+}
+
+:80 {
 	encode zstd gzip
 
 	# Content-hashed build output and the self-hosted fonts (renamed, never
@@ -23,18 +36,20 @@
 	# Axum REST API. Swagger UI and the OpenAPI JSON are not mounted in
 	# production, so they get no route here.
 	#
-	# Client address: Caddy has no trusted_proxies configured, so it replaces
-	# X-Forwarded-For with the real peer address; the server reads only that
-	# header (TRUSTED_IP_HEADER=x-forwarded-for). Every other address header a
-	# client may send is stripped so it can never reach the API. If Cloudflare
-	# fronts this host, add trusted_proxies for its ranges and switch
-	# TRUSTED_IP_HEADER to cf-connecting-ip instead of removing it here.
+	# The server reads the client only from X-Forwarded-For
+	# (TRUSTED_IP_HEADER=x-forwarded-for), which the edge overwrites with the
+	# address resolved above; every other address header a client may send
+	# is stripped so it can never reach the API. While the server restarts,
+	# a request waits for it instead of failing at once.
 	handle /api/* {
 		reverse_proxy http://server:8080 {
+			header_up X-Forwarded-For {client_ip}
 			header_up -X-Real-IP
 			header_up -CF-Connecting-IP
 			header_up -True-Client-IP
 			header_up -Forwarded
+			lb_try_duration 15s
+			lb_try_interval 250ms
 		}
 	}
 
@@ -76,7 +91,4 @@
 	# header_up Host is preserved by default. The server trusts the client
 	# address header only because TRUST_PROXY_HEADERS=true on the server
 	# service and this edge is the sole way in.
-	# tls {
-	# 	dns cloudflare {$CF_DNS_TOKEN}
-	# }
 }

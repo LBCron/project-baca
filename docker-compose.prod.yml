@@ -11,6 +11,13 @@
 x-logging: &logging
   driver: local
 
+# The tunnel network's fixed addresses. The edge trusts CF-Connecting-IP only
+# from cloudflared's own address (Caddyfile.prod): not the subnet, whose
+# gateway (.1) is the host itself, so a host process cannot name a client.
+# No other service and no published port may join that network.
+x-tunnel-subnet: &tunnel_subnet 10.203.53.0/29
+x-cloudflared-ip: &cloudflared_ip 10.203.53.2
+
 services:
   postgres:
     image: pgvector/pgvector:pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8
@@ -201,18 +208,41 @@ services:
     logging: *logging
     mem_limit: 128m
     cpus: 0.5
-    networks: [default, tunnel]
+    # Matches Caddy's grace_period, so in-flight requests finish on a stop.
+    stop_grace_period: 30s
+    networks:
+      default:
+      tunnel:
+        # Pinned so it can never take cloudflared's address first.
+        ipv4_address: 10.203.53.3
     depends_on:
       - server
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+    # No published port: every request arrives through cloudflared.
     environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN}
+      TRUSTED_PROXY: *cloudflared_ip
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+
+  # Outbound-only connector to Cloudflare. The Tunnel's public hostnames
+  # (rotaria.site, www.rotaria.site) point at http://edge:80; on the tunnel
+  # network it reaches nothing else.
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    restart: always
+    logging: *logging
+    mem_limit: 128m
+    cpus: 0.25
+    networks:
+      tunnel:
+        ipv4_address: *cloudflared_ip
+    depends_on:
+      - edge
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN}
+      # Metrics and pprof stay inside the container.
+      TUNNEL_METRICS: 127.0.0.1:20241
 
 # Postgres and Redis (and MinIO) have no route out and no published port;
 # only the services that hold their credentials join this network.
@@ -222,6 +252,9 @@ networks:
   # The edge's only way in from the Cloudflare Tunnel connector, which must not
   # reach the server past the edge's client-address rewrite.
   tunnel:
+    ipam:
+      config:
+        - subnet: *tunnel_subnet
 
 volumes:
   pgdata_prod:
