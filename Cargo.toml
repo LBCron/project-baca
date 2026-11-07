@@ -67,6 +67,15 @@ codegen-units = 1
 panic = "abort"
 
 # Full debuginfo across ~570 crates made each test binary ~390 MB and target/ reach 50+ GB.
+# `trunk serve` (make dev frontend): opt-level 0 makes a 64 MB wasm that a
+# service-worker-controlled page reads twice (preload plus init fetch), and
+# Chromium never finishes the unread copy; opt-level 1 keeps it near release
+# size while staying an incremental dev build. The server keeps `dev`.
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+debug = false
+
 [profile.dev]
 debug = "line-tables-only"
 
