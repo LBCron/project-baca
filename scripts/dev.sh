@@ -35,6 +35,9 @@ port_of() {
 	esac
 }
 
+# A root-owned listener (docker-proxy) has no visible pid, so "busy" and
+# "whose" are separate questions.
+port_busy() { [[ -n $(ss -Hltn "sport = :$1") ]]; }
 listener_pid() { ss -Hltnp "sport = :$1" | grep -o 'pid=[0-9]*' | head -n 1 | cut -d= -f2 || true; }
 
 # Only processes started from this repository may be taken over.
@@ -61,8 +64,9 @@ stop_service() {
 		stop_group "$(cat "$STATE/$svc.pgid")"
 		rm -f "$STATE/$svc.pgid" "$STATE/$svc.owner"
 	fi
+	port_busy "$port" || return 0
 	pid=$(listener_pid "$port")
-	[[ -z $pid ]] && return
+	[[ -n $pid ]] || die "port $port is held by a process this user cannot see (root or another user); stop it yourself"
 	ours "$pid" || die "port $port is held by pid $pid ($(cat "/proc/$pid/comm" 2>/dev/null)) outside this repo; stop it yourself"
 	pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
 	say "taking $svc port $port over from pid $pid (process group $pgid) in $(readlink "/proc/$pid/cwd")"
@@ -105,11 +109,16 @@ launch() {
 
 # Starts what the API needs without recreating containers whose image moved.
 # Any SMTP catcher on the dev port will do (another project's Mailpit often
-# holds it), so mailpit starts only when the port is free.
+# holds it). When the port is free, mailpit is recreated: a container started
+# while the port was taken keeps running with nothing published, and signup
+# then answers 502.
 services() {
-	local svcs=(postgres redis minio)
-	[[ -n $(listener_pid "$(sed -n 's/^SMTP_PORT=//p' .env | tail -n 1)") ]] || svcs+=(mailpit)
-	COMPOSE_PROJECT_NAME=project-baca docker compose up -d --wait --no-recreate "${svcs[@]}" >/dev/null
+	local smtp
+	smtp=$(sed -n 's/^SMTP_PORT=//p' .env | tail -n 1)
+	COMPOSE_PROJECT_NAME=project-baca docker compose up -d --wait --no-recreate postgres redis minio >/dev/null
+	port_busy "$smtp" && return
+	COMPOSE_PROJECT_NAME=project-baca docker compose up -d --wait --force-recreate mailpit >/dev/null
+	port_busy "$smtp" || die "nothing listens on SMTP port $smtp after starting mailpit"
 }
 
 # The server reads .env at boot and does not reload, so every call restarts it
