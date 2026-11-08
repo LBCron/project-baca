@@ -1,12 +1,14 @@
 //! Axum router, state, middleware, and OpenAPI spec.
 
+pub mod audit;
 pub mod error;
+pub mod error_tracking;
 pub mod middleware;
 pub mod routes;
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{MatchedPath, State},
     http::{header, HeaderName, HeaderValue, Request, Response, StatusCode},
     middleware as axum_mw,
     response::IntoResponse,
@@ -18,7 +20,6 @@ use sea_orm::DatabaseConnection;
 use shared::*;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::trace::TraceLayer;
 use tracing::Instrument;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -275,7 +276,10 @@ impl utoipa::Modify for ErrorResponsesAddon {
     }
 }
 
-/// Middleware for request ID correlation (x-request-id) across tracing spans and HTTP responses
+/// Mints the request id (x-request-id) for every span and response, and logs
+/// one completion line per request: method, route template, status, latency
+/// and request id. Never the query string, headers or body, which carry
+/// tokens, addresses and search text.
 pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> Response<Body> {
     // Server-generated IDs are never trusted from the client: a caller-supplied
     // id could collide or be used to probe correlation, so always mint fresh.
@@ -284,8 +288,23 @@ pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> R
         return next.run(req).await;
     };
 
+    let method = req.method().clone();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", |path| path.as_str())
+        .to_string();
+    let started = std::time::Instant::now();
+    sentry::configure_scope(|scope| scope.set_tag("request_id", &request_id));
     let span = tracing::info_span!("http_request", request_id = %request_id);
     let mut response = next.run(req).instrument(span).await;
+    let status = response.status().as_u16();
+    let latency_ms = started.elapsed().as_millis() as u64;
+    if response.status() == StatusCode::FORBIDDEN {
+        tracing::warn!(target: "server::http", event = "http.request.completed", %method, route, status, latency_ms, request_id, "Request refused");
+    } else {
+        tracing::info!(target: "server::http", event = "http.request.completed", %method, route, status, latency_ms, request_id, "Request completed");
+    }
     response
         .headers_mut()
         .insert(REQUEST_ID_HEADER.clone(), request_id_value);
@@ -387,33 +406,52 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
     )
 }
 
-/// Infrastructure health check handler for database and cache connectivity
+/// Longest a readiness probe waits for one store; a store that has not
+/// answered by then counts as disconnected, so a monitor with a short
+/// timeout reads 503 instead of timing out itself.
+pub const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn redis_answers(state: &AppState) -> bool {
+    let Ok(mut conn) = state.get_redis_conn().await else {
+        return false;
+    };
+    redis::cmd("PING")
+        .query_async::<String>(&mut conn)
+        .await
+        .is_ok_and(|pong| pong == "PONG")
+}
+
+/// Readiness: Postgres and Redis each answer a ping within
+/// [`HEALTH_PROBE_TIMEOUT`]. Either down answers 503 with the same body.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
     responses(
-        (status = 200, description = "Database and cache connectivity status")
+        (status = 200, description = "Postgres and Redis both answer: `status` is `ok`"),
+        (status = 503, description = "Postgres or Redis did not answer within 2 s: `status` is `degraded` and the failed store reads `disconnected`")
     ),
     tag = "System & Health"
 )]
 pub async fn api_health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let db_connected = state.db.ping().await.is_ok();
-    let redis_connected = match state.get_redis_conn().await {
-        Ok(mut conn) => redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map(|pong| pong == "PONG")
-            .unwrap_or(false),
-        Err(_) => false,
-    };
-    let degraded = !(db_connected && redis_connected);
+    let (db_connected, redis_connected) = tokio::join!(
+        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, state.db.ping()),
+        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, redis_answers(&state)),
+    );
+    let db_connected = matches!(db_connected, Ok(Ok(())));
+    let redis_connected = redis_connected.unwrap_or(false);
+    let healthy = db_connected && redis_connected;
+    let connection = |up: bool| if up { "connected" } else { "disconnected" };
 
     (
-        StatusCode::OK,
+        if healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         Json(ApiResponse::success(serde_json::json!({
-            "status": if degraded { "degraded" } else { "ok" },
-            "postgres": if db_connected { "connected" } else { "disconnected" },
-            "redis": if redis_connected { "connected" } else { "disconnected" }
+            "status": if healthy { "ok" } else { "degraded" },
+            "postgres": connection(db_connected),
+            "redis": connection(redis_connected)
         }))),
     )
 }
@@ -548,6 +586,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        .layer(sentry::integrations::tower::SentryHttpLayer::new())
+        // A hub per request, so its request id and request data stay its own.
+        .layer(sentry::integrations::tower::NewSentryLayer::<Request<Body>>::new_from_top())
         .with_state(state)
 }
