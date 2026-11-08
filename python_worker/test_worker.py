@@ -1135,7 +1135,7 @@ class ErrorTrackingTest(unittest.TestCase):
 
         def embed(chapter_text):
             request_body = {"contents": chapter_text}  # noqa: F841 - a local Sentry must not ship
-            raise RuntimeError("embedding failed")
+            raise RuntimeError(f"LLM response missing text: {{'candidates': '{chapter_text}'}}")
 
         # Built at run time, so the source lines Sentry sends cannot hold it.
         book_text = "chapter-" + uuid.uuid4().hex
@@ -1152,13 +1152,29 @@ class ErrorTrackingTest(unittest.TestCase):
         failed, stopped = transport.events
         self.assertEqual(failed["tags"]["job_id"], "job-42")
         self.assertEqual(failed["environment"], "production")
-        self.assertEqual(failed["exception"]["values"][-1]["value"], "embedding failed")
+        self.assertEqual(failed["exception"]["values"][-1]["value"], "LLM response missing text")
         self.assertEqual(stopped["tags"]["job_id"], "job-43")
         for event in transport.events:
             dumped = json.dumps(event, default=str)
             self.assertNotIn(book_text, dumped)
             self.assertNotIn("request", event)
             self.assertFalse(event.get("breadcrumbs", {}).get("values"))
+
+    def test_scrubbed_reasons_are_short_and_carry_no_detail(self):
+        event = {
+            "message": "x" * 500,
+            "exception": {"values": [
+                {"value": "Gemini API unavailable (HTTP 503)"},
+                {"value": "y" * 500},
+                {"value": "LLM response missing text: model reply"},
+            ]},
+            "tags": {"job_id": "job-7"},
+        }
+        scrubbed = worker.scrub_event(event, {})
+        values = [v["value"] for v in scrubbed["exception"]["values"]]
+        self.assertEqual(values, ["Gemini API unavailable (HTTP 503)", "y" * 120, "LLM response missing text"])
+        self.assertEqual(len(scrubbed["message"]), 120)
+        self.assertEqual(scrubbed["tags"], {"job_id": "job-7"})
 
     def test_job_failures_are_reported(self):
         with mock.patch.object(worker, "report_job_failure") as report:

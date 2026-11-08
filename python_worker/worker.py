@@ -1456,13 +1456,27 @@ def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, rea
 _error_tracking = False
 
 
+SENTRY_REASON_CHARS = 120
+
+
+def short_reason(text: str) -> str:
+    """The head of an error message: up to the first ": ", where messages
+    put their detail (a model reply, a response body), and at most
+    SENTRY_REASON_CHARS characters."""
+    return text.split(": ", 1)[0][:SENTRY_REASON_CHARS]
+
+
 def scrub_event(event: dict, _hint: dict) -> dict:
-    """Keeps an event to the exception and its job id: no request, log
-    breadcrumbs, extra data, user, or frame locals, any of which could hold
-    book text or a model request body."""
+    """Keeps an event to the exception kind, a short reason, and its job id:
+    no request, log breadcrumbs, extra data, user, frame locals, or message
+    detail, any of which could hold book text or a model request or reply."""
     for key in ("request", "breadcrumbs", "extra", "user"):
         event.pop(key, None)
+    if isinstance(event.get("message"), str):
+        event["message"] = short_reason(event["message"])
     for exception in (event.get("exception") or {}).get("values") or []:
+        if isinstance(exception.get("value"), str):
+            exception["value"] = short_reason(exception["value"])
         for frame in (exception.get("stacktrace") or {}).get("frames") or []:
             frame.pop("vars", None)
     return event
