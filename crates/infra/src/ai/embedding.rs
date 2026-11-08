@@ -382,7 +382,7 @@ mod tests {
         assert!(build_embedding_provider(&cfg).is_ok());
         cfg.provider = "mock".to_string();
         assert!(build_embedding_provider(&cfg).is_ok());
-        for retired in ["gemini", "fastembed"] {
+        for retired in ["openai", "fastembed"] {
             cfg.provider = retired.to_string();
             assert!(build_embedding_provider(&cfg).is_err(), "{retired}");
         }

@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import html
 import io
 import json
@@ -92,16 +93,17 @@ class Settings:
     s3_secret_key: str = field(default_factory=lambda: env("S3_SECRET_ACCESS_KEY", "minioadmin"))
     bucket_epubs: str = field(default_factory=lambda: env("S3_BUCKET_EPUBS", "baca-epubs"))
     bucket_covers: str = field(default_factory=lambda: env("S3_BUCKET_COVERS", "baca-covers"))
-    gemini_api_key: str = field(
-        default_factory=lambda: env("GEMINI_API_KEY", env("AI_API_KEY", ""))
-    )
     embedding_url: str = field(
         default_factory=lambda: env("EMBEDDING_URL", "http://127.0.0.1:8090")
     )
     embedding_dim: int = field(
         default_factory=lambda: int(env("EMBEDDING_DIMENSION", env("AI_DIMENSION", "768")))
     )
-    llm_model: str = field(default_factory=lambda: env("LLM_MODEL_NAME", "gemini-flash-latest"))
+    # Cards and recaps; the SDK reads ANTHROPIC_API_KEY itself.
+    llm_model: str = field(default_factory=lambda: env("LLM_MODEL_NAME", "claude-sonnet-5-5"))
+    batch_poll_seconds: float = field(
+        default_factory=lambda: float(env("LLM_BATCH_POLL_SECONDS", "30"))
+    )
     stream: str = "stream:epub_ingestion"
     dlq_stream: str = "stream:epub_ingestion:dlq"
     # Mirrors STREAM_MAXLEN in crates/infra/src/queue.rs: an approximate cap
@@ -683,9 +685,6 @@ def backoff_seconds(retry: int, retry_after: str | None = None, jitter: float = 
     return float(retry * retry) * (1.0 + max(0.0, min(jitter, 0.2)))
 
 
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
-
-
 def _post_json(
     url: str,
     payload: dict,
@@ -765,19 +764,48 @@ def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[
     return out
 
 
-ATOMIC_CARDS_PROMPT = """Analyze this book chapter and respond with a single JSON object (no markdown fences, no commentary) with exactly these keys:
-{"key_concepts": ["3-5 short noun phrases"], "notable_quotes": ["1-2 verbatim quotes from the chapter"], "historical_context": "2-3 sentences"}.
-Do not invent quotes; use only text from the chapter.
+# Cards and recaps: Claude through the Message Batches API, once per book at
+# ingestion. Structured outputs hold every answer to its schema.
+
+ATOMIC_CARDS_PROMPT = """Write the insight cards for this book chapter.
+key_concepts: 3-5 short noun phrases. notable_quotes: 1-2 quotes copied verbatim from the chapter; never invent one. historical_context: 2-3 sentences.
 
 CHAPTER:
 """
 
-RECAP_PROMPT = """Summarize ONLY what happens up to and including this chapter of an ongoing book. Respond with a single JSON object (no markdown fences, no commentary) with exactly these keys:
-{"summary": "events so far in 4-6 sentences", "key_characters": ["names"], "spoiler_free_note": "one sentence"}.
-Never reveal or speculate about later chapters.
+RECAP_PROMPT = """Summarize ONLY what happens up to and including the current chapter of an ongoing book.
+summary: the events so far in 4-6 sentences. key_characters: their names. spoiler_free_note: one sentence. Never reveal or speculate about later chapters.
 
 CHAPTERS SO FAR (last one is the current chapter):
 """
+
+CARDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_concepts": {"type": "array", "items": {"type": "string"}},
+        "notable_quotes": {"type": "array", "items": {"type": "string"}},
+        "historical_context": {"type": "string"},
+    },
+    "required": ["key_concepts", "notable_quotes", "historical_context"],
+    "additionalProperties": False,
+}
+
+RECAP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "key_characters": {"type": "array", "items": {"type": "string"}},
+        "spoiler_free_note": {"type": "string"},
+    },
+    "required": ["summary", "key_characters", "spoiler_free_note"],
+    "additionalProperties": False,
+}
+
+LLM_SERVICE = "Claude API"
+# Written into every request: the model's default effort is not ours to rely on.
+LLM_EFFORT = "medium"
+# Adaptive thinking counts toward the cap; a card or recap needs far less.
+LLM_MAX_TOKENS = 16000
 
 
 PROMPT_BUDGET_CHARS = 12000
@@ -803,30 +831,126 @@ def build_recap_input(previous_cards: list[dict], current_text: str, budget: int
         lines.pop(0)
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else ""
-        if text.rstrip().endswith("```"):
-            text = text.rstrip()[: -3]
-    return text.strip()
+def _llm_call(call):
+    """Runs one SDK call; its failures become :class:`UpstreamError` worded
+    for the curator. The SDK already retried 429, 5xx, and dropped
+    connections twice with backoff."""
+    import anthropic
 
-
-def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
-    """Calls the text LLM and parses the JSON object response."""
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = f"{GEMINI_BASE_URL}{settings.llm_model}:generateContent"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    result = _post_json(
-        url, payload, "Gemini API", {"x-goog-api-key": settings.gemini_api_key},
-        timeout=120, job_id=job_id,
-    )
     try:
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"LLM response missing text: {str(result)[:200]}") from exc
-    return json.loads(_strip_fences(text))
+        return call()
+    except anthropic.APIStatusError as exc:
+        kind = "unavailable" if exc.status_code == 429 or exc.status_code >= 500 else "rejected the request"
+        raise UpstreamError(f"{LLM_SERVICE} {kind} (HTTP {exc.status_code})") from exc
+    except anthropic.APIConnectionError as exc:
+        raise UpstreamError(f"{LLM_SERVICE} unreachable") from exc
+    except anthropic.AnthropicError as exc:
+        raise UpstreamError(f"{LLM_SERVICE} client not configured ({type(exc).__name__})") from exc
+
+
+def make_llm():
+    import anthropic
+
+    return _llm_call(lambda: anthropic.Anthropic(max_retries=LLM_MAX_ATTEMPTS - 1, timeout=120.0))
+
+
+def llm_request(custom_id: str, prompt: str, schema: dict, settings: Settings) -> dict:
+    return {
+        "custom_id": custom_id,
+        "params": {
+            "model": settings.llm_model,
+            "max_tokens": LLM_MAX_TOKENS,
+            "output_config": {
+                "effort": LLM_EFFORT,
+                "format": {"type": "json_schema", "schema": schema},
+            },
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    }
+
+
+def _result_failure(item) -> str | None:
+    """Why one batch result cannot be used, or None when it can."""
+    result = item.result
+    if result.type == "succeeded":
+        message = result.message
+        if message.stop_reason == "refusal":
+            return "declined by the model"
+        if message.stop_reason == "max_tokens":
+            return "cut off at the token limit"
+        return None
+    if result.type == "errored":
+        error = getattr(getattr(result, "error", None), "error", None)
+        return f"errored ({getattr(error, 'type', 'unknown')})"
+    return result.type  # canceled or expired
+
+
+def run_batch(client, redis_client, job_id: str, phase: str, requests: list[dict], settings: Settings) -> dict:
+    """Runs one Message Batch to its end and returns the parsed JSON of each
+    request by ``custom_id``.
+
+    The batch id sits in the job hash with a digest of the requests, so a job
+    released on shutdown or after a crash polls the same batch when it runs
+    again instead of paying for a second one; a failed batch is forgotten,
+    so its retry submits anew. Any request that did not succeed fails the
+    phase with a reason the curator desk shows."""
+    field = f"llm_batch_{phase}"
+    digest = hashlib.sha256(json.dumps(requests, sort_keys=True).encode()).hexdigest()[:16]
+    stored = redis_client.hget(f"job:{job_id}", field) or ""
+    stored_digest, _, batch_id = str(stored).partition(":")
+    if stored_digest != digest or not batch_id:
+        batch_id = _llm_call(lambda: client.messages.batches.create(requests=requests)).id
+        write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, field, f"{digest}:{batch_id}"))
+        LOG.info("job %s: %s batch %s submitted (%d requests)", job_id, phase, batch_id, len(requests))
+    # Hours at most (24 h is the API's limit); keep_claimed holds the job
+    # meanwhile, and SIGTERM interrupts the sleep.
+    while _llm_call(lambda: client.messages.batches.retrieve(batch_id)).processing_status != "ended":
+        time.sleep(settings.batch_poll_seconds)
+
+    parsed: dict[str, dict] = {}
+    failures: list[str] = []
+    for item in _llm_call(lambda: list(client.messages.batches.results(batch_id))):
+        failure = _result_failure(item)
+        if failure is None:
+            text = next((b.text for b in item.result.message.content if b.type == "text"), "")
+            try:
+                parsed[item.custom_id] = json.loads(text)
+            except ValueError:
+                failure = "answered without JSON"
+        if failure:
+            failures.append(f"{item.custom_id.replace('-', ' ')} {phase} {failure}")
+    missing = len(requests) - len(parsed) - len(failures)
+    if failures or missing:
+        write_job(redis_client, job_id, lambda pipe, key: pipe.hdel(key, field))
+        first = failures[0] if failures else f"{missing} results missing"
+        raise UpstreamError(
+            f"{LLM_SERVICE}: {len(failures) + missing} of {len(requests)} {phase} failed, first: {first}"
+        )
+    return parsed
+
+
+def summarize_chapters(
+    client, redis_client, job_id: str, texts: list[str], settings: Settings
+) -> tuple[list[dict], dict[int, dict]]:
+    """Insight cards for every chapter, then recaps from chapter 2 on. A
+    recap reads the key concepts of the chapters before it, so the two run
+    as two batches. Returns the cards in chapter order and the recaps by
+    chapter number."""
+    card_requests = [
+        llm_request(f"chapter-{n}", ATOMIC_CARDS_PROMPT + text[:PROMPT_BUDGET_CHARS], CARDS_SCHEMA, settings)
+        for n, text in enumerate(texts, start=1)
+    ]
+    by_id = run_batch(client, redis_client, job_id, "cards", card_requests, settings)
+    cards = [by_id[f"chapter-{n}"] for n in range(1, len(texts) + 1)]
+    set_job(redis_client, job_id, "summarizing", 88)
+    recap_requests = [
+        llm_request(
+            f"chapter-{n}", RECAP_PROMPT + build_recap_input(cards[: n - 1], texts[n - 1]), RECAP_SCHEMA, settings
+        )
+        for n in range(2, len(texts) + 1)
+    ]
+    recaps = run_batch(client, redis_client, job_id, "recaps", recap_requests, settings) if recap_requests else {}
+    return cards, {int(key.split("-", 1)[1]): value for key, value in recaps.items()}
 
 
 # Pipeline
@@ -1065,56 +1189,27 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             done = min(offset + 20, len(pending))
             set_job(redis_client, job_id, "embedding", 55 + int(20 * done / len(pending)))
 
-        # Atomic cards + spoiler-free recaps via the text LLM.
+        # Atomic cards + spoiler-free recaps, written by Claude in two batches.
         set_job(redis_client, job_id, "summarizing", 80)
-        previous_cards: list[dict] = []
-        for number, (chapter_id, chapter) in enumerate(
-            zip(chapter_ids, parsed.chapters), start=1
-        ):
-            cards = generate_json(
-                ATOMIC_CARDS_PROMPT + chapter.text[:PROMPT_BUDGET_CHARS], settings, job_id
-            )
-            cur.execute(
-                """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
-                   VALUES (%s, %s, %s, 'chapter_atomic_cards', %s::jsonb, %s)
+        cards, recaps = summarize_chapters(
+            make_llm(), redis_client, job_id, [chapter.text for chapter in parsed.chapters], settings
+        )
+        upsert = """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
+                   VALUES (%s, %s, %s, %s, %s::jsonb, %s)
                    ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
                        SET content_json = EXCLUDED.content_json,
                            model_version = EXCLUDED.model_version,
-                           created_at = NOW()""",
-                (
-                    str(uuid.uuid4()),
-                    book_id,
-                    chapter_id,
-                    json.dumps(cards),
-                    settings.llm_model,
-                ),
-            )
-            if number > 1:  # recaps start at chapter 2
-                recap = generate_json(
-                    RECAP_PROMPT + build_recap_input(previous_cards, chapter.text), settings, job_id
-                )
+                           created_at = NOW()"""
+        for number, (chapter_id, chapter_cards) in enumerate(zip(chapter_ids, cards), start=1):
+            rows = [("chapter_atomic_cards", chapter_cards)]
+            if number in recaps:  # recaps start at chapter 2
+                rows.append(("chapter_recap", recaps[number]))
+            for recap_type, content in rows:
                 cur.execute(
-                    """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
-                       VALUES (%s, %s, %s, 'chapter_recap', %s::jsonb, %s)
-                       ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
-                       SET content_json = EXCLUDED.content_json,
-                           model_version = EXCLUDED.model_version,
-                           created_at = NOW()""",
-                    (
-                        str(uuid.uuid4()),
-                        book_id,
-                        chapter_id,
-                        json.dumps(recap),
-                        settings.llm_model,
-                    ),
+                    upsert,
+                    (str(uuid.uuid4()), book_id, chapter_id, recap_type, json.dumps(content), settings.llm_model),
                 )
-            previous_cards.append(cards)
-            set_job(
-                redis_client,
-                job_id,
-                "summarizing",
-                80 + int(15 * number / len(chapter_ids)),
-            )
+        set_job(redis_client, job_id, "summarizing", 95)
 
         # The word count marks a finished ingestion even for a book archived
         # meanwhile, so a curator can restore it; only the status waits on
@@ -1340,7 +1435,8 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
     consumer = f"{socket.gethostname()}-{os.getpid()}"
     processed = 0
     # `docker stop` sends SIGTERM and kills ten seconds later; raising here
-    # interrupts even a blocking Gemini call, so the job is released in time.
+    # interrupts even a blocking HTTP call or a batch poll, so the job is
+    # released in time (its batch id stays in the job hash for the next run).
     signal.signal(signal.SIGTERM, _raise_shutdown)
     signal.signal(signal.SIGINT, _raise_shutdown)
 

@@ -168,8 +168,8 @@ class ClaimAndShutdownLiveTest(unittest.TestCase):
 
 @unittest.skipUnless(services_up() and database_up(), "live Redis and Postgres required")
 class ArchiveMidIngestionLiveTest(unittest.TestCase):
-    """A curator archives a book while its ingestion is summarizing (Gemini
-    slowed to seconds per call): the archive answers at once, and the job
+    """A curator archives a book while its ingestion is summarizing (the
+    batch slowed to seconds): the archive answers at once, and the job
     leaves the book archived instead of publishing it."""
 
     def test_archiving_mid_ingestion_answers_within_three_seconds(self):
@@ -189,10 +189,10 @@ class ArchiveMidIngestionLiveTest(unittest.TestCase):
         conn.commit()
         summarizing = threading.Event()
 
-        def slow_summary(*_args, **_kwargs):
+        def slow_summary(_client, _redis, _job, texts, _settings):
             summarizing.set()
             time.sleep(4)
-            return {}
+            return [{}] * len(texts), {}
 
         minio = mock.Mock()
         minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some words."), ("Two", "More words.")]))
@@ -201,7 +201,8 @@ class ArchiveMidIngestionLiveTest(unittest.TestCase):
         try:
             with mock.patch.object(worker, "make_minio", return_value=minio), \
                  mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [vector] * len(texts)), \
-                 mock.patch.object(worker, "generate_json", side_effect=slow_summary):
+                 mock.patch.object(worker, "make_llm"), \
+                 mock.patch.object(worker, "summarize_chapters", side_effect=slow_summary):
                 job = threading.Thread(
                     target=worker.process_message,
                     args=("1-0", {"book_id": book_id, "storage_path": "p", "job_id": job_id}, settings),
@@ -305,6 +306,35 @@ class FailureRecoveryLiveTest(unittest.TestCase):
         self.assertIn("stopped 3 times", letter["error"])
         self.assertEqual(self.client.hget(f"job:{job_id}", "status"), "failed")
         self.assertEqual(self.client.xpending(self.settings.stream, self.settings.group)["pending"], 0)
+
+
+@unittest.skipUnless(
+    os.environ.get("ANTHROPIC_API_KEY") and services_up(), "ANTHROPIC_API_KEY and live Redis required"
+)
+class ClaudeBatchLiveTest(unittest.TestCase):
+    """Two short chapters through the real Message Batches API: cards, then a
+    recap, each held to its schema. Paid, and a batch may take minutes (at
+    most 24 h), so it runs only with a key in the environment."""
+
+    def test_cards_and_recap_come_back_in_their_schema(self):
+        settings = worker.Settings(batch_poll_seconds=10)
+        client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+        job_id = f"claude-probe-{uuid.uuid4()}"
+        chapters = [
+            "Budi menemukan sepucuk surat tua di loteng rumah neneknya. Surat itu ditulis pada tahun 1928 "
+            "oleh seorang guru di Batavia yang menceritakan Sumpah Pemuda.",
+            "Budi membawa surat itu ke perpustakaan kota. Pustakawan membantunya membaca tulisan tangan "
+            "yang pudar dan menemukan nama kakek buyutnya di dalamnya.",
+        ]
+        try:
+            cards, recaps = worker.summarize_chapters(worker.make_llm(), client, job_id, chapters, settings)
+        finally:
+            client.delete(f"job:{job_id}")
+        self.assertEqual(len(cards), 2)
+        for card in cards:
+            self.assertEqual(set(card), {"key_concepts", "notable_quotes", "historical_context"})
+        self.assertEqual(list(recaps), [2])
+        self.assertEqual(set(recaps[2]), {"summary", "key_characters", "spoiler_free_note"})
 
 
 if __name__ == "__main__":

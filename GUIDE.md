@@ -54,7 +54,7 @@ Credentials and bucket names are in `.env.example`. The first `make db-up` downl
 | `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_EPUBS`, `S3_BUCKET_COVERS`, `S3_FORCE_PATH_STYLE` | MinIO dev values | any S3-compatible store |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Mailpit, `starttls` | `SMTP_SECURITY=none` for Mailpit (refused in production); credentials sent only when `SMTP_USER` is set; signup answers 502 when the relay is unreachable |
 | `EMBEDDING_PROVIDER`, `EMBEDDING_URL`, `EMBEDDING_DIMENSION` | `tei`, `http://127.0.0.1:8090`, `768` | the self-hosted embedding service; server embeds queries, worker embeds chunks (worker reads `EMBEDDING_URL` and `EMBEDDING_DIMENSION`); `mock` only in tests; any other provider stops the boot |
-| `LLM_MODEL_NAME`, `RECLAIM_IDLE_MS` | `gemini-flash-latest`, `300000` | worker only |
+| `ANTHROPIC_API_KEY`, `LLM_MODEL_NAME`, `LLM_BATCH_POLL_SECONDS`, `RECLAIM_IDLE_MS` | none, `claude-sonnet-5-5`, `30`, `300000` | worker only: cards and recaps through Claude Message Batches (the production compose requires the key for the worker; the server never calls Claude) |
 | `API_BASE_URL` | `http://localhost:8080/api/v1` | baked into the WASM bundle at build time (`make build API_BASE_URL=...`) |
 
 ## 4. Run

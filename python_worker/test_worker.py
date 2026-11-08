@@ -8,6 +8,7 @@ import io
 import json
 import unittest
 import urllib.error
+import urllib.parse
 import zipfile
 from unittest import mock
 
@@ -476,10 +477,10 @@ class ArchivedBeforeEmbeddingTest(unittest.TestCase):
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "embed_batch") as embed, \
-             mock.patch.object(worker, "generate_json") as generate:
+             mock.patch.object(worker, "summarize_chapters") as summarize:
             worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         embed.assert_not_called()
-        generate.assert_not_called()
+        summarize.assert_not_called()
         status = redis_client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual(status["error"], worker.ARCHIVED_ERROR)
         self.assertTrue(
@@ -566,7 +567,8 @@ class ParagraphIndexTest(unittest.TestCase):
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
-             mock.patch.object(worker, "generate_json", return_value={}):
+             mock.patch.object(worker, "make_llm"), \
+             mock.patch.object(worker, "summarize_chapters", side_effect=lambda c, r, j, texts, s: ([{}] * len(texts), {})):
             with self.assertRaisesRegex(RuntimeError, "stop at publish"):
                 worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         inserts = [p for sql, p in params if sql.startswith("INSERT INTO chapter_paragraphs")]
@@ -783,7 +785,8 @@ class CoverTest(unittest.TestCase):
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
-             mock.patch.object(worker, "generate_json", return_value={}):
+             mock.patch.object(worker, "make_llm"), \
+             mock.patch.object(worker, "summarize_chapters", side_effect=lambda c, r, j, texts, s: ([{}] * len(texts), {})):
             worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         minio.put_object.assert_not_called()
         self.assertFalse(any("cover_url" in sql for sql in cursor.statements))
@@ -997,10 +1000,10 @@ class ArchivedBookTest(unittest.TestCase):
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "embed_batch") as embed, \
-             mock.patch.object(worker, "generate_json") as generate:
+             mock.patch.object(worker, "summarize_chapters") as summarize:
             worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         embed.assert_not_called()
-        generate.assert_not_called()
+        summarize.assert_not_called()
         self.assertFalse(any("status = 'published'" in sql for sql in cursor.statements))
         last_status = redis_client.pipeline.return_value.hset.call_args.kwargs["mapping"]
         self.assertEqual(last_status["status"], "failed")
@@ -1117,3 +1120,219 @@ class DatabaseUrlTest(unittest.TestCase):
         dbapi.connect.assert_called_once_with(
             user="rotaria_app", password="p@ss/w", host="db", port=5432, database="rotaria"
         )
+
+
+class FakeRedis:
+    """The few hash commands the job code uses, kept in a dict."""
+
+    def __init__(self):
+        self.hashes: dict[str, dict] = {}
+
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
+
+    def pipeline(self):
+        store, ops = self.hashes, []
+
+        class Pipe:
+            def hset(self, key, field=None, value=None, mapping=None):
+                ops.append(lambda: store.setdefault(key, {}).update(mapping or {field: value}))
+
+            def hdel(self, key, field):
+                ops.append(lambda: store.get(key, {}).pop(field, None))
+
+            def hincrby(self, key, field, amount):
+                ops.append(lambda: store.setdefault(key, {}).update({field: int(store.get(key, {}).get(field, 0)) + amount}))
+
+            def expire(self, key, seconds):
+                ops.append(lambda: True)
+
+            def execute(self):
+                return [op() for op in ops]
+
+        return Pipe()
+
+
+def ns(**fields):
+    return mock.Mock(spec=list(fields), **fields)
+
+
+def succeeded(payload, stop_reason="end_turn"):
+    # A thinking block comes first, as adaptive thinking returns it.
+    content = [ns(type="thinking"), ns(type="text", text=json.dumps(payload))]
+    return ns(type="succeeded", message=ns(stop_reason=stop_reason, content=content))
+
+
+class FakeBatches:
+    """Message Batches as the SDK exposes them: counts every call and answers
+    each request through ``answer(custom_id, params)``."""
+
+    def __init__(self, answer, polls_until_ended=1, retrieve_error=None):
+        self.answer = answer
+        self.polls_until_ended = polls_until_ended
+        self.retrieve_error = retrieve_error
+        self.created: list[list[dict]] = []
+        self.requests_by_id: dict[str, list[dict]] = {}
+        self.retrieves = 0
+
+    def create(self, requests):
+        self.created.append(list(requests))
+        batch_id = f"msgbatch_{len(self.created)}"
+        self.requests_by_id[batch_id] = list(requests)
+        return ns(id=batch_id)
+
+    def retrieve(self, batch_id):
+        self.retrieves += 1
+        if self.retrieve_error is not None:
+            error, self.retrieve_error = self.retrieve_error, None
+            raise error
+        done = self.retrieves >= self.polls_until_ended
+        return ns(processing_status="ended" if done else "in_progress")
+
+    def results(self, batch_id):
+        return iter(
+            ns(custom_id=r["custom_id"], result=self.answer(r["custom_id"], r["params"]))
+            for r in self.requests_by_id[batch_id]
+        )
+
+
+def fake_client(batches):
+    client = mock.Mock()
+    client.messages.batches = batches
+    return client
+
+
+def card_or_recap(custom_id, params):
+    n = custom_id.split("-")[1]
+    if params["output_config"]["format"]["schema"] is worker.CARDS_SCHEMA:
+        return succeeded({"key_concepts": [f"concept {n}"], "notable_quotes": [], "historical_context": "c"})
+    return succeeded({"summary": f"so far {n}", "key_characters": [], "spoiler_free_note": "n"})
+
+
+class ClaudeBatchTest(unittest.TestCase):
+    def settings(self):
+        return worker.Settings(llm_model="claude-sonnet-5-5", batch_poll_seconds=0)
+
+    def test_cards_then_recaps_in_two_batches_with_the_decided_request_shape(self):
+        batches = FakeBatches(card_or_recap, polls_until_ended=3)
+        redis_client = FakeRedis()
+        with mock.patch.object(worker.time, "sleep") as sleep:
+            cards, recaps = worker.summarize_chapters(
+                fake_client(batches), redis_client, "j", ["one", "two", "three"], self.settings()
+            )
+        self.assertEqual(len(batches.created), 2, "one batch of cards, one of recaps")
+        self.assertEqual([r["custom_id"] for r in batches.created[0]], ["chapter-1", "chapter-2", "chapter-3"])
+        self.assertEqual([r["custom_id"] for r in batches.created[1]], ["chapter-2", "chapter-3"])
+        for request in batches.created[0] + batches.created[1]:
+            params = request["params"]
+            self.assertEqual(params["model"], "claude-sonnet-5-5")
+            self.assertEqual(params["output_config"]["effort"], "medium")
+            self.assertEqual(params["output_config"]["format"]["type"], "json_schema")
+            self.assertNotIn("thinking", params, "adaptive thinking is the model's default")
+        recap_three = batches.created[1][1]["params"]["messages"][0]["content"]
+        self.assertIn("Chapter 1: concept 1\nChapter 2: concept 2", recap_three, "recaps read earlier cards")
+        self.assertEqual([c["key_concepts"] for c in cards], [["concept 1"], ["concept 2"], ["concept 3"]])
+        self.assertEqual(sorted(recaps), [2, 3])
+        self.assertEqual(recaps[3]["summary"], "so far 3")
+        self.assertGreater(sleep.call_count, 0, "an unfinished batch is polled")
+
+    def test_a_one_chapter_book_needs_no_recap_batch(self):
+        batches = FakeBatches(card_or_recap)
+        cards, recaps = worker.summarize_chapters(fake_client(batches), FakeRedis(), "j", ["one"], self.settings())
+        self.assertEqual(len(batches.created), 1)
+        self.assertEqual((len(cards), recaps), (1, {}))
+
+    def test_a_job_released_mid_poll_resumes_its_batch_instead_of_paying_twice(self):
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("SIGTERM"))
+        with self.assertRaises(worker.WorkerShutdown):
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one", "two"], self.settings())
+        self.assertIn("llm_batch_cards", redis_client.hashes["job:j"], "the batch id survives the release")
+
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one", "two"], self.settings())
+        self.assertEqual(len(batches.created), 2, "cards once, recaps once: the cards batch was not resubmitted")
+
+    def test_a_changed_book_never_reuses_an_old_batch(self):
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap)
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one"], self.settings())
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one, revised"], self.settings())
+        self.assertEqual(len(batches.created), 2)
+
+    def test_a_refused_chapter_fails_the_job_with_a_curator_reason(self):
+        def refuse_two(custom_id, params):
+            if custom_id == "chapter-2":
+                return succeeded({}, stop_reason="refusal")
+            return card_or_recap(custom_id, params)
+
+        redis_client = FakeRedis()
+        with self.assertRaises(worker.UpstreamError) as caught:
+            worker.summarize_chapters(
+                fake_client(FakeBatches(refuse_two)), redis_client, "j", ["one", "two"], self.settings()
+            )
+        reason = worker.curator_reason(caught.exception)
+        self.assertEqual(reason, "Claude API: 1 of 2 cards failed, first: chapter 2 cards declined by the model")
+        self.assertNotIn("llm_batch_cards", redis_client.hashes["job:j"], "a failed batch is never polled again")
+
+    def test_expired_errored_and_truncated_requests_fail_the_phase(self):
+        answers = {
+            "chapter-1": ns(type="expired"),
+            "chapter-2": ns(type="errored", error=ns(error=ns(type="overloaded_error"))),
+            "chapter-3": succeeded({}, stop_reason="max_tokens"),
+        }
+        with self.assertRaises(worker.UpstreamError) as caught:
+            worker.summarize_chapters(
+                fake_client(FakeBatches(lambda cid, _p: answers[cid])), FakeRedis(), "j", ["a", "b", "c"], self.settings()
+            )
+        self.assertIn("3 of 3 cards failed, first: chapter 1 cards expired", str(caught.exception))
+
+    def test_a_dropped_connection_keeps_the_batch_for_the_retry(self):
+        import anthropic
+        import httpx2
+
+        redis_client = FakeRedis()
+        error = anthropic.APIConnectionError(request=httpx2.Request("GET", "https://api.anthropic.com"))
+        with self.assertRaisesRegex(worker.UpstreamError, "^Claude API unreachable$"):
+            worker.summarize_chapters(
+                fake_client(FakeBatches(card_or_recap, retrieve_error=error)), redis_client, "j", ["one"], self.settings()
+            )
+        self.assertIn("llm_batch_cards", redis_client.hashes["job:j"], "the paid batch is still polled next run")
+
+    def test_ingestion_writes_claude_cards_and_recaps_and_never_calls_google(self):
+        cursor = FakeCursor("draft")
+        params = []
+        record = cursor.execute
+        cursor.execute = lambda sql, p=(): (record(sql, p), params.append((sql, p)))
+        cursor.fetchone = lambda: ("chapter-id",) if cursor.statements[-1].lstrip().startswith(
+            "INSERT INTO chapters"
+        ) else ("Title", "Author", "en", "draft")
+        cursor.rowcount = 1
+        conn = mock.Mock()
+        conn.cursor.return_value = cursor
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "First words."), ("Two", "Second words.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        hosts = []
+
+        def embedder(request, timeout):
+            hosts.append(urllib.parse.urlsplit(request.full_url).hostname)
+            return io.BytesIO(json.dumps([[0.5] * 768]).encode())
+
+        batches = FakeBatches(card_or_recap)
+        settings = worker.Settings(embedding_url="http://embedder:80", batch_poll_seconds=0)
+        with mock.patch.object(worker, "make_redis", return_value=FakeRedis()), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "make_llm", return_value=fake_client(batches)), \
+             mock.patch.object(worker.urllib.request, "urlopen", embedder):
+            worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, settings)
+
+        self.assertEqual(len(batches.created), 2)
+        self.assertEqual(set(hosts), {"embedder"}, "embeddings stay on the host; nothing reaches Google")
+        rows = [p for sql, p in params if "INSERT INTO tldr_cache" in sql]
+        self.assertEqual([(r[3], r[5]) for r in rows], [
+            ("chapter_atomic_cards", "claude-sonnet-5-5"),
+            ("chapter_atomic_cards", "claude-sonnet-5-5"),
+            ("chapter_recap", "claude-sonnet-5-5"),
+        ])
+        self.assertTrue(any("status = 'published'" in sql for sql, _ in params))

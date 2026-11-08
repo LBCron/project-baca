@@ -237,7 +237,8 @@ services:
       S3_BUCKET_EPUBS: ${S3_BUCKET_EPUBS:-baca-epubs}
       S3_BUCKET_COVERS: ${S3_BUCKET_COVERS:-baca-covers}
       EMBEDDING_URL: http://embedder:80
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
+      # Cards and recaps at ingestion; the server never calls Claude.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set the Anthropic API key}
 
   edge:
     image: ghcr.io/aprxty3/project-baca/edge:${ROTARIA_VERSION:?set ROTARIA_VERSION}
