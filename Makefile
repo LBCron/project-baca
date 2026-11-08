@@ -279,7 +279,7 @@ prod-build:
 	@echo "Building production images..."
 	@$(PROD_COMPOSE) build
 
-# Server, worker, and edge images of ROTARIA_VERSION from GHCR (public, no login).
+# Server, worker, edge, and backup images of ROTARIA_VERSION from GHCR (public, no login).
 prod-pull:
 	@$(PROD_COMPOSE) pull
 
@@ -306,6 +306,18 @@ prod-db-role:
 
 prod-migrate-status:
 	@$(PROD_COMPOSE) --profile ops run --rm migrate status
+
+# One encrypted dump to the backup bucket now, as the backup service does every
+# 6 hours; a deploy runs it before migrating (GUIDE section 8).
+prod-backup:
+	@$(PROD_COMPOSE) run --rm backup pg_backup.sh
+
+# Restores the newest dump (or OBJECT=pg/YYYY/MM/DD/<name>) into a throwaway
+# Postgres and prints its row counts. AGE_IDENTITY is the owner's age private
+# key file; it is read through a read-only mount and never copied.
+prod-restore-drill:
+	@test -n "$(AGE_IDENTITY)" || { echo "Usage: make prod-restore-drill AGE_IDENTITY=<age key file> [OBJECT=pg/YYYY/MM/DD/<name>]" >&2; exit 2; }
+	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/pg_restore_drill.sh
 
 prod-logs:
 	@$(PROD_COMPOSE) logs -f
@@ -358,5 +370,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

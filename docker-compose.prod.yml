@@ -224,6 +224,39 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  # Encrypted dump to the backup bucket at start and every 6 hours
+  # (scripts/pg_backup.sh); the host has no cron or timer for it. Its R2 token
+  # reaches only the backup bucket and is never given to server or worker.
+  backup:
+    image: ghcr.io/aprxty3/project-baca/backup:${ROTARIA_VERSION:?set ROTARIA_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    restart: always
+    init: true
+    logging: *logging
+    mem_limit: 256m
+    cpus: 0.5
+    # store reaches Postgres; default reaches R2 and the heartbeat check.
+    networks: [default, store]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["pg_backup.sh", "--every", "21600"]
+    environment:
+      PGHOST: postgres
+      PGUSER: baca_user
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: project_baca_db
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?set BACKUP_AGE_RECIPIENT}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:?set the backup bucket}
+      BACKUP_S3_PROVIDER: ${BACKUP_S3_PROVIDER:-Cloudflare}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-auto}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-rotaria-backups}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:?set the backup bucket}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:?set the backup bucket}
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+
   # Outbound-only connector to Cloudflare. The Tunnel's public hostnames
   # (rotaria.site, www.rotaria.site) point at http://edge:80; on the tunnel
   # network it reaches nothing else.
