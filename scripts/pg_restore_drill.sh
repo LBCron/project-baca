@@ -5,7 +5,8 @@
 # container gets rotaria_app from scripts/postgres_app_role.sh at init, as a
 # new production volume does, before the dump's grants to it arrive. Prints the
 # row counts, the last migration, and how long the drill took; removes the
-# container on exit. The dump only crosses this host as a pipe.
+# container and its data volume on exit. The dump only crosses this host as a
+# pipe.
 #
 # Environment: PROD_COMPOSE (the Makefile's compose command), AGE_IDENTITY (the
 # owner's age private key file), OBJECT (optional key, pg/YYYY/MM/DD/<name>).
@@ -29,12 +30,14 @@ object=${OBJECT:-$(backup --latest)}
 echo "Restoring $object"
 
 pg=rotaria-restore-drill-$$
-cleanup() { docker rm -f "$pg" >/dev/null 2>&1 || true; }
+# -v: the image declares a data volume, which would keep the restored copy on disk.
+cleanup() { docker rm -fv "$pg" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 POSTGRES_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 POSTGRES_APP_PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 export POSTGRES_PASSWORD POSTGRES_APP_PASSWORD
-docker run -d --name "$pg" --network none \
+# Capped so a drill on the production host cannot starve production Postgres.
+docker run -d --name "$pg" --network none --memory 1g --cpus 1 \
     -e POSTGRES_USER=baca_user -e POSTGRES_DB=project_baca_db -e POSTGRES_PASSWORD -e POSTGRES_APP_PASSWORD \
     -v "$PWD/scripts/postgres_app_role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro" \
     "$image" >/dev/null
