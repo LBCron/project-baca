@@ -364,6 +364,12 @@ prod-provision:
 	@{ printf 'DEPLOY_SCRIPT_B64=%s\n' "$$(base64 -w0 scripts/deploy.sh)"; cat scripts/provision_host.sh; } \
 		| ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)"
 
+# Requests URL at RATE per second for DURATION seconds and sums up statuses,
+# connection errors, and latency (scripts/deploy_probe.sh); run it during a
+# deploy. CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET add the Access token.
+deploy-probe:
+	@scripts/deploy_probe.sh "$$URL" "$$RATE" "$$DURATION"
+
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
 purge-test-debris:
@@ -382,5 +388,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test-deploy test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-env-copy prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test-deploy test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-env-copy prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision deploy-probe clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
