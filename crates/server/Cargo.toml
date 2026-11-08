@@ -26,6 +26,9 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 validator = { workspace = true }
 jsonwebtoken = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+sentry = { workspace = true }
 
 
 [dev-dependencies]
@@ -34,5 +37,6 @@ mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 claims = { workspace = true }
 rstest = { workspace = true }
+sentry = { workspace = true, features = ["test"] }
 
 

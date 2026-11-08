@@ -1,6 +1,7 @@
 //! Tauri shell around the Rotaria web bundle: the same WebAssembly app as the
 //! website, told where the API lives through `window.__ROTARIA_API__`, with
-//! `rotaria://book/<id>` links opening that book.
+//! `rotaria://book/<id>` links opening that book. A tester build also hands
+//! the page the Cloudflare Access service token as `window.__ROTARIA_ACCESS__`.
 
 use std::sync::{Arc, Mutex};
 use tauri::webview::PageLoadEvent;
@@ -13,6 +14,34 @@ const API_BASE: &str = match option_env!("ROTARIA_API_BASE") {
     Some(base) => base,
     None => "http://localhost:8080/api/v1",
 };
+
+/// Cloudflare Access service token of a tester build, read at build time from
+/// `ROTARIA_CF_ACCESS_CLIENT_ID` and `ROTARIA_CF_ACCESS_CLIENT_SECRET`. It lives
+/// in this binary only, never in the web bundle; without both, no Access
+/// header is sent.
+const ACCESS_TOKEN: Option<(&str, &str)> = match (
+    option_env!("ROTARIA_CF_ACCESS_CLIENT_ID"),
+    option_env!("ROTARIA_CF_ACCESS_CLIENT_SECRET"),
+) {
+    (Some(id), Some(secret)) => Some((id, secret)),
+    _ => None,
+};
+
+/// What the page learns before the bundle runs: the API base and, in a tester
+/// build, the Access token the API client sends with every request.
+fn init_script(api_base: &str, access: Option<(&str, &str)>) -> Result<String, serde_json::Error> {
+    let mut script = format!(
+        "window.__ROTARIA_API__ = {};",
+        serde_json::to_string(api_base)?
+    );
+    if let Some((id, secret)) = access {
+        script.push_str(&format!(
+            "window.__ROTARIA_ACCESS__ = {};",
+            serde_json::to_string(&serde_json::json!({ "id": id, "secret": secret }))?
+        ));
+    }
+    Ok(script)
+}
 
 /// In-app path for a `rotaria://book/<uuid>` link; anything else is ignored,
 /// and the id must parse as a UUID before it reaches the page.
@@ -76,10 +105,7 @@ fn build(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .title("Rotaria")
         .inner_size(1100.0, 760.0)
         .min_inner_size(360.0, 560.0)
-        .initialization_script(format!(
-            "window.__ROTARIA_API__ = {};",
-            serde_json::to_string(API_BASE)?
-        ))
+        .initialization_script(init_script(API_BASE, ACCESS_TOKEN)?)
         .on_page_load(move |window, payload| {
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 if let Some(path) = on_load.page_loaded() {
@@ -123,6 +149,24 @@ mod tests {
 
     fn route(link: &str) -> Option<String> {
         route_for(&Url::parse(link).ok()?)
+    }
+
+    #[test]
+    fn only_a_tester_build_hands_over_the_access_token() {
+        let plain = init_script("https://rotaria.site/api/v1", None).unwrap();
+        assert_eq!(
+            plain,
+            r#"window.__ROTARIA_API__ = "https://rotaria.site/api/v1";"#
+        );
+        let tester = init_script(
+            "https://rotaria.site/api/v1",
+            Some(("id.access", "s\"e</script>")),
+        )
+        .unwrap();
+        assert!(tester.starts_with(&plain));
+        assert!(tester.contains(
+            r#"window.__ROTARIA_ACCESS__ = {"id":"id.access","secret":"s\"e</script>"};"#
+        ));
     }
 
     #[test]

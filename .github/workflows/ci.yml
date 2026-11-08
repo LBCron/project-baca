@@ -119,6 +119,8 @@ jobs:
         run: make test-migrate
       - name: Edge client address (Caddyfile.prod in Docker)
         run: make test-edge-ip
+      - name: Deploy request check (scripts/deploy.sh)
+        run: make test-deploy
       - name: Domain, infra, and server unit tests
         run: |
           make test-domain

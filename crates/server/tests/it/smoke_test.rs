@@ -42,14 +42,11 @@ async fn test_smoke_api_v1_health_dependencies() {
 
     let (resp, body) = harness.send_json_request(req).await;
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::OK, "{body}");
     assert_eq!(body["success"], true);
-    assert!(body["data"]["status"] == "ok" || body["data"]["status"] == "degraded");
-    assert!(body["data"]["redis"] == "connected" || body["data"]["redis"] == "disconnected");
-    assert!(body["data"]["postgres"] == "connected" || body["data"]["postgres"] == "disconnected");
-    if body["data"]["redis"] == "disconnected" || body["data"]["postgres"] == "disconnected" {
-        assert_eq!(body["data"]["status"], "degraded");
-    }
+    assert_eq!(body["data"]["status"], "ok");
+    assert_eq!(body["data"]["postgres"], "connected");
+    assert_eq!(body["data"]["redis"], "connected");
     harness.cleanup().await;
 }
 
@@ -92,6 +89,11 @@ async fn test_smoke_openapi_json_spec() {
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(spec["paths"]["/health"].is_object());
     assert!(spec["paths"]["/api/v1/health"].is_object());
+    let health = &spec["paths"]["/api/v1/health"]["get"]["responses"];
+    assert!(
+        health["200"].is_object() && health["503"].is_object(),
+        "{health}"
+    );
     harness.cleanup().await;
 }
 

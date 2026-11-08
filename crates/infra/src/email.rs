@@ -17,26 +17,41 @@ use tracing::{info, warn};
 
 const SMTP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Email with its local part hidden, for log lines: `a***@example.com`.
-pub fn mask_email(email: &str) -> String {
-    match email.split_once('@') {
-        Some((local, domain)) => {
-            let first = local.chars().next().map(String::from).unwrap_or_default();
-            format!("{first}***@{domain}")
-        }
-        None => "***".to_string(),
-    }
+/// Errors and log lines name the step and a kind, never the recipient or
+/// the relay's reply text, which can quote the address
+/// (`550 5.1.1 <reader@example.com>: Recipient address rejected`).
+fn smtp_error(step: &str, kind: &str) -> AppError {
+    AppError::ExternalService(format!("SMTP {step} failed: {kind}"))
 }
 
-fn smtp_error(step: &str, err: impl std::fmt::Display) -> AppError {
-    AppError::ExternalService(format!("SMTP {step} failed: {err}"))
+/// The kind of an SMTP failure with its reply code, if any, but no text.
+fn smtp_failure_kind(e: &lettre::transport::smtp::Error) -> String {
+    let kind = if e.is_timeout() {
+        "timeout"
+    } else if e.is_tls() {
+        "tls"
+    } else if e.is_permanent() {
+        "permanent rejection"
+    } else if e.is_transient() {
+        "transient rejection"
+    } else if e.is_response() {
+        "unreadable reply"
+    } else if e.is_client() {
+        "client"
+    } else {
+        "connection"
+    };
+    match e.status() {
+        Some(code) => format!("{kind} {code}"),
+        None => kind.to_string(),
+    }
 }
 
 fn build_transport(config: &EmailConfig) -> Result<AsyncSmtpTransport<Tokio1Executor>, AppError> {
     let builder = match config.smtp_security {
         SmtpSecurity::StartTls => {
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)
-                .map_err(|e| smtp_error("TLS setup", e))?
+                .map_err(|e| smtp_error("TLS setup", &smtp_failure_kind(&e)))?
         }
         SmtpSecurity::None => {
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
@@ -64,10 +79,10 @@ fn plain_message(
     let from_address: Address = config
         .smtp_from_email
         .parse()
-        .map_err(|e| smtp_error("sender address", e))?;
+        .map_err(|_| smtp_error("sender address", "invalid"))?;
     let to_address: Address = to_email
         .parse()
-        .map_err(|e| smtp_error("recipient address", e))?;
+        .map_err(|_| smtp_error("recipient address", "invalid"))?;
     Message::builder()
         .from(Mailbox::new(
             Some(config.smtp_from_name.clone()),
@@ -77,7 +92,7 @@ fn plain_message(
         .subject(subject)
         .header(ContentType::TEXT_PLAIN)
         .body(body)
-        .map_err(|e| smtp_error("message build", e))
+        .map_err(|_| smtp_error("message build", "invalid"))
 }
 
 fn otp_message(config: &EmailConfig, to_email: &str, otp: &str) -> Result<Message, AppError> {
@@ -103,19 +118,16 @@ fn account_exists_message(config: &EmailConfig, to_email: &str) -> Result<Messag
 /// Hands one message to the relay. Fails closed: a message that never left
 /// the server must surface as an error, or the caller reports success and
 /// the user is stranded waiting for it.
-async fn deliver(config: &EmailConfig, to_email: &str, message: Message) -> Result<(), AppError> {
+async fn deliver(config: &EmailConfig, message: Message) -> Result<(), AppError> {
     let relay = format!("{}:{}", config.smtp_host, config.smtp_port);
-    let recipient = mask_email(to_email);
-    info!(
-        "Dispatching signup email to {recipient} via {relay} ({:?})",
-        config.smtp_security
-    );
+    info!(target: "infra::email", %relay, security = ?config.smtp_security, "Dispatching signup email");
     let transport = build_transport(config)?;
     transport.send(message).await.map_err(|e| {
-        warn!("Signup email to {recipient} via {relay} failed: {e}");
-        smtp_error("delivery", e)
+        let kind = smtp_failure_kind(&e);
+        warn!(target: "infra::email", %relay, %kind, "Signup email failed");
+        smtp_error("delivery", &kind)
     })?;
-    info!("Dispatched signup email to {recipient}");
+    info!(target: "infra::email", %relay, "Dispatched signup email");
     Ok(())
 }
 
@@ -125,7 +137,7 @@ pub async fn send_otp_email(
     to_email: &str,
     otp: &str,
 ) -> Result<(), AppError> {
-    deliver(config, to_email, otp_message(config, to_email, otp)?).await
+    deliver(config, otp_message(config, to_email, otp)?).await
 }
 
 /// Tells the owner of an address that already has an account that a signup
@@ -134,19 +146,12 @@ pub async fn send_account_exists_email(
     config: &EmailConfig,
     to_email: &str,
 ) -> Result<(), AppError> {
-    deliver(config, to_email, account_exists_message(config, to_email)?).await
+    deliver(config, account_exists_message(config, to_email)?).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mask_email_hides_the_local_part() {
-        assert_eq!(mask_email("alice@example.com"), "a***@example.com");
-        assert_eq!(mask_email("x@baca.local"), "x***@baca.local");
-        assert_eq!(mask_email("not-an-email"), "***");
-    }
 
     #[test]
     fn otp_message_addresses_sender_and_recipient() {

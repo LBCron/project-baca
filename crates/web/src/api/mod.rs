@@ -36,6 +36,36 @@ fn injected_api_base() -> Option<String> {
         .map(|base| base.trim().trim_end_matches('/').to_string())
         .filter(|base| !base.is_empty())
 }
+
+/// Cloudflare Access service token, set as `window.__ROTARIA_ACCESS__ =
+/// {id, secret}` only by a tester build of the app while the site sits behind
+/// Access. The web bundle never holds one, so the site sends no such header.
+fn access_token() -> Option<&'static (String, String)> {
+    static TOKEN: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            let value =
+                js_sys::Reflect::get(window()?.as_ref(), &"__ROTARIA_ACCESS__".into()).ok()?;
+            let field = |name: &str| {
+                js_sys::Reflect::get(&value, &name.into())
+                    .ok()?
+                    .as_string()
+                    .filter(|v| !v.is_empty())
+            };
+            Some((field("id")?, field("secret")?))
+        })
+        .as_ref()
+}
+
+fn with_access(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    match access_token() {
+        Some((id, secret)) => builder
+            .header("CF-Access-Client-Id", id)
+            .header("CF-Access-Client-Secret", secret),
+        None => builder,
+    }
+}
+
 const TOKEN_KEY: &str = "baca_access_token";
 
 /// Resolves a stored asset reference to something an `<img>` or a CSS
@@ -119,6 +149,7 @@ pub fn is_online() -> bool {
 }
 
 fn authed(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    let builder = with_access(builder);
     match token() {
         Some(t) => builder.header("Authorization", &format!("Bearer {t}")),
         None => builder,
@@ -262,6 +293,28 @@ async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
     parse_envelope(resp).await
 }
 
+/// GET without the bearer token, for data that is the same for every
+/// reader: a cross-origin client (the apps, the dev stack) sends it as a
+/// simple request with no preflight, and the server does not mark the
+/// answer `no-store`. Nothing here is account-bound, so there is no 401
+/// refresh cycle.
+async fn get_public<T: DeserializeOwned>(path: &str) -> Result<T, String> {
+    let resp = with_access(Request::get(&format!("{}{path}", api_base())))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_envelope(resp).await
+}
+
+/// GET of a book's text: chapters, offline bundle, in-book search, cards,
+/// recap. Every such read passes here with its book, so the choice of an
+/// account-only path for an age-restricted book is made in this one place.
+/// shortcut: books carry no age tag yet, so every text is public; once the
+/// book detail carries one, pick `get` here for a restricted book.
+async fn get_book_text<T: DeserializeOwned>(_book_id: &str, path: &str) -> Result<T, String> {
+    get_public(path).await
+}
+
 async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T, String> {
     let url = format!("{}{path}", api_base());
     let json = serde_json::to_string(body).map_err(|e| e.to_string())?;
@@ -349,29 +402,20 @@ fn encode_param(value: &str) -> String {
 }
 
 pub async fn catalog(query: &BookCatalogQuery) -> Result<Vec<BookSummaryDto>, String> {
-    let mut url = format!("{}/books?limit={}", api_base(), query.limit.unwrap_or(20));
+    let mut path = format!("/books?limit={}", query.limit.unwrap_or(20));
     if let Some(cursor) = &query.cursor {
-        url.push_str(&format!("&cursor={}", encode_param(&cursor.to_string())));
+        path.push_str(&format!("&cursor={}", encode_param(&cursor.to_string())));
     }
     if let Some(language) = &query.language {
-        url.push_str(&format!("&language={}", encode_param(language)));
+        path.push_str(&format!("&language={}", encode_param(language)));
     }
     if let Some(theme) = &query.theme {
-        url.push_str(&format!("&theme={}", encode_param(theme)));
+        path.push_str(&format!("&theme={}", encode_param(theme)));
     }
     if let Some(tag) = &query.tag {
-        url.push_str(&format!("&tag={}", encode_param(tag)));
+        path.push_str(&format!("&tag={}", encode_param(tag)));
     }
-    let envelope = Request::get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<ApiResponse<Vec<BookSummaryDto>>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    envelope
-        .data
-        .ok_or_else(|| "empty catalog response".to_string())
+    get_public(&path).await
 }
 
 /// Paragraphs of one book that contain `query`, in reading order.
@@ -379,42 +423,32 @@ pub async fn search_book_text(
     book_id: &str,
     query: &str,
 ) -> Result<Vec<shared::BookTextHitDto>, String> {
-    get(&format!(
-        "/books/{book_id}/search?q={}",
-        encode_param(query)
-    ))
+    get_book_text(
+        book_id,
+        &format!("/books/{book_id}/search?q={}", encode_param(query)),
+    )
     .await
 }
 
 pub async fn search(query: &BookSearchQuery) -> Result<Vec<BookSearchResultDto>, String> {
-    let url = format!(
-        "{}/books/search?q={}&limit={}",
-        api_base(),
+    get_public(&format!(
+        "/books/search?q={}&limit={}",
         encode_param(&query.q),
         query.limit.unwrap_or(10)
-    );
-    let envelope = Request::get(&url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<ApiResponse<Vec<BookSearchResultDto>>>()
-        .await
-        .map_err(|e| e.to_string())?;
-    envelope
-        .data
-        .ok_or_else(|| "empty search response".to_string())
+    ))
+    .await
 }
 
 pub async fn book_detail(id: &str) -> Result<BookDetailDto, String> {
-    get(&format!("/books/{id}")).await
+    get_public(&format!("/books/{id}")).await
 }
 
 pub async fn chapter(book_id: &str, number: i32) -> Result<ChapterDetailDto, String> {
-    get(&format!("/books/{book_id}/chapters/{number}")).await
+    get_book_text(book_id, &format!("/books/{book_id}/chapters/{number}")).await
 }
 
 pub async fn offline_bundle(book_id: &str) -> Result<OfflineBundleDto, String> {
-    get(&format!("/books/{book_id}/offline-bundle")).await
+    get_book_text(book_id, &format!("/books/{book_id}/offline-bundle")).await
 }
 
 pub async fn save_progress(book_id: &str, update: &ReadingProgressUpdateDto) -> Result<(), String> {
@@ -438,6 +472,10 @@ pub fn save_progress_on_exit(book_id: &str, update: &ReadingProgressUpdateDto) {
     if let Some(t) = token() {
         let _ = headers.set("Authorization", &format!("Bearer {t}"));
     }
+    if let Some((id, secret)) = access_token() {
+        let _ = headers.set("CF-Access-Client-Id", id);
+        let _ = headers.set("CF-Access-Client-Secret", secret);
+    }
     let init = web_sys::RequestInit::new();
     init.set_method("PUT");
     // web-sys generates no setter for `keepalive`; the dictionary is a plain object.
@@ -460,6 +498,8 @@ pub async fn merge_guest_progress(req: &GuestMergeRequest) -> Result<(), String>
     Ok(())
 }
 
+/// Keeps the token although the quotes are public: the server meters
+/// semantic search per account, and a guest shares the smaller guest budget.
 pub async fn quote_search(
     book_id: &str,
     req: &QuoteSearchRequest,
@@ -471,9 +511,10 @@ pub async fn atomic_cards(
     book_id: &str,
     chapter_ref: &str,
 ) -> Result<shared::AtomicCardsDto, String> {
-    get(&format!(
-        "/books/{book_id}/chapters/{chapter_ref}/atomic-cards"
-    ))
+    get_book_text(
+        book_id,
+        &format!("/books/{book_id}/chapters/{chapter_ref}/atomic-cards"),
+    )
     .await
 }
 
@@ -481,7 +522,11 @@ pub async fn chapter_recap(
     book_id: &str,
     chapter_ref: &str,
 ) -> Result<shared::ChapterRecapDto, String> {
-    get(&format!("/books/{book_id}/chapters/{chapter_ref}/recap")).await
+    get_book_text(
+        book_id,
+        &format!("/books/{book_id}/chapters/{chapter_ref}/recap"),
+    )
+    .await
 }
 
 /// Registers and sends the code, returning the registration the code must
@@ -533,7 +578,7 @@ pub async fn logout() -> Result<(), String> {
     let rt = refresh_token().unwrap_or_default();
     clear_token();
     let url = format!("{}/auth/logout", api_base());
-    let mut builder = Request::post(&url).header("Content-Type", "application/json");
+    let mut builder = with_access(Request::post(&url)).header("Content-Type", "application/json");
     if let Some(access) = access {
         builder = builder.header("Authorization", &format!("Bearer {access}"));
     }
@@ -745,7 +790,7 @@ pub async fn my_badges() -> Result<Vec<shared::UserBadgeDto>, String> {
 }
 
 pub async fn all_badges() -> Result<Vec<shared::BadgeDto>, String> {
-    get("/badges").await
+    get_public("/badges").await
 }
 
 pub async fn heartbeat(req: &ReadingHeartbeatRequest) -> Result<ReadingHeartbeatResponse, String> {

@@ -3,3 +3,4 @@ minio==7.2.20
 pg8000==1.31.6
 pillow==13.0.0
 anthropic==2.6.0
+sentry-sdk==2.73.0

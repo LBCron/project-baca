@@ -1277,7 +1277,8 @@ class ClaudeBatchTest(unittest.TestCase):
                 fake_client(FakeBatches(refuse_two)), redis_client, "j", ["one", "two"], self.settings()
             )
         reason = worker.curator_reason(caught.exception)
-        self.assertEqual(reason, "Claude API: 1 of 2 cards failed, first: chapter 2 cards declined by the model")
+        self.assertEqual(reason, "Claude API failed 1 of 2 cards (chapter 2 cards declined by the model)")
+        self.assertEqual(worker.short_reason(reason), reason, "error tracking keeps the whole reason")
         self.assertNotIn("llm_batch_cards", redis_client.hashes["job:j"], "a failed batch is never polled again")
 
     def test_expired_errored_and_truncated_requests_fail_the_phase(self):
@@ -1290,7 +1291,7 @@ class ClaudeBatchTest(unittest.TestCase):
             worker.summarize_chapters(
                 fake_client(FakeBatches(lambda cid, _p: answers[cid])), FakeRedis(), "j", ["a", "b", "c"], self.settings()
             )
-        self.assertIn("3 of 3 cards failed, first: chapter 1 cards expired", str(caught.exception))
+        self.assertIn("failed 3 of 3 cards (chapter 1 cards expired)", str(caught.exception))
 
     def test_a_dropped_connection_keeps_the_batch_for_the_retry(self):
         import anthropic
@@ -1504,3 +1505,123 @@ class IngestionTransactionTest(unittest.TestCase):
         self.assertEqual([e[1].split(" FROM")[0] for e in db.events if e[0] == "sql"], ["SELECT title, author, language, status"])
         self.assertEqual(batches.created, [])
         self.assertEqual(redis_client.hashes["job:j"]["status"], "published")
+
+
+class ErrorTrackingTest(unittest.TestCase):
+    def tearDown(self):
+        import sentry_sdk
+
+        sentry_sdk.init()
+        worker._error_tracking = False
+
+    def test_without_a_dsn_tracking_stays_off(self):
+        with mock.patch.dict("os.environ", {"SENTRY_DSN": ""}):
+            self.assertFalse(worker.init_error_tracking())
+        worker.report_job_failure("job-1", RuntimeError("nothing to send"))
+
+    def test_a_failed_job_carries_its_id_and_no_book_text(self):
+        import json
+        import logging
+        import uuid
+
+        import sentry_sdk
+        from sentry_sdk.transport import Transport
+
+        class Captured(Transport):
+            def __init__(self):
+                super().__init__()
+                self.events = []
+
+            def capture_envelope(self, envelope):
+                event = envelope.get_event()
+                if event is not None:
+                    self.events.append(event)
+
+        transport = Captured()
+        with mock.patch.dict("os.environ", {"SENTRY_DSN": "https://key@sentry.invalid/1", "APP_ENV": "production"}):
+            self.assertTrue(worker.init_error_tracking(transport=transport))
+
+        def embed(chapter_text):
+            request_body = {"contents": chapter_text}  # noqa: F841 - a local Sentry must not ship
+            raise RuntimeError(f"LLM response missing text: {{'candidates': '{chapter_text}'}}")
+
+        # Built at run time, so the source lines Sentry sends cannot hold it.
+        book_text = "chapter-" + uuid.uuid4().hex
+        worker.LOG.error("chapter %s", book_text)
+        logging.getLogger("urllib3").warning(book_text)
+        try:
+            embed(book_text)
+        except RuntimeError as exc:
+            worker.report_job_failure("job-42", exc)
+        worker.report_job_failure("job-43", message="The worker stopped 3 times while ingesting this book")
+        sentry_sdk.flush()
+
+        self.assertEqual(len(transport.events), 2, transport.events)
+        failed, stopped = transport.events
+        self.assertEqual(failed["tags"]["job_id"], "job-42")
+        self.assertEqual(failed["environment"], "production")
+        self.assertEqual(failed["exception"]["values"][-1]["value"], "LLM response missing text")
+        self.assertEqual(stopped["tags"]["job_id"], "job-43")
+        for event in transport.events:
+            dumped = json.dumps(event, default=str)
+            self.assertNotIn(book_text, dumped)
+            self.assertNotIn("request", event)
+            self.assertFalse(event.get("breadcrumbs", {}).get("values"))
+
+    def test_scrubbed_reasons_are_short_and_carry_no_detail(self):
+        event = {
+            "message": "x" * 500,
+            "exception": {"values": [
+                {"value": "Claude API unavailable (HTTP 529)"},
+                {"value": "y" * 500},
+                {"value": "LLM response missing text: model reply"},
+            ]},
+            "tags": {"job_id": "job-7"},
+        }
+        scrubbed = worker.scrub_event(event, {})
+        values = [v["value"] for v in scrubbed["exception"]["values"]]
+        self.assertEqual(values, ["Claude API unavailable (HTTP 529)", "y" * 120, "LLM response missing text"])
+        self.assertEqual(len(scrubbed["message"]), 120)
+        self.assertEqual(scrubbed["tags"], {"job_id": "job-7"})
+
+    def test_job_failures_are_reported(self):
+        with mock.patch.object(worker, "report_job_failure") as report:
+            run_once_with(attempts=1, side_effect=worker.UpstreamError("Claude API unavailable (HTTP 529)"))
+        self.assertEqual(report.call_args.args[0], "j")
+
+    def test_a_failed_claude_batch_reaches_sentry_with_its_reason_and_no_book_text(self):
+        import uuid
+
+        import sentry_sdk
+        from sentry_sdk.transport import Transport
+
+        class Captured(Transport):
+            def __init__(self):
+                super().__init__()
+                self.events = []
+
+            def capture_envelope(self, envelope):
+                event = envelope.get_event()
+                if event is not None:
+                    self.events.append(event)
+
+        transport = Captured()
+        with mock.patch.dict("os.environ", {"SENTRY_DSN": "https://key@sentry.invalid/1"}):
+            self.assertTrue(worker.init_error_tracking(transport=transport))
+        book_text = "bab-" + uuid.uuid4().hex
+        refuse = FakeBatches(lambda cid, _p: succeeded({}, stop_reason="refusal"))
+        try:
+            worker.summarize_chapters(
+                fake_client(refuse), FakeRedis(), "job-9", [book_text], worker.Settings(batch_poll_seconds=0)
+            )
+        except worker.UpstreamError as exc:
+            worker.report_job_failure("job-9", exc)
+        sentry_sdk.flush()
+
+        (event,) = transport.events
+        self.assertEqual(event["tags"]["job_id"], "job-9")
+        self.assertEqual(
+            event["exception"]["values"][-1]["value"],
+            "Claude API failed 1 of 1 cards (chapter 1 cards declined by the model)",
+        )
+        self.assertNotIn(book_text, json.dumps(event, default=str))
