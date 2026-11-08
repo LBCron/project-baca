@@ -47,9 +47,12 @@ services:
     volumes:
       - miniodata_baca:/data
 
-  # The embedding model the server (queries) and worker (chunks) share; the
-  # first `make db-up` downloads it (about 2.2 GB) into embedder_models.
+  # The embedding model the server (queries) and worker (chunks) share,
+  # started by `make embedder-up`; its first run downloads the model (about
+  # 2.2 GB) into embedder_models. Behind a profile, so `make db-up` (and CI)
+  # never pulls it.
   embedder-fetch:
+    profiles: ["embedder"]
     image: &embedder_image ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
     restart: "no"
     entrypoint: ["/fetch.sh"]
@@ -58,6 +61,7 @@ services:
       - ./scripts/fetch_embedding_model.sh:/fetch.sh:ro
 
   embedder:
+    profiles: ["embedder"]
     image: *embedder_image
     container_name: project_baca_embedder
     restart: always
