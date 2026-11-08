@@ -6,6 +6,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Added
 - `make prod-provision HOST=` hardens the production host in place with `scripts/provision_host.sh`: SSH by key only without root login, ufw admitting only SSH and Beszel from the owner's hub (rules for 80, 443, 5432, and 6379 removed), unattended security upgrades with a 04:00 WIB reboot window, time sync, swap, Docker from its own repository, a `deploy` user without sudo whose key runs only a forced command, and `.env.production` at mode 0600. It verifies after every run, `CHECK=1` only verifies, and a rerun changes nothing (GUIDE section 8).
+- `make prod-smoke URL=` checks a deployed site from outside: shell headers, WASM and service worker cache rules, a missing file 404, the SPA route fallback, the `www` redirect, API health, and a chapter opened in Chromium with no CSP violation and no request to another origin. It sends the Cloudflare Access service token (`CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`) to the site only, and signs in with `SMOKE_EMAIL` and `SMOKE_PASSWORD` when set (GUIDE section 8).
 
 ### Changed
 - A signed-in reader's web and app fetch the catalog, search, book detail, chapters, offline bundle, in-book search, atomic cards, recap, and badge list without the access token. These reads are the same for every reader, so the app sends them with no CORS preflight and the server no longer marks them `Cache-Control: no-store`. Quote search keeps the token, because its limit counts per account.
@@ -20,6 +21,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 - `make prod-*` reads its env file from `PROD_ENV` (default `.env.production`), so a laptop run of the production stack uses a copy whose `CLOUDFLARE_TUNNEL_TOKEN` is a placeholder. With the real token a laptop `make prod-up` joined the production tunnel as a second connector and took a share of `rotaria.site`'s traffic.
 
 ### Security
+- The web shell's CSP narrows to `img-src 'self'` (no `data:`, `blob:`, or `https:` image) and `base-uri 'none'`, and the shell now sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Resource-Policy: same-origin`; HSTS, nosniff, frame denial, Referrer-Policy, Permissions-Policy, and the cache rules are unchanged. `www.rotaria.site` redirects permanently to `https://rotaria.site` with path and query kept.
 - Production refuses to boot when `CORS_ALLOWED_ORIGINS` holds `*`, `null`, an origin with a path or trailing slash, or a plain `http://` origin other than the Tauri app's `http://tauri.localhost`. Cross-origin preflights are cached for two hours (`Access-Control-Max-Age: 7200`), and the app can read `x-request-id` and `retry-after` from cross-origin responses. No response sets a cookie or `Access-Control-Allow-Credentials`; sessions stay bearer-only (ADR-48).
 - An access token is accepted only with `typ: at+jwt`, `aud`, `exp`, and a session id (`sid`); a validly signed token typed `JWT` or missing `aud` or `sid` answers 401, so signing a device out revokes every token it holds. Tokens issued before 0.1.2 no longer work; no production deploy has issued any.
 

@@ -33,6 +33,12 @@
 		header -Server
 	}
 
+	# The Tunnel routes both the apex and www here; www moves to the apex for
+	# good, path and query kept. Matching the name keeps the image free of a
+	# baked domain, and only the Tunnel's own hostnames ever arrive.
+	@www header_regexp www Host ^www\.(.+)$
+	redir @www https://{re.www.1}{uri} permanent
+
 	# Axum REST API. Swagger UI and the OpenAPI JSON are not mounted in
 	# production, so they get no route here.
 	#
@@ -56,8 +62,9 @@
 	# Leptos WASM SPA (static dist/, no Trunk dev server in prod).
 	# Axum sets its own headers; the static shell needs them here. The Trunk
 	# post_build hook externalizes the bootstrap script, so script-src needs
-	# no 'unsafe-inline'; connect-src stays same-origin because the API
-	# shares the domain.
+	# no 'unsafe-inline'; connect-src and img-src stay same-origin because the
+	# API (covers included) shares the domain and the shell draws no data: or
+	# blob: image. The shell has no <base>, so base-uri allows none.
 	handle /* {
 		root * /srv/web
 		# Only routes fall back to the shell; a path with an extension is a
@@ -73,7 +80,9 @@
 			precompressed br gzip
 		}
 		header {
-			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+			Cross-Origin-Opener-Policy "same-origin"
+			Cross-Origin-Resource-Policy "same-origin"
 			Strict-Transport-Security "max-age=31536000; includeSubDomains"
 			X-Content-Type-Options "nosniff"
 			X-Frame-Options "DENY"
