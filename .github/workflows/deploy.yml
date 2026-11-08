@@ -60,8 +60,9 @@ jobs:
             request+=" $image=$digest"
           done
           echo "request=$request" >> "$GITHUB_OUTPUT"
-      # A step of its own, so it can be replaced if attestations are unavailable
-      # once the repository is private.
+      # Signed by release.yml for tag vX.Y.Z itself, so an image attested for
+      # another tag is refused. A step of its own, so it can be replaced if
+      # attestations are unavailable once the repository is private.
       - name: Verify the attestations
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,7 +70,8 @@ jobs:
         run: |
           for pair in ${REQUEST#* }; do
             gh attestation verify "oci://$PREFIX/${pair%%=*}@${pair#*=}" --repo "$GITHUB_REPOSITORY" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --deny-self-hosted-runners
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners
             echo "verified ${pair%%=*}"
           done
       - name: Deploy on the host
