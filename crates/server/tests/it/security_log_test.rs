@@ -330,3 +330,89 @@ async fn test_lockouts_are_logged_once() {
     }
     harness.cleanup().await;
 }
+
+/// SMTP relay that rejects every recipient the way real relays do, quoting
+/// the address in its reply.
+async fn rejecting_relay() -> u16 {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (read, mut write) = socket.into_split();
+                let mut lines = BufReader::new(read).lines();
+                let _ = write.write_all(b"220 relay.test ESMTP\r\n").await;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let command = line.to_ascii_uppercase();
+                    let reply = match line.get(..8) {
+                        Some(verb) if verb.eq_ignore_ascii_case("RCPT TO:") => format!(
+                            "550 5.1.1 {}: Recipient address rejected\r\n",
+                            line[8..].trim()
+                        ),
+                        _ if command.starts_with("QUIT") => "221 bye\r\n".to_string(),
+                        _ => "250 OK\r\n".to_string(),
+                    };
+                    if write.write_all(reply.as_bytes()).await.is_err()
+                        || command.starts_with("QUIT")
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+/// A relay that rejects the recipient, and one that is not there at all:
+/// signup answers 502 and no log line names the address, masked or not,
+/// nor repeats the relay's reply text.
+#[tokio::test]
+async fn test_smtp_failures_never_log_the_address() {
+    let rejecting = rejecting_relay().await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+
+    for (port, kind) in [
+        (rejecting, "permanent rejection 550"),
+        (closed, "connection"),
+    ] {
+        let harness = TestHarness::with_config(|c| {
+            c.email.smtp_host = "127.0.0.1".to_string();
+            c.email.smtp_port = port;
+            c.email.smtp_security = infra::SmtpSecurity::None;
+            c.email.smtp_user = String::new();
+        })
+        .await;
+        harness
+            .live_only()
+            .await
+            .expect("live Postgres + Redis required (db-up)");
+        let local = format!("smtp_{}", Uuid::new_v4().simple());
+        let email = harness.track_email_owned(format!("{local}@rejected.example"));
+        let logs = LogCapture::start();
+
+        let (resp, body) = harness
+            .send_json_request(signup(&email, &common::unique_ip("198.23")))
+            .await;
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY, "{body}");
+
+        let text = logs.text();
+        assert!(text.contains(kind), "failure kind {kind} logged: {text}");
+        for leak in [
+            "@",
+            "***",
+            "rejected.example",
+            local.as_str(),
+            "Recipient address",
+        ] {
+            assert!(!text.contains(leak), "log holds {leak}: {text}");
+        }
+        drop(logs);
+        harness.cleanup().await;
+    }
+}
