@@ -133,6 +133,8 @@ services:
       APP_PORT: 8080
       LOG_FORMAT: json
       RUST_LOG: info,tower_http=warn
+      # Error tracking (Sentry, EU region); empty turns it off.
+      SENTRY_DSN: ${SENTRY_DSN:-}
       # The site, plus the Tauri app WebView (tauri:// on desktop, http://tauri.localhost on Android and Windows).
       CORS_ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN},tauri://localhost,http://tauri.localhost
       TRUST_PROXY_HEADERS: "true"
@@ -196,6 +198,9 @@ services:
       S3_BUCKET_EPUBS: ${S3_BUCKET_EPUBS:-baca-epubs}
       S3_BUCKET_COVERS: ${S3_BUCKET_COVERS:-baca-covers}
       GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
+      APP_ENV: production
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_RELEASE: worker@${ROTARIA_VERSION}
 
   edge:
     image: ghcr.io/aprxty3/project-baca/edge:${ROTARIA_VERSION:?set ROTARIA_VERSION}

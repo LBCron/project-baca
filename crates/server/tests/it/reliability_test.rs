@@ -129,6 +129,107 @@ async fn test_health_answers_503_when_redis_is_stopped_or_hangs() {
     harness.cleanup().await;
 }
 
+/// A pool whose server refuses every connection: queries fail within a
+/// second as a database error (a `Disconnected` handle panics instead).
+fn unreachable_postgres() -> DatabaseConnection {
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let pool = sea_orm::sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy(&format!(
+            "postgres://baca_user:none@127.0.0.1:{closed}/none"
+        ))
+        .expect("lazy pool needs no connection");
+    sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool)
+}
+
+/// A forced 500 reaches Sentry tagged with its request id, and neither the
+/// event nor its breadcrumbs carry the credentials, address, code or body
+/// the request held.
+#[test]
+fn test_forced_500_reaches_sentry_without_personal_data() {
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let book_id = Uuid::new_v4();
+    let events = sentry::test::with_captured_events_options(
+        || {
+            let subscriber =
+                tracing_subscriber::registry().with(server::error_tracking::tracing_layer());
+            let _logs = tracing::subscriber::set_default(subscriber);
+            tracing::info!("note for reader@example.com");
+            tracing::warn!(email = "reader@example.com", "warning with a field");
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let resp = runtime.block_on(async {
+                let req = Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/v1/books/{book_id}?email=reader%40example.com&otp=424242"
+                    ))
+                    .header("authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig")
+                    .header("host", "rotaria.site")
+                    .header("cookie", "session=crumbcookie")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"email":"reader@example.com","password":"BodyPass-77"}"#,
+                    ))
+                    .unwrap();
+                app_on(unreachable_postgres(), LIVE_REDIS)
+                    .oneshot(req)
+                    .await
+                    .unwrap()
+            });
+            assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        },
+        server::error_tracking::options("test"),
+    );
+
+    let errors: Vec<_> = events
+        .iter()
+        .filter(|e| e.level == sentry::Level::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{events:#?}");
+    let event = errors[0];
+    let request_id = event.tags.get("request_id").expect("request id tag");
+    assert!(Uuid::parse_str(request_id).is_ok(), "{request_id}");
+    let request = event.request.as_ref().expect("request context");
+    assert_eq!(
+        request.url.as_ref().map(|u| u.path().to_string()),
+        Some(format!("/api/v1/books/{book_id}"))
+    );
+    assert!(request.url.as_ref().is_some_and(|u| u.query().is_none()));
+    let crumbs: Vec<_> = event
+        .breadcrumbs
+        .values
+        .iter()
+        .filter_map(|crumb| crumb.message.as_deref())
+        .collect();
+    assert!(crumbs.contains(&"note for [redacted]"), "{crumbs:?}");
+    assert!(crumbs.contains(&"warning with a field"), "{crumbs:?}");
+    assert_eq!(
+        event.release.as_deref(),
+        Some(concat!("server@", env!("CARGO_PKG_VERSION")))
+    );
+
+    let dumped = serde_json::to_string(&events).unwrap().to_lowercase();
+    for secret in [
+        "reader@example.com",
+        "reader%40example.com",
+        "424242",
+        "eyjhbgcioi",
+        "authorization",
+        "crumbcookie",
+        "bodypass-77",
+    ] {
+        assert!(!dumped.contains(secret), "event holds {secret}: {dumped}");
+    }
+}
+
 #[tokio::test]
 async fn test_reliability_mock_repository_fault_injection() {
     let mut mock_port = MockBookCatalogPort::new();

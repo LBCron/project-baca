@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod error;
+pub mod error_tracking;
 pub mod middleware;
 pub mod routes;
 
@@ -294,6 +295,7 @@ pub async fn request_id_middleware(req: Request<Body>, next: axum_mw::Next) -> R
         .map_or("unmatched", |path| path.as_str())
         .to_string();
     let started = std::time::Instant::now();
+    sentry::configure_scope(|scope| scope.set_tag("request_id", &request_id));
     let span = tracing::info_span!("http_request", request_id = %request_id);
     let mut response = next.run(req).instrument(span).await;
     let status = response.status().as_u16();
@@ -584,5 +586,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .layer(axum_mw::from_fn(security_headers_middleware))
         .layer(axum_mw::from_fn(request_id_middleware))
         .layer(cors)
+        .layer(sentry::integrations::tower::SentryHttpLayer::new())
+        // A hub per request, so its request id and request data stay its own.
+        .layer(sentry::integrations::tower::NewSentryLayer::<Request<Body>>::new_from_top())
         .with_state(state)
 }

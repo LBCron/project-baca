@@ -1377,10 +1377,9 @@ def handle_entry(redis_client, settings: Settings, consumer: str, msg_id: str, f
     if attempts > MAX_ATTEMPTS:
         # Earlier attempts never reached an except clause: the process was
         # killed (OOM, SIGKILL) mid-job. A fourth run would only die again.
-        fail_job(
-            redis_client, settings, msg_id, fields,
-            f"The worker stopped {MAX_ATTEMPTS} times while ingesting this book",
-        )
+        reason = f"The worker stopped {MAX_ATTEMPTS} times while ingesting this book"
+        report_job_failure(job_id, message=reason)
+        fail_job(redis_client, settings, msg_id, fields, reason)
         return False
     try:
         with keep_claimed(redis_client, settings, consumer, msg_id):
@@ -1391,10 +1390,12 @@ def handle_entry(redis_client, settings: Settings, consumer: str, msg_id: str, f
         raise
     except PermanentJobError as exc:
         LOG.warning("job %s failed for good: %s", job_id, exc)
+        report_job_failure(job_id, exc)
         fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
         return False
     except Exception as exc:  # noqa: BLE001 - worker must survive bad jobs
         LOG.exception("job %s failed: %s", job_id, exc)
+        report_job_failure(job_id, exc)
         if attempts >= MAX_ATTEMPTS:
             fail_job(redis_client, settings, msg_id, fields, curator_reason(exc))
         else:
@@ -1450,9 +1451,67 @@ def dead_letter(redis_client, settings: Settings, job_id: str, book_id: str, rea
     )
 
 
+# Error tracking: Sentry when SENTRY_DSN is set, off otherwise.
+
+_error_tracking = False
+
+
+def scrub_event(event: dict, _hint: dict) -> dict:
+    """Keeps an event to the exception and its job id: no request, log
+    breadcrumbs, extra data, user, or frame locals, any of which could hold
+    book text or a model request body."""
+    for key in ("request", "breadcrumbs", "extra", "user"):
+        event.pop(key, None)
+    for exception in (event.get("exception") or {}).get("values") or []:
+        for frame in (exception.get("stacktrace") or {}).get("frames") or []:
+            frame.pop("vars", None)
+    return event
+
+
+def init_error_tracking(transport=None) -> bool:
+    """Starts Sentry when SENTRY_DSN is set. Only exceptions reported by
+    report_job_failure leave the process: log records raise no events and
+    leave no breadcrumbs."""
+    global _error_tracking
+    dsn = env("SENTRY_DSN")
+    if not dsn:
+        return False
+    import sentry_sdk
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=dsn,
+        environment=env("APP_ENV", "development"),
+        send_default_pii=False,
+        include_local_variables=False,
+        max_request_body_size="never",
+        integrations=[LoggingIntegration(level=None, event_level=None)],
+        before_breadcrumb=lambda _crumb, _hint: None,
+        before_send=scrub_event,
+        transport=transport,
+    )
+    _error_tracking = True
+    return True
+
+
+def report_job_failure(job_id: str, exc: BaseException | None = None, message: str = "") -> None:
+    """Sends a failed job to Sentry tagged with its job id."""
+    if not _error_tracking:
+        return
+    import sentry_sdk
+
+    with sentry_sdk.new_scope() as scope:
+        scope.set_tag("job_id", job_id)
+        if exc is not None:
+            sentry_sdk.capture_exception(exc)
+        else:
+            sentry_sdk.capture_message(message, level="error")
+
+
 def main() -> None:
     if "--healthcheck" in sys.argv[1:]:
         sys.exit(0 if is_alive() else 1)
+    init_error_tracking()
     if "--backfill-paragraphs" in sys.argv[1:]:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
         LOG.info("indexed the paragraphs of %d chapters", backfill_paragraphs(Settings()))

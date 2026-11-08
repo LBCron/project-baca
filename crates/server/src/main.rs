@@ -19,11 +19,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer().json())
+            .with(server::error_tracking::tracing_layer())
             .init();
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer())
+            .with(server::error_tracking::tracing_layer())
             .init();
     }
 
@@ -33,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Configuration initialization failed: {e}");
         e
     })?);
+    let _sentry = init_error_tracking(&config);
 
     // Production refuses to boot without its stores so the orchestrator
     // restarts the container; development keeps running for offline work.
@@ -145,6 +148,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     Ok(())
+}
+
+/// Sentry when `SENTRY_DSN` holds a DSN; off when it is unset or empty. A
+/// malformed DSN is logged and leaves tracking off rather than stopping the
+/// boot. The guard flushes queued events when `main` returns.
+fn init_error_tracking(config: &AppConfig) -> Option<sentry::ClientInitGuard> {
+    let dsn = std::env::var("SENTRY_DSN").unwrap_or_default();
+    if dsn.trim().is_empty() {
+        return None;
+    }
+    match dsn.trim().parse::<sentry::types::Dsn>() {
+        Ok(dsn) => {
+            let mut options = server::error_tracking::options(&config.server.env);
+            options.dsn = Some(dsn);
+            info!("Error tracking on");
+            Some(sentry::init(options))
+        }
+        Err(e) => {
+            tracing::error!("SENTRY_DSN is not a valid DSN ({e}); error tracking off");
+            None
+        }
+    }
 }
 
 async fn shutdown_signal() {
