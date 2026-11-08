@@ -8,6 +8,8 @@
 #   pg_backup.sh --latest             prints the newest object key
 #   pg_backup.sh --decrypt KEY FILE   streams that object, decrypted with the age
 #                                     identity FILE, to stdout (restore drill)
+#   pg_backup.sh --env-copy           stores stdin, encrypted, as
+#                                     env/env.production.<YYYYMMDD>.age
 #
 # A dump is `pg_dump -Fc` of PGDATABASE streamed through age to the owner's
 # public key and into BACKUP_S3_BUCKET at pg/YYYY/MM/DD/pg_<stamp>.dump.age; the
@@ -88,10 +90,19 @@ decrypt() {
     rclone cat "$BUCKET/$key" | age -d -i "$identity"
 }
 
+env_copy() {
+    : "${BACKUP_AGE_RECIPIENT:?set BACKUP_AGE_RECIPIENT}"
+    local key
+    key="env/env.production.$(date -u +%Y%m%d).age"
+    age -r "$BACKUP_AGE_RECIPIENT" | rclone rcat "$BUCKET/$key"
+    log "stored $BACKUP_S3_BUCKET/$key"
+}
+
 case ${1:-} in
     "") dump_once ;;
     --every) every "${2:-}" ;;
     --latest) latest ;;
     --decrypt) decrypt "${2:?--decrypt KEY IDENTITY_FILE}" "${3:?--decrypt KEY IDENTITY_FILE}" ;;
-    *) die "usage: pg_backup.sh [--every SECONDS | --latest | --decrypt KEY IDENTITY_FILE]" ;;
+    --env-copy) env_copy ;;
+    *) die "usage: pg_backup.sh [--every SECONDS | --latest | --decrypt KEY IDENTITY_FILE | --env-copy]" ;;
 esac

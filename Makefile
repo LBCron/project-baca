@@ -98,6 +98,10 @@ test-migrate:
 test-edge-ip:
 	@./scripts/test_edge_client_ip.sh
 
+# The request check of scripts/deploy.sh, the only input the deploy key sends.
+test-deploy:
+	@./scripts/test_deploy.sh
+
 # Test suites
 test: test-all
 
@@ -274,7 +278,8 @@ app-android-build:
 # PROD_ENV=<a copy without the real CLOUDFLARE_TUNNEL_TOKEN>: a second connector
 # on the production tunnel would take a share of rotaria.site's traffic.
 PROD_ENV ?= .env.production
-PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f docker-compose.prod.yml
+# .env.deploy, written by each deploy on the host, pins the release images by digest.
+PROD_COMPOSE = docker compose --env-file $(PROD_ENV) $(if $(wildcard .env.deploy),--env-file .env.deploy) -f docker-compose.prod.yml
 prod-build:
 	@echo "Building production images..."
 	@$(PROD_COMPOSE) build
@@ -312,6 +317,11 @@ prod-migrate-status:
 prod-backup:
 	@$(PROD_COMPOSE) run --rm backup pg_backup.sh
 
+# Encrypted copy of PROD_ENV in the backup bucket (env/), after every change of it.
+prod-env-copy:
+	@test -s "$(PROD_ENV)" || { echo "$(PROD_ENV) is missing or empty" >&2; exit 2; }
+	@$(PROD_COMPOSE) run --rm --no-deps -T backup pg_backup.sh --env-copy < $(PROD_ENV)
+
 # Restores the newest dump (or OBJECT=pg/YYYY/MM/DD/<name>) into a throwaway
 # Postgres and prints its row counts. AGE_IDENTITY is the owner's age private
 # key file; it is read through a read-only mount and never copied.
@@ -347,10 +357,12 @@ prod-backfill-paragraphs:
 
 # Hardens the production host over SSH (GUIDE section 8). HOST is the admin
 # login with passwordless sudo; CHECK=1 only verifies; DEPLOY_PUBKEY installs
-# the deploy key behind its forced command.
+# the deploy key behind its forced command. scripts/deploy.sh travels on stdin
+# ahead of the script and becomes that command.
 prod-provision:
 	@test -n "$(HOST)" || { echo "Usage: make prod-provision HOST=<admin>@<host> [CHECK=1] [DEPLOY_PUBKEY='ssh-ed25519 ...']"; exit 2; }
-	@ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)" < scripts/provision_host.sh
+	@{ printf 'DEPLOY_SCRIPT_B64=%s\n' "$$(base64 -w0 scripts/deploy.sh)"; cat scripts/provision_host.sh; } \
+		| ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)"
 
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
@@ -370,5 +382,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test-deploy test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-env-copy prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
