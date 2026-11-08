@@ -486,6 +486,11 @@ const ENTRIES: &[(&str, &str, &str)] = &[
         "The service is busy. Try again in {t}.",
     ),
     (
+        "err_ai_unavailable",
+        "Pencarian kutipan sedang bersiap. Coba lagi dalam {t}.",
+        "Quote search is getting ready. Try again in {t}.",
+    ),
+    (
         "err_external_service_error",
         "Layanan pendukung sedang tidak terjangkau. Coba lagi sebentar lagi.",
         "A service we rely on is unreachable. Try again shortly.",

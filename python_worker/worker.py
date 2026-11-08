@@ -17,6 +17,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import html
 import io
 import json
@@ -73,6 +74,11 @@ class RejectedEpub(PermanentJobError, ValueError):
     """An upload that can never ingest: malformed or past a limit."""
 
 
+class UpstreamError(RuntimeError):
+    """A service the pipeline calls failed. The message names the service
+    and the failure without internal detail, so the curator desk shows it."""
+
+
 @dataclass
 class Settings:
     redis_url: str = field(default_factory=lambda: env("REDIS_URL", "redis://localhost:6380/0"))
@@ -87,16 +93,17 @@ class Settings:
     s3_secret_key: str = field(default_factory=lambda: env("S3_SECRET_ACCESS_KEY", "minioadmin"))
     bucket_epubs: str = field(default_factory=lambda: env("S3_BUCKET_EPUBS", "baca-epubs"))
     bucket_covers: str = field(default_factory=lambda: env("S3_BUCKET_COVERS", "baca-covers"))
-    gemini_api_key: str = field(
-        default_factory=lambda: env("GEMINI_API_KEY", env("AI_API_KEY", ""))
-    )
-    embedding_model: str = field(
-        default_factory=lambda: env("EMBEDDING_MODEL_NAME", env("AI_MODEL_NAME", "gemini-embedding-2"))
+    embedding_url: str = field(
+        default_factory=lambda: env("EMBEDDING_URL", "http://127.0.0.1:8090")
     )
     embedding_dim: int = field(
         default_factory=lambda: int(env("EMBEDDING_DIMENSION", env("AI_DIMENSION", "768")))
     )
-    llm_model: str = field(default_factory=lambda: env("LLM_MODEL_NAME", "gemini-flash-latest"))
+    # Cards and recaps; the SDK reads ANTHROPIC_API_KEY itself.
+    llm_model: str = field(default_factory=lambda: env("LLM_MODEL_NAME", "claude-sonnet-5-5"))
+    batch_poll_seconds: float = field(
+        default_factory=lambda: float(env("LLM_BATCH_POLL_SECONDS", "30"))
+    )
     stream: str = "stream:epub_ingestion"
     dlq_stream: str = "stream:epub_ingestion:dlq"
     # Mirrors STREAM_MAXLEN in crates/infra/src/queue.rs: an approximate cap
@@ -308,7 +315,14 @@ def paragraph_texts(html: str) -> list[str]:
     return [" ".join("".join(parts).split()) for parts in parser.found]
 
 
-def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
+# Words per chunk. multilingual-e5 reads 512 tokens and drops the rest;
+# measured with its tokenizer, English runs 1.40 tokens a word and
+# Indonesian 1.47, so 300 words (about 420 tokens) fit with room for the
+# merged tail. 400-word chunks lost their tail in 93% of English chunks.
+CHUNK_TARGET_WORDS = 300
+
+
+def chunk_words(text: str, target: int = CHUNK_TARGET_WORDS, minimum: int = 50) -> list[str]:
     """Splits text into ~target-word chunks at whitespace boundaries.
 
     A trailing fragment shorter than ``minimum`` words merges into the previous
@@ -660,7 +674,7 @@ def make_db(settings: Settings):
     )
 
 
-# Gemini REST helpers (stdlib urllib, no extra dependency)
+# HTTP helpers (stdlib urllib, no extra dependency)
 
 LLM_MAX_ATTEMPTS = 4
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
@@ -678,26 +692,28 @@ def backoff_seconds(retry: int, retry_after: str | None = None, jitter: float = 
     return float(retry * retry) * (1.0 + max(0.0, min(jitter, 0.2)))
 
 
-GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
+def _post_json(
+    url: str,
+    payload: dict,
+    service: str,
+    headers: dict | None = None,
+    timeout: int = 60,
+    job_id: str = "",
+):
+    """POSTs JSON to ``service``, retrying transient failures with quadratic
+    backoff. Raises :class:`UpstreamError` naming the service.
 
-
-def _gemini_post(
-    url: str, payload: dict, api_key: str, timeout: int = 60, job_id: str = ""
-) -> dict:
-    """POSTs to Gemini, retrying transient failures with quadratic backoff.
-
-    The key travels in `x-goog-api-key`, never in the URL, because
+    Secrets travel only in ``headers``, never in the URL, because
     `HTTPError` keeps the URL and logs or proxies could then leak it."""
     import urllib.error
 
     body = json.dumps(payload).encode("utf-8")
-    model = url.rsplit("/models/", 1)[-1].split(":", 1)[0]
-    last_error = "Gemini API unreachable"
+    last_error = f"{service} unreachable"
     for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
         request = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+            headers={"Content-Type": "application/json", **(headers or {})},
         )
         retry_after = None
         try:
@@ -705,69 +721,142 @@ def _gemini_post(
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code not in RETRYABLE_HTTP:
-                raise RuntimeError(f"Gemini API rejected the request (HTTP {exc.code})") from exc
-            last_error = f"Gemini API unavailable (HTTP {exc.code})"
+                raise UpstreamError(f"{service} rejected the request (HTTP {exc.code})") from exc
+            last_error = f"{service} unavailable (HTTP {exc.code})"
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             # A timeout while reading the body is a TimeoutError, not a
             # URLError, and deserves the same retry as a failed connect.
-            last_error = "Gemini API unreachable"
+            last_error = f"{service} unreachable"
         if attempt == LLM_MAX_ATTEMPTS:
             break
         delay = backoff_seconds(attempt, retry_after, jitter=random.random() * 0.2)
         LOG.warning(
-            "job %s: %s on %s (attempt %d/%d); retrying in %.1fs",
-            job_id or "-", last_error, model, attempt, LLM_MAX_ATTEMPTS, delay,
+            "job %s: %s (attempt %d/%d); retrying in %.1fs",
+            job_id or "-", last_error, attempt, LLM_MAX_ATTEMPTS, delay,
         )
         time.sleep(delay)
-    raise RuntimeError(last_error)
+    raise UpstreamError(last_error)
+
+
+EMBEDDING_SERVICE = "Embedding service"
+# multilingual-e5 was trained with these prefixes; the server embeds reader
+# queries with "query: " (crates/infra/src/ai/embedding.rs).
+PASSAGE_PREFIX = "passage: "
+# The model and revision scripts/fetch_embedding_model.sh pins; part of the
+# digest that lets a resumed job keep the chunks it already embedded.
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base@d128750597153bb5987e10b1c3493a34e5a4502a"
+
+
+# The model's window, counted with its <s> and </s> and the passage prefix.
+EMBED_MAX_TOKENS = 512
+
+
+def count_tokens(texts: list[str], settings: Settings, job_id: str = "") -> list[int]:
+    """Tokens the model reads for each passage, from the service's own
+    tokenizer (no model run, so a reader's query is not held up)."""
+    counts: list[int] = []
+    for offset in range(0, len(texts), 32):
+        batch = [PASSAGE_PREFIX + text for text in texts[offset : offset + 32]]
+        tokens = _post_json(
+            settings.embedding_url.rstrip("/") + "/tokenize",
+            {"inputs": batch, "add_special_tokens": True},
+            EMBEDDING_SERVICE,
+            job_id=job_id,
+        )
+        if not isinstance(tokens, list) or len(tokens) != len(batch):
+            raise UpstreamError(f"{EMBEDDING_SERVICE} returned a malformed token count")
+        counts.extend(len(t) for t in tokens)
+    return counts
+
+
+def fit_chunks(chunks: list[str], count, limit: int = EMBED_MAX_TOKENS) -> list[str]:
+    """Halves, at a word boundary, every chunk the model would truncate, until
+    each piece fits; ``count`` maps texts to their token counts.
+
+    shortcut: a single word longer than the window stays whole (the model
+    truncates it); split by characters if such text ever appears."""
+    fitted: list[str] = []
+    for chunk, tokens in zip(chunks, count(chunks)):
+        words = chunk.split()
+        if tokens <= limit or len(words) < 2:
+            fitted.append(chunk)
+            continue
+        half = len(words) // 2
+        fitted.extend(fit_chunks([" ".join(words[:half]), " ".join(words[half:])], count, limit))
+    return fitted
 
 
 def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[list[float]]:
-    """Returns one embedding vector per input text via batchEmbedContents."""
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = f"{GEMINI_BASE_URL}{settings.embedding_model}:batchEmbedContents"
-    all_vectors: list[list[float]] = []
-    for offset in range(0, len(texts), 20):
-        batch = texts[offset : offset + 20]
-        payload = {
-            "requests": [
-                {
-                    "model": f"models/{settings.embedding_model}",
-                    "content": {"parts": [{"text": text}]},
-                    "outputDimensionality": settings.embedding_dim,
-                }
-                for text in batch
-            ]
-        }
-        result = _gemini_post(url, payload, settings.gemini_api_key, job_id=job_id)
-        embeddings = result.get("embeddings", [])
-        if len(embeddings) != len(batch):
-            raise RuntimeError(f"Embedding batch returned {len(embeddings)} for {len(batch)} texts")
-        for embedding in embeddings:
-            values = embedding.get("values", [])
-            if len(values) != settings.embedding_dim:
-                raise RuntimeError(
-                    f"Embedding dimension {len(values)} != {settings.embedding_dim}"
-                )
-            all_vectors.append([float(v) for v in values])
-    return all_vectors
+    """Returns one embedding vector per passage from the self-hosted model
+    service (text-embeddings-inference).
+
+    One passage per request: the service queues requests in order, so a
+    reader's quote search waits behind one passage (about 2 s on one CPU)
+    instead of a whole batch; throughput is the same, the model is CPU-bound."""
+    out: list[list[float]] = []
+    for text in texts:
+        vectors = _post_json(
+            settings.embedding_url.rstrip("/") + "/embed",
+            {"inputs": [PASSAGE_PREFIX + text], "normalize": True, "truncate": True},
+            EMBEDDING_SERVICE,
+            timeout=120,
+            job_id=job_id,
+        )
+        if not isinstance(vectors, list) or len(vectors) != 1:
+            raise UpstreamError(f"{EMBEDDING_SERVICE} returned a malformed answer")
+        if len(vectors[0]) != settings.embedding_dim:
+            raise UpstreamError(
+                f"{EMBEDDING_SERVICE} returned {len(vectors[0])} dimensions, not {settings.embedding_dim}"
+            )
+        out.append([float(v) for v in vectors[0]])
+    return out
 
 
-ATOMIC_CARDS_PROMPT = """Analyze this book chapter and respond with a single JSON object (no markdown fences, no commentary) with exactly these keys:
-{"key_concepts": ["3-5 short noun phrases"], "notable_quotes": ["1-2 verbatim quotes from the chapter"], "historical_context": "2-3 sentences"}.
-Do not invent quotes; use only text from the chapter.
+# Cards and recaps: Claude through the Message Batches API, once per book at
+# ingestion. Structured outputs hold every answer to its schema.
+
+ATOMIC_CARDS_PROMPT = """Write the insight cards for this book chapter.
+Write every field in the language the chapter is written in (Indonesian for an Indonesian book, English for an English one).
+key_concepts: 3-5 short noun phrases. notable_quotes: 1-2 quotes copied verbatim from the chapter; never invent one. historical_context: 2-3 sentences.
 
 CHAPTER:
 """
 
-RECAP_PROMPT = """Summarize ONLY what happens up to and including this chapter of an ongoing book. Respond with a single JSON object (no markdown fences, no commentary) with exactly these keys:
-{"summary": "events so far in 4-6 sentences", "key_characters": ["names"], "spoiler_free_note": "one sentence"}.
-Never reveal or speculate about later chapters.
+RECAP_PROMPT = """Summarize ONLY what happens up to and including the current chapter of an ongoing book.
+Write every field in the language the book is written in (Indonesian for an Indonesian book, English for an English one).
+summary: the events so far in 4-6 sentences. key_characters: their names. spoiler_free_note: one sentence. Never reveal or speculate about later chapters.
 
 CHAPTERS SO FAR (last one is the current chapter):
 """
+
+CARDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_concepts": {"type": "array", "items": {"type": "string"}},
+        "notable_quotes": {"type": "array", "items": {"type": "string"}},
+        "historical_context": {"type": "string"},
+    },
+    "required": ["key_concepts", "notable_quotes", "historical_context"],
+    "additionalProperties": False,
+}
+
+RECAP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "key_characters": {"type": "array", "items": {"type": "string"}},
+        "spoiler_free_note": {"type": "string"},
+    },
+    "required": ["summary", "key_characters", "spoiler_free_note"],
+    "additionalProperties": False,
+}
+
+LLM_SERVICE = "Claude API"
+# Written into every request: the model's default effort is not ours to rely on.
+LLM_EFFORT = "medium"
+# Adaptive thinking counts toward the cap; a card or recap needs far less.
+LLM_MAX_TOKENS = 16000
 
 
 PROMPT_BUDGET_CHARS = 12000
@@ -793,27 +882,206 @@ def build_recap_input(previous_cards: list[dict], current_text: str, budget: int
         lines.pop(0)
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else ""
-        if text.rstrip().endswith("```"):
-            text = text.rstrip()[: -3]
-    return text.strip()
+def _llm_call(call):
+    """Runs one SDK call; its failures become :class:`UpstreamError` worded
+    for the curator. The SDK already retried 429, 5xx, and dropped
+    connections twice with backoff."""
+    import anthropic
 
-
-def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
-    """Calls the text LLM and parses the JSON object response."""
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = f"{GEMINI_BASE_URL}{settings.llm_model}:generateContent"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    result = _gemini_post(url, payload, settings.gemini_api_key, timeout=120, job_id=job_id)
     try:
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"LLM response missing text: {str(result)[:200]}") from exc
-    return json.loads(_strip_fences(text))
+        return call()
+    except anthropic.APIStatusError as exc:
+        kind = "unavailable" if exc.status_code == 429 or exc.status_code >= 500 else "rejected the request"
+        raise UpstreamError(f"{LLM_SERVICE} {kind} (HTTP {exc.status_code})") from exc
+    except anthropic.APIConnectionError as exc:
+        raise UpstreamError(f"{LLM_SERVICE} unreachable") from exc
+    except anthropic.AnthropicError as exc:
+        raise UpstreamError(f"{LLM_SERVICE} client not configured ({type(exc).__name__})") from exc
+
+
+def make_llm():
+    """The Claude client, or a permanent failure the curator can act on when
+    the key is missing (the SDK itself would only fail at the first call)."""
+    import anthropic
+
+    if not env("ANTHROPIC_API_KEY"):
+        raise PermanentJobError("ANTHROPIC_API_KEY is not set; the worker cannot write cards or recaps")
+    return _llm_call(lambda: anthropic.Anthropic(max_retries=LLM_MAX_ATTEMPTS - 1, timeout=120.0))
+
+
+def llm_request(custom_id: str, prompt: str, schema: dict, settings: Settings) -> dict:
+    return {
+        "custom_id": custom_id,
+        "params": {
+            "model": settings.llm_model,
+            "max_tokens": LLM_MAX_TOKENS,
+            "output_config": {
+                "effort": LLM_EFFORT,
+                "format": {"type": "json_schema", "schema": schema},
+            },
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    }
+
+
+# A cut-off or non-JSON answer gets this many tries before its chapter goes
+# without; a refusal is final at once, since asking again would repeat it.
+LLM_TRIES_PER_REQUEST = 2
+
+
+def _classify(item) -> tuple[str, object]:
+    """What one batch result means: ("answer", parsed JSON), ("final",
+    reason), ("counted", reason) for an answer worth one more try, or
+    ("retry", reason) for a request the API did not finish."""
+    result = item.result
+    if result.type == "errored":
+        error = getattr(getattr(result, "error", None), "error", None)
+        return "retry", f"errored ({getattr(error, 'type', 'unknown')})"
+    if result.type != "succeeded":
+        return "retry", result.type  # canceled or expired
+    message = result.message
+    if message.stop_reason == "refusal":
+        return "final", "declined by the model"
+    if message.stop_reason == "max_tokens":
+        return "counted", "cut off at the token limit"
+    text = next((b.text for b in message.content if b.type == "text"), "")
+    try:
+        return "answer", json.loads(text)
+    except ValueError:
+        return "counted", "answered without JSON"
+
+
+def _digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _retrieve(client, batch_id: str):
+    """The batch, or None once the API no longer knows it."""
+    import anthropic
+
+    try:
+        return client.messages.batches.retrieve(batch_id)
+    except anthropic.NotFoundError:
+        return None
+
+
+def _batch_for(client, redis_client, job_id: str, phase: str, requests: list[dict]) -> str:
+    """The batch already running these requests, or a new one. A stored
+    batch for other requests is cancelled, best effort, before it costs more."""
+    field = f"llm_batch_{phase}"
+    digest = _digest(requests)
+    stored_digest, _, batch_id = str(redis_client.hget(f"job:{job_id}", field) or "").partition(":")
+    if stored_digest == digest and batch_id:
+        return batch_id
+    if batch_id:
+        try:
+            client.messages.batches.cancel(batch_id)
+        except Exception as exc:  # noqa: BLE001 - an old batch costs money, never correctness
+            LOG.warning("job %s: old %s batch %s not cancelled (%s)", job_id, phase, batch_id, type(exc).__name__)
+    batch_id = _llm_call(lambda: client.messages.batches.create(requests=requests)).id
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, field, f"{digest}:{batch_id}"))
+    LOG.info("job %s: %s batch %s submitted (%d requests)", job_id, phase, batch_id, len(requests))
+    return batch_id
+
+
+def run_batch(
+    client, redis_client, job_id: str, phase: str, requests: list[dict], settings: Settings
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """Runs the requests of one phase through Message Batches. Returns the
+    parsed answers by ``custom_id`` and, for the requests given up for good,
+    the reason.
+
+    Every result is kept in the job hash under the digest of its request, so
+    a retry submits only what is still open: never a request already
+    answered or given up. The running batch id is kept too, so a job released
+    on shutdown or after a crash polls the same batch instead of paying for
+    a second one. Requests the API did not finish fail the phase, with a
+    reason the curator desk shows, and go again on the job's retry."""
+    key = f"job:{job_id}"
+    results_field = f"llm_results_{phase}"
+    digests = {r["custom_id"]: _digest(r) for r in requests}
+    kept = json.loads(redis_client.hget(key, results_field) or "{}")
+    # A result of an earlier, different request (a revised book) is stale.
+    results = {cid: entry for cid, entry in kept.items() if entry.get("digest") == digests.get(cid)}
+    pending = [r for r in requests if not {"answer", "skip"} & results.get(r["custom_id"], {}).keys()]
+    failures: list[str] = []
+    if pending:
+        batch_id = _batch_for(client, redis_client, job_id, phase, pending)
+        # Hours at most (24 h is the API's limit); keep_claimed holds the job
+        # meanwhile, and SIGTERM interrupts the sleep.
+        while True:
+            batch = _llm_call(lambda: _retrieve(client, batch_id))
+            if batch is None:
+                write_job(redis_client, job_id, lambda pipe, k: pipe.hdel(k, f"llm_batch_{phase}"))
+                raise UpstreamError(f"{LLM_SERVICE} no longer has the {phase} batch; the retry submits a new one")
+            if batch.processing_status == "ended":
+                break
+            time.sleep(settings.batch_poll_seconds)
+
+        returned = set()
+        for item in _llm_call(lambda: list(client.messages.batches.results(batch_id))):
+            cid = item.custom_id
+            if cid not in digests:
+                continue
+            returned.add(cid)
+            kind, value = _classify(item)
+            entry = {"digest": digests[cid], "tries": results.get(cid, {}).get("tries", 0) + (kind == "counted")}
+            if kind == "answer":
+                entry["answer"] = value
+            elif kind == "final" or entry["tries"] >= LLM_TRIES_PER_REQUEST:
+                entry["skip"] = value
+            else:
+                failures.append(f"{cid.replace('-', ' ')} {phase} {value}")
+            results[cid] = entry
+        failures += [
+            f"{r['custom_id'].replace('-', ' ')} {phase} result missing"
+            for r in pending
+            if r["custom_id"] not in returned
+        ]
+
+        def keep(pipe, k):
+            # Results in, batch out, in one MULTI: a crash between the two
+            # would otherwise pay for the answered requests again.
+            pipe.hset(k, results_field, json.dumps(results))
+            pipe.hdel(k, f"llm_batch_{phase}")
+
+        write_job(redis_client, job_id, keep)
+    if failures:
+        # No ": " in the reason: error tracking keeps a message up to it.
+        raise UpstreamError(f"{LLM_SERVICE} failed {len(failures)} of {len(requests)} {phase} ({failures[0]})")
+    answers = {cid: entry["answer"] for cid, entry in results.items() if "answer" in entry}
+    skipped = {cid: entry["skip"] for cid, entry in results.items() if "skip" in entry}
+    return answers, skipped
+
+
+def summarize_chapters(
+    client, redis_client, job_id: str, texts: list[str], settings: Settings
+) -> tuple[list[dict | None], dict[int, dict]]:
+    """Insight cards for every chapter, then recaps from chapter 2 on. A
+    recap reads the key concepts of the chapters before it, so the two run
+    as two batches. Returns the cards in chapter order (None for a chapter
+    the model declined) and the recaps by chapter number; a chapter given up
+    is logged for the curator, and the book publishes without it."""
+    card_requests = [
+        llm_request(f"chapter-{n}", ATOMIC_CARDS_PROMPT + text[:PROMPT_BUDGET_CHARS], CARDS_SCHEMA, settings)
+        for n, text in enumerate(texts, start=1)
+    ]
+    by_id, skipped_cards = run_batch(client, redis_client, job_id, "cards", card_requests, settings)
+    cards = [by_id.get(f"chapter-{n}") for n in range(1, len(texts) + 1)]
+    set_job(redis_client, job_id, "summarizing", 88)
+    recap_requests = [
+        llm_request(
+            f"chapter-{n}", RECAP_PROMPT + build_recap_input(cards[: n - 1], texts[n - 1]), RECAP_SCHEMA, settings
+        )
+        for n in range(2, len(texts) + 1)
+    ]
+    recaps, skipped_recaps = (
+        run_batch(client, redis_client, job_id, "recaps", recap_requests, settings) if recap_requests else ({}, {})
+    )
+    for phase, skipped in (("cards", skipped_cards), ("recaps", skipped_recaps)):
+        for cid, reason in sorted(skipped.items()):
+            LOG.warning("job %s: %s %s %s; the book goes out without it", job_id, cid.replace("-", " "), phase, reason)
+    return cards, {int(key.split("-", 1)[1]): value for key, value in recaps.items()}
 
 
 # Pipeline
@@ -899,13 +1167,19 @@ def curator_reason(exc: BaseException) -> str:
     anything else names its kind, and the worker log keeps the detail."""
     if isinstance(exc, PermanentJobError):
         return str(exc)
-    if isinstance(exc, RuntimeError) and str(exc).startswith("Gemini API"):
+    if isinstance(exc, UpstreamError):
         return str(exc)
     return f"Unexpected {type(exc).__name__}; the worker log has the details"
 
 
 def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
-    """Runs the full 5-phase pipeline for one stream message (raises on failure)."""
+    """Runs the full 5-phase pipeline for one stream message (raises on failure).
+
+    No transaction stays open across slow work: metadata, chapters, and each
+    embedding batch commit on their own, the Claude batches (up to 24 h) run
+    with no database connection at all, and cards, recaps, and the publish
+    commit together at the end on a fresh one. Readers see only published books, so the book stays
+    invisible until that last commit."""
     import pg8000.dbapi  # noqa: F401  (ensures driver import errors surface here)
 
     book_id = fields["book_id"]
@@ -935,6 +1209,13 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             # spend embeddings on it.
             set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
             LOG.info("book %s is archived; ingestion skipped", book_id)
+            return
+        if row[3] == "published":
+            # Only a redelivery reaches a published book (the worker died
+            # between the publish and the ack). Running it again would empty
+            # the live book's chunks for the length of the run.
+            set_job(redis_client, job_id, "published", 100)
+            LOG.info("book %s is already published; redelivered job acknowledged", book_id)
             return
         # The catalog shows the book as processing until it publishes; a
         # failure for good hands it back to draft (see fail_job).
@@ -1010,14 +1291,6 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             chapter_ids.append(str(cur.fetchone()[0]))
             write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
-        # Scene chunking at ~400 words, then batched embeddings.
-        pending: list[tuple[str, int, str, str | None]] = []
-        for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            anchors = chunk_anchors(chapter.chunks, chapter.paragraphs)
-            for index, (piece, anchor) in enumerate(zip(chapter.chunks, anchors)):
-                pending.append((chapter_id, index, piece, anchor))
-        if not pending:
-            raise PermanentJobError("EPUB yields no passages to embed")
         # The book row is free since the first commit, so a curator may have
         # archived it already; stop before the embeddings and summaries are paid.
         cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
@@ -1028,10 +1301,36 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             LOG.info("book %s was archived before embedding; ingestion stopped", book_id)
             return
 
+        # Before any money is spent: a worker without its key fails for good.
+        llm = make_llm()
+
+        # Scene chunks of ~300 words, each cut until the model reads all of it.
+        pending: list[tuple[str, int, str, str | None]] = []
+        for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
+            pieces = fit_chunks(chapter.chunks, lambda texts: count_tokens(texts, settings, job_id))
+            anchors = chunk_anchors(pieces, chapter.paragraphs)
+            for index, (piece, anchor) in enumerate(zip(pieces, anchors)):
+                pending.append((chapter_id, index, piece, anchor))
+        if not pending:
+            raise PermanentJobError("EPUB yields no passages to embed")
+
         set_job(redis_client, job_id, "embedding", 55)
-        cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
+        embedded =_digest([EMBEDDING_MODEL, [(c, i, text) for c, i, text, _ in pending]])
+        cur.execute("SELECT COUNT(*) FROM book_chunks WHERE book_id = %s", (book_id,))
+        stored = cur.fetchone()[0]
+        conn.commit()
+        if redis_client.hget(f"job:{job_id}", "embedded") == embedded and stored == len(pending):
+            # A resumed job whose chunks all committed: straight to the batches.
+            LOG.info("job %s: %d chunks already embedded", job_id, stored)
+            pending = []
+        else:
+            # A rerun replaces every chunk; the book is not published, so no
+            # reader sees it half embedded.
+            cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
+            conn.commit()
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
+            # No transaction is open while the model works.
             vectors = embed_batch([text for _, _, text, _ in batch], settings, job_id)
             for (chapter_id, index, text, anchor), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
@@ -1049,59 +1348,51 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                         literal,
                     ),
                 )
+            conn.commit()
             done = min(offset + 20, len(pending))
             set_job(redis_client, job_id, "embedding", 55 + int(20 * done / len(pending)))
+        write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, "embedded", embedded))
 
-        # Atomic cards + spoiler-free recaps via the text LLM.
+        # Archived while the model worked: the batches would be paid for nothing.
+        cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
+        current = cur.fetchone()
+        conn.commit()
+        if current is not None and current[-1] == "archived":
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s was archived before its summaries; ingestion stopped", book_id)
+            return
+        # The batches may run a day; Postgres may restart meanwhile, so the
+        # publish below opens a connection of its own.
+        cur.close()
+        conn.close()
+
+        # Atomic cards + spoiler-free recaps, written by Claude in two batches
+        # while no connection is held; a released job resumes them.
         set_job(redis_client, job_id, "summarizing", 80)
-        previous_cards: list[dict] = []
-        for number, (chapter_id, chapter) in enumerate(
-            zip(chapter_ids, parsed.chapters), start=1
-        ):
-            cards = generate_json(
-                ATOMIC_CARDS_PROMPT + chapter.text[:PROMPT_BUDGET_CHARS], settings, job_id
-            )
-            cur.execute(
-                """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
-                   VALUES (%s, %s, %s, 'chapter_atomic_cards', %s::jsonb, %s)
+        cards, recaps = summarize_chapters(
+            llm, redis_client, job_id, [chapter.text for chapter in parsed.chapters], settings
+        )
+        conn = make_db(settings)
+        cur = conn.cursor()
+        # Cards, recaps, and the publish commit as one short transaction, so
+        # a retry upserts the same rows (uq_tldr_cache) and never doubles them.
+        upsert ="""INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
+                   VALUES (%s, %s, %s, %s, %s::jsonb, %s)
                    ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
                        SET content_json = EXCLUDED.content_json,
                            model_version = EXCLUDED.model_version,
-                           created_at = NOW()""",
-                (
-                    str(uuid.uuid4()),
-                    book_id,
-                    chapter_id,
-                    json.dumps(cards),
-                    settings.llm_model,
-                ),
-            )
-            if number > 1:  # recaps start at chapter 2
-                recap = generate_json(
-                    RECAP_PROMPT + build_recap_input(previous_cards, chapter.text), settings, job_id
-                )
+                           created_at = NOW()"""
+        for number, (chapter_id, chapter_cards) in enumerate(zip(chapter_ids, cards), start=1):
+            # A chapter the model declined has no row; the reader shows none.
+            rows = [("chapter_atomic_cards", chapter_cards)] if chapter_cards is not None else []
+            if number in recaps:  # recaps start at chapter 2
+                rows.append(("chapter_recap", recaps[number]))
+            for recap_type, content in rows:
                 cur.execute(
-                    """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
-                       VALUES (%s, %s, %s, 'chapter_recap', %s::jsonb, %s)
-                       ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
-                       SET content_json = EXCLUDED.content_json,
-                           model_version = EXCLUDED.model_version,
-                           created_at = NOW()""",
-                    (
-                        str(uuid.uuid4()),
-                        book_id,
-                        chapter_id,
-                        json.dumps(recap),
-                        settings.llm_model,
-                    ),
+                    upsert,
+                    (str(uuid.uuid4()), book_id, chapter_id, recap_type, json.dumps(content), settings.llm_model),
                 )
-            previous_cards.append(cards)
-            set_job(
-                redis_client,
-                job_id,
-                "summarizing",
-                80 + int(15 * number / len(chapter_ids)),
-            )
+        set_job(redis_client, job_id, "summarizing", 95)
 
         # The word count marks a finished ingestion even for a book archived
         # meanwhile, so a curator can restore it; only the status waits on
@@ -1327,7 +1618,8 @@ def run(once: bool = False, settings: Settings | None = None) -> int:
     consumer = f"{socket.gethostname()}-{os.getpid()}"
     processed = 0
     # `docker stop` sends SIGTERM and kills ten seconds later; raising here
-    # interrupts even a blocking Gemini call, so the job is released in time.
+    # interrupts even a blocking HTTP call or a batch poll, so the job is
+    # released in time (its batch id stays in the job hash for the next run).
     signal.signal(signal.SIGTERM, _raise_shutdown)
     signal.signal(signal.SIGINT, _raise_shutdown)
 
@@ -1424,17 +1716,23 @@ def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason
 
 
 def return_to_draft(settings: Settings, book_id: str) -> None:
-    """A book whose job failed for good is no longer processing. Best effort:
-    the dead letter already holds the failure, and a replay moves it again."""
+    """A book whose job failed for good is no longer processing, and the
+    chunks its run committed go with it, so neither the vector index nor the
+    curator's chunk count keeps them. Chapters stay (reading progress may
+    hold one); a replay rewrites them. Best effort: the dead letter already
+    holds the failure, and a replay moves it again."""
     if not book_id:
         return
     try:
         conn = make_db(settings)
         try:
-            conn.cursor().execute(
+            cur = conn.cursor()
+            cur.execute(
                 "UPDATE books SET status = 'draft', updated_at = NOW() WHERE id = %s AND status = 'processing'",
                 (book_id,),
             )
+            if cur.rowcount > 0:
+                cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
             conn.commit()
         finally:
             conn.close()

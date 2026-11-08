@@ -3,5 +3,5 @@
 pub mod embedding;
 
 pub use embedding::{
-    build_embedding_provider, EmbeddingProvider, FastEmbedProvider, GeminiEmbeddingProvider,
+    build_embedding_provider, EmbeddingProvider, MockEmbeddingProvider, TeiEmbeddingProvider,
 };

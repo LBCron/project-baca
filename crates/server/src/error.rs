@@ -217,13 +217,19 @@ impl IntoResponse for HttpError {
                 )
                     .into_response()
             }
-            AppError::ServiceUnavailable { retry_after } => {
+            AppError::ServiceUnavailable { retry_after }
+            | AppError::AiUnavailable { retry_after } => {
+                let (code, what) = if matches!(self.0, AppError::AiUnavailable { .. }) {
+                    (shared::error_code::AI_UNAVAILABLE, "Quote search")
+                } else {
+                    (shared::error_code::SERVICE_UNAVAILABLE, "Service")
+                };
                 let mut resp = (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(ApiResponse::<()>::error(
-                        shared::error_code::SERVICE_UNAVAILABLE,
+                        code,
                         &format!(
-                            "Service temporarily unavailable. Try again in {retry_after} seconds"
+                            "{what} temporarily unavailable. Try again in {retry_after} seconds"
                         ),
                         None,
                     )),

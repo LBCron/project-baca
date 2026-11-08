@@ -8,7 +8,7 @@ Open-access e-reader for public-domain literature: a paginated reader that turns
 |---|---|
 | API | Rust, Axum, SeaORM, utoipa (`crates/server`, `crates/infra`, `crates/domain`, `crates/shared`) |
 | Web | Rust, Leptos 0.7 client-side WebAssembly built by Trunk; PWA with service worker and IndexedDB (`crates/web`) |
-| Worker | Python 3.11 Redis Streams consumer: EPUB parsing, chunking, Gemini embeddings and summaries (`python_worker`) |
+| Worker | Python 3.11 Redis Streams consumer: EPUB parsing, chunking, embeddings from the self-hosted model service, cards and recaps from Claude Message Batches (`python_worker`) |
 | Data | PostgreSQL 17 with pgvector and pg_trgm, Redis 7, MinIO or any S3 |
 | Edge | Caddy: static shell, security headers, API proxy (`Caddyfile`, `Caddyfile.prod`); TLS and HTTP/3 locally, Cloudflare Tunnel in front in production |
 

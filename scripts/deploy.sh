@@ -12,7 +12,9 @@
 # its verified index digest in .env.deploy (read by `make prod-*` after
 # .env.production), pulls, checks what was pulled, and takes a backup. Any
 # failure up to there restores the previous checkout and pins, and no running
-# container changes. Then: the migrations, server and worker, the edge once
+# container changes but a first start of Postgres, Redis, and the embedding
+# model (fetched before it starts) or the model service recreated for a
+# changed EMBEDDER_IMAGE. Then: the migrations, server and worker, the edge once
 # the API is healthy, every other service whose configuration changed, and a
 # prune of release images other than the current and the previous deploy.
 set -euo pipefail
@@ -24,6 +26,10 @@ IMAGE_PREFIX=${ROTARIA_IMAGE_PREFIX:-ghcr.io/aprxty3/project-baca}
 IMAGES=(server worker edge backup)
 PINS=.env.deploy
 WAIT=180
+# Loading the 2.2 GB model: about 4 s on amd64, unmeasured on arm64 (GUIDE
+# section 8). The embedder healthcheck's start_period (600 s) is the load
+# budget; this covers it plus three failed checks.
+EMBEDDER_WAIT=${ROTARIA_EMBEDDER_WAIT:-660}
 
 log() { printf '== %s\n' "$*"; }
 die() { printf 'rotaria-deploy: %s\n' "$*" >&2; exit 1; }
@@ -145,6 +151,14 @@ deploy() {
     pin_and_pull
     # Started on a first deploy; a changed Postgres or Redis waits for the last step.
     compose "$PINS.next" up -d --no-recreate --wait --wait-timeout "$WAIT" postgres redis
+    # The embedding model before anything needs it: the first deploy downloads
+    # it (about 2.2 GB), later ones find it in its volume. A changed
+    # EMBEDDER_IMAGE recreates the service here, so the reload is checked
+    # too (quote search answers 503 while it loads). A failed download or a
+    # model that never turns healthy stops here, before the pins move.
+    log "embedding model"
+    compose "$PINS.next" run --rm --no-deps -T embedder-fetch
+    compose "$PINS.next" up -d --no-deps --wait --wait-timeout "$EMBEDDER_WAIT" embedder
     # Before the pins move: a failed backup leaves checkout and pins as they were.
     log "backup before migrating"
     compose "$PINS.next" run --rm --no-deps -T backup pg_backup.sh

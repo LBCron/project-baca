@@ -988,7 +988,7 @@ async fn test_atomic_insight_cards_cache_hit_and_miss() {
         chapter_id: Set(Some(seeded.chapter1_id)),
         recap_type: Set("chapter_atomic_cards".to_string()),
         content_json: Set(cards_content),
-        model_version: Set("gemini-embedding-2".to_string()),
+        model_version: Set("claude-sonnet-5-5".to_string()),
         created_at: Set(now.into()),
     };
 
@@ -1072,7 +1072,7 @@ async fn test_chapter_recap_by_number_and_uuid() {
         chapter_id: Set(Some(seeded.chapter2_id)),
         recap_type: Set("chapter_recap".to_string()),
         content_json: Set(recap_content),
-        model_version: Set("gemini-embedding-2".to_string()),
+        model_version: Set("claude-sonnet-5-5".to_string()),
         created_at: Set(now.into()),
     };
 
@@ -1666,5 +1666,115 @@ async fn test_a_quote_not_in_its_chapter_is_refused() {
         body["data"]["outcomes"][1]["error"],
         "The quote is not in this chapter"
     );
+    harness.cleanup().await;
+}
+
+/// A stand-in for the embedding service: keeps each request's body and
+/// answers the one-hot query vector the seeded chunks match.
+async fn fake_embedder() -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::{routing::post, Json, Router};
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    let app = Router::new().route(
+        "/embed",
+        post(move |Json(body): Json<Value>| {
+            let kept = kept.clone();
+            async move {
+                let count = body["inputs"].as_array().map_or(0, Vec::len);
+                kept.lock().expect("lock").push(body);
+                Json(vec![one_hot(0); count])
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (url, seen, task)
+}
+
+/// The harness with quote search embedding through the self-hosted
+/// provider at `url` instead of the mock.
+fn app_embedding_via(harness: &TestHarness, url: String) -> axum::Router {
+    let mut state = (*harness.state).clone();
+    state.embedding = infra::build_embedding_provider(&infra::AiConfig {
+        provider: "tei".to_string(),
+        url,
+        dimension: 768,
+        daily_budget: 0,
+    })
+    .expect("tei provider builds");
+    server::create_app(std::sync::Arc::new(state))
+}
+
+fn guest_search(book_id: Uuid, ip: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/books/{book_id}/quotes/search"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(common::CLIENT_IP_HEADER, ip)
+        .body(Body::from(
+            serde_json::json!({ "query": "kabut di pelabuhan" }).to_string(),
+        ))
+        .expect("Valid request")
+}
+
+#[tokio::test]
+async fn test_guest_quote_search_embeds_through_the_self_hosted_service() {
+    use tower::ServiceExt;
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    let (url, seen, server) = fake_embedder().await;
+
+    let resp = app_embedding_via(&harness, url)
+        .oneshot(guest_search(seeded.book_id, &common::unique_ip("10.73")))
+        .await
+        .expect("request runs");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json: Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert!(!json["data"].as_array().expect("array").is_empty());
+    let calls = seen.lock().expect("lock").clone();
+    assert_eq!(calls.len(), 1, "one embedding call per search");
+    assert_eq!(calls[0]["inputs"][0], "query: kabut di pelabuhan");
+    server.abort();
+    harness.cleanup().await;
+}
+
+#[tokio::test]
+async fn test_quote_search_answers_503_while_the_model_is_down() {
+    use tower::ServiceExt;
+    let harness = TestHarness::new().await;
+    let seeded = seed_test_context(&harness)
+        .await
+        .expect("Seeding must succeed");
+    // A port nothing listens on: the model service is down.
+    let port = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port();
+
+    let resp = app_embedding_via(&harness, format!("http://127.0.0.1:{port}"))
+        .oneshot(guest_search(seeded.book_id, &common::unique_ip("10.74")))
+        .await
+        .expect("request runs");
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
+    let json: Value =
+        serde_json::from_slice(&to_bytes(resp.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert_eq!(json["error"]["code"], "AI_UNAVAILABLE");
     harness.cleanup().await;
 }

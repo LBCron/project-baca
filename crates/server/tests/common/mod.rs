@@ -81,10 +81,8 @@ impl TestHarness {
         // Use Mock provider for tests: deterministic 768-dim zero-vectors without network calls.
         let embedding = build_embedding_provider(&AiConfig {
             provider: "mock".to_string(),
-            api_key: String::new(),
-            model_name: "text-embedding-004".to_string(),
             dimension: 768,
-            daily_budget: 0,
+            ..AiConfig::default()
         })
         .expect("mock provider must always succeed");
 

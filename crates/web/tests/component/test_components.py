@@ -91,7 +91,7 @@ CURATOR_BOOKS = [
 CURATOR_DLQ = [
     {"id": "1700000000000-0", "job_id": "deadbeef-0000-4000-8000-000000000000",
      "book_id": "22222222-2222-4222-8222-222222222222", "book_title": "Naskah Draf",
-     "error": "Gemini API unavailable (HTTP 503)", "failed_at": "2026-10-03T08:00:00Z"},
+     "error": "Claude API unavailable (HTTP 529)", "failed_at": "2026-10-03T08:00:00Z"},
     {"id": "1700000000001-0", "job_id": "cafef00d-0000-4000-8000-000000000000",
      "error": "The uploaded EPUB is gone from storage; upload it again", "failed_at": "2026-10-03T09:00:00Z"},
 ]
@@ -162,7 +162,7 @@ def test_curator_desk_tabs_rows_replay_and_funnel(clean_page: Page):
     page.click('.desk-tabs button:has-text("Queue")')
     page.wait_for_timeout(800)
     queue = page.inner_text(".manuscript-list")
-    assert "Gemini API unavailable" in queue
+    assert "Claude API unavailable" in queue
     assert "Naskah Draf" in queue and "The book is gone" in queue, "each dead letter names its book"
     counter = '#dlq-title + .form-hint'
     assert page.inner_text(counter) == "7", "the counter is the stream total, not the page"

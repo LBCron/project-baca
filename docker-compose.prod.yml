@@ -111,6 +111,49 @@ services:
     volumes:
       - miniodata_prod:/data
 
+  # Downloads the embedding model at its pinned revision into the volume
+  # (scripts/fetch_embedding_model.sh) and exits; a rerun with the files in
+  # place downloads nothing. The only embedding container with a route out.
+  embedder-fetch:
+    image: &embedder_image ${EMBEDDER_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-1.9@sha256:798cd7615e060a72ccbdf19aa0ada52289c6a0147490195bafaece6ce04d70f1}
+    restart: "no"
+    logging: *logging
+    mem_limit: 128m
+    cpus: 0.5
+    networks: [default]
+    entrypoint: ["/fetch.sh"]
+    volumes:
+      - embedder_models:/data
+      - ./scripts/fetch_embedding_model.sh:/fetch.sh:ro
+
+  # Self-hosted embeddings (ADR-49) for chunks (worker) and reader queries
+  # (server): text-embeddings-inference serving multilingual-e5-base, 768
+  # dimensions, on CPU. Only on `store`: no route out, no published port, so
+  # book text and queries never leave the host. Budget: ARCHITECTURE.md section 8.
+  embedder:
+    image: *embedder_image
+    restart: always
+    logging: *logging
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 1.0
+    user: "65534:65534"
+    networks: [store]
+    depends_on:
+      embedder-fetch:
+        condition: service_completed_successfully
+    command: ["--model-id", "/data/multilingual-e5-base", "--pooling", "mean", "--tokenization-workers", "1"]
+    volumes:
+      - embedder_models:/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # The model's load budget (arm64 is unmeasured); the first passing
+      # check ends it early. scripts/deploy.sh waits a little longer.
+      start_period: 600s
+
   server:
     image: ${ROTARIA_SERVER_IMAGE:-ghcr.io/aprxty3/project-baca/server:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
     build:
@@ -164,9 +207,9 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?set SMTP}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Project Baca}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-gemini}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
-      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-gemini-embedding-2}
+      # Not a start dependency: until the model is up, quote search answers 503 AI_UNAVAILABLE.
+      EMBEDDING_PROVIDER: tei
+      EMBEDDING_URL: http://embedder:80
       EMBEDDING_DIMENSION: 768
 
   worker:
@@ -190,6 +233,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # Ingestion embeds every chunk; the server does not wait (quote search
+      # answers 503 until the model is up), and deploy.sh starts both after it.
+      embedder:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       DATABASE_URL: postgres://rotaria_app:${POSTGRES_APP_PASSWORD}@postgres:5432/project_baca_db
@@ -199,7 +246,9 @@ services:
       S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?set S3 keys}
       S3_BUCKET_EPUBS: ${S3_BUCKET_EPUBS:-baca-epubs}
       S3_BUCKET_COVERS: ${S3_BUCKET_COVERS:-baca-covers}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:?set Gemini key}
+      EMBEDDING_URL: http://embedder:80
+      # Cards and recaps at ingestion; the server never calls Claude.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set the Anthropic API key}
       APP_ENV: production
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_RELEASE: worker@${ROTARIA_VERSION}
@@ -285,8 +334,8 @@ services:
       # Metrics and pprof stay inside the container.
       TUNNEL_METRICS: 127.0.0.1:20241
 
-# Postgres and Redis (and MinIO) have no route out and no published port;
-# only the services that hold their credentials join this network.
+# Postgres, Redis, the embedder (and MinIO) have no route out and no published port;
+# only the services that hold their credentials, and their embedder, join this network.
 networks:
   store:
     internal: true
@@ -304,3 +353,4 @@ volumes:
   caddy_data:
   caddy_config:
   caddy_logs:
+  embedder_models:

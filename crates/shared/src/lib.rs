@@ -64,6 +64,7 @@ pub mod error_code {
     pub const RATE_LIMITED: &str = "RATE_LIMITED";
     pub const AI_RATE_LIMITED: &str = "AI_RATE_LIMITED";
     pub const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
+    pub const AI_UNAVAILABLE: &str = "AI_UNAVAILABLE";
     pub const EXTERNAL_SERVICE_ERROR: &str = "EXTERNAL_SERVICE_ERROR";
     pub const DATABASE_ERROR: &str = "DATABASE_ERROR";
     pub const INTERNAL_ERROR: &str = "INTERNAL_ERROR";
@@ -81,6 +82,7 @@ pub mod error_code {
         RATE_LIMITED,
         AI_RATE_LIMITED,
         SERVICE_UNAVAILABLE,
+        AI_UNAVAILABLE,
         EXTERNAL_SERVICE_ERROR,
         DATABASE_ERROR,
         INTERNAL_ERROR,
@@ -128,6 +130,10 @@ pub enum AppError {
 
     #[error("Service temporarily unavailable. Try again in {retry_after} seconds")]
     ServiceUnavailable { retry_after: u64 },
+
+    /// The self-hosted embedding model is down or still loading (503).
+    #[error("Embedding model not ready. Try again in {retry_after} seconds")]
+    AiUnavailable { retry_after: u64 },
 
     #[error("Database error: {0}")]
     Database(String),

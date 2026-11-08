@@ -51,7 +51,8 @@ pub fn saved_quotes_routes() -> Router<Arc<AppState>> {
         (status = 400, description = "Validation error on query payload"),
         (status = 404, description = "Book not found"),
         (status = 429, description = "AI rate limit exceeded (10 req/min per user or IP)"),
-        (status = 500, description = "Embedding provider or database error")
+        (status = 500, description = "Embedding provider or database error"),
+        (status = 503, description = "AI_UNAVAILABLE: the embedding model is down or still loading")
     ),
     tag = "Semantic Search"
 )]
@@ -72,7 +73,7 @@ pub async fn search_book_quotes(
 
     let embedding = state
         .embedding
-        .embed_text(&payload.query)
+        .embed_query(&payload.query)
         .await
         .map_err(HttpError)?;
 

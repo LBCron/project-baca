@@ -218,12 +218,12 @@ impl Default for EmailConfig {
     }
 }
 
-/// AI and Embedding provider configuration
+/// Query embedding: the self-hosted model service (`tei`) or `mock` in tests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiConfig {
     pub provider: String,
-    pub api_key: String,
-    pub model_name: String,
+    /// Base URL of the embedding service (text-embeddings-inference).
+    pub url: String,
     pub dimension: usize,
     /// Embedding-backed requests allowed per day across every reader; past
     /// it they answer 429. Zero turns the ceiling off (development only).
@@ -233,9 +233,8 @@ pub struct AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            provider: "gemini".to_string(),
-            api_key: String::new(),
-            model_name: "gemini-embedding-2".to_string(),
+            provider: "tei".to_string(),
+            url: "http://127.0.0.1:8090".to_string(),
             dimension: 768,
             daily_budget: 0,
         }
@@ -441,12 +440,7 @@ impl AppConfig {
         let ai_provider = env::var("EMBEDDING_PROVIDER")
             .or_else(|_| env::var("AI_PROVIDER"))
             .unwrap_or(default_ai.provider);
-        let ai_api_key = env::var("GEMINI_API_KEY")
-            .or_else(|_| env::var("AI_API_KEY"))
-            .unwrap_or(default_ai.api_key);
-        let ai_model_name = env::var("EMBEDDING_MODEL_NAME")
-            .or_else(|_| env::var("AI_MODEL_NAME"))
-            .unwrap_or(default_ai.model_name);
+        let ai_url = env::var("EMBEDDING_URL").unwrap_or(default_ai.url);
         let ai_dimension = env::var("EMBEDDING_DIMENSION")
             .or_else(|_| env::var("AI_DIMENSION"))
             .ok()
@@ -456,8 +450,7 @@ impl AppConfig {
         let ai_daily_budget = env_number("AI_DAILY_BUDGET", default_ai.daily_budget)?;
         let ai = AiConfig {
             provider: ai_provider,
-            api_key: ai_api_key,
-            model_name: ai_model_name,
+            url: ai_url,
             dimension: ai_dimension,
             daily_budget: ai_daily_budget,
         };
@@ -586,7 +579,7 @@ mod tests {
         assert_eq!(config.auth.refresh_expiry_days, 14);
         assert_eq!(config.auth.session_max_days, 90);
         assert_eq!(config.storage.bucket_epubs, "baca-epubs");
-        assert_eq!(config.ai.provider, "gemini");
+        assert_eq!(config.ai.provider, "tei");
         assert_eq!(config.ai.dimension, 768);
     }
 

@@ -53,6 +53,11 @@ db-up:
 	@echo "Starting database and infrastructure services..."
 	@docker compose up -d
 
+# The self-hosted embedding model; the first run downloads it (about 2.2 GB).
+embedder-up:
+	@echo "Starting the embedding model service on 127.0.0.1:8090..."
+	@docker compose --profile embedder up -d --wait embedder
+
 # Stops all infrastructure containers
 db-down:
 	@echo "Stopping infrastructure services..."
@@ -219,6 +224,11 @@ worker-test-live:
 backfill-paragraphs:
 	@echo "Indexing the paragraphs of every stored chapter and anchoring its chunks (one-off, idempotent)..."
 	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python worker.py --backfill-paragraphs
+
+# Dev and test data only: production embeds every chunk at ingestion.
+reembed-chunks:
+	@echo "Re-embedding stored chunks in place with EMBEDDING_URL (idempotent; BOOK=<uuid> for one book)..."
+	@cargo run -p infra --example backfill_chunks -- $(BOOK)
 
 worker:
 	@echo "Starting ingestion worker (long-running consumer)..."
@@ -396,5 +406,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-smoke prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web test-deploy prod-backup prod-env-copy prod-restore-drill prod-psql prod-grant-admin deploy-probe
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-smoke prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web test-deploy prod-backup prod-env-copy prod-restore-drill prod-psql prod-grant-admin deploy-probe embedder-up reembed-chunks
 
