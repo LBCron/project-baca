@@ -1097,3 +1097,86 @@ class DatabaseUrlTest(unittest.TestCase):
         dbapi.connect.assert_called_once_with(
             user="rotaria_app", password="p@ss/w", host="db", port=5432, database="rotaria"
         )
+
+
+class ErrorTrackingTest(unittest.TestCase):
+    def tearDown(self):
+        import sentry_sdk
+
+        sentry_sdk.init()
+        worker._error_tracking = False
+
+    def test_without_a_dsn_tracking_stays_off(self):
+        with mock.patch.dict("os.environ", {"SENTRY_DSN": ""}):
+            self.assertFalse(worker.init_error_tracking())
+        worker.report_job_failure("job-1", RuntimeError("nothing to send"))
+
+    def test_a_failed_job_carries_its_id_and_no_book_text(self):
+        import json
+        import logging
+        import uuid
+
+        import sentry_sdk
+        from sentry_sdk.transport import Transport
+
+        class Captured(Transport):
+            def __init__(self):
+                super().__init__()
+                self.events = []
+
+            def capture_envelope(self, envelope):
+                event = envelope.get_event()
+                if event is not None:
+                    self.events.append(event)
+
+        transport = Captured()
+        with mock.patch.dict("os.environ", {"SENTRY_DSN": "https://key@sentry.invalid/1", "APP_ENV": "production"}):
+            self.assertTrue(worker.init_error_tracking(transport=transport))
+
+        def embed(chapter_text):
+            request_body = {"contents": chapter_text}  # noqa: F841 - a local Sentry must not ship
+            raise RuntimeError(f"LLM response missing text: {{'candidates': '{chapter_text}'}}")
+
+        # Built at run time, so the source lines Sentry sends cannot hold it.
+        book_text = "chapter-" + uuid.uuid4().hex
+        worker.LOG.error("chapter %s", book_text)
+        logging.getLogger("urllib3").warning(book_text)
+        try:
+            embed(book_text)
+        except RuntimeError as exc:
+            worker.report_job_failure("job-42", exc)
+        worker.report_job_failure("job-43", message="The worker stopped 3 times while ingesting this book")
+        sentry_sdk.flush()
+
+        self.assertEqual(len(transport.events), 2, transport.events)
+        failed, stopped = transport.events
+        self.assertEqual(failed["tags"]["job_id"], "job-42")
+        self.assertEqual(failed["environment"], "production")
+        self.assertEqual(failed["exception"]["values"][-1]["value"], "LLM response missing text")
+        self.assertEqual(stopped["tags"]["job_id"], "job-43")
+        for event in transport.events:
+            dumped = json.dumps(event, default=str)
+            self.assertNotIn(book_text, dumped)
+            self.assertNotIn("request", event)
+            self.assertFalse(event.get("breadcrumbs", {}).get("values"))
+
+    def test_scrubbed_reasons_are_short_and_carry_no_detail(self):
+        event = {
+            "message": "x" * 500,
+            "exception": {"values": [
+                {"value": "Gemini API unavailable (HTTP 503)"},
+                {"value": "y" * 500},
+                {"value": "LLM response missing text: model reply"},
+            ]},
+            "tags": {"job_id": "job-7"},
+        }
+        scrubbed = worker.scrub_event(event, {})
+        values = [v["value"] for v in scrubbed["exception"]["values"]]
+        self.assertEqual(values, ["Gemini API unavailable (HTTP 503)", "y" * 120, "LLM response missing text"])
+        self.assertEqual(len(scrubbed["message"]), 120)
+        self.assertEqual(scrubbed["tags"], {"job_id": "job-7"})
+
+    def test_job_failures_are_reported(self):
+        with mock.patch.object(worker, "report_job_failure") as report:
+            run_once_with(attempts=1, side_effect=RuntimeError("Gemini API unavailable (HTTP 503)"))
+        self.assertEqual(report.call_args.args[0], "j")

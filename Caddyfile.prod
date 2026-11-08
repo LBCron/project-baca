@@ -21,6 +21,32 @@
 :80 {
 	encode zstd gzip
 
+	# JSON access log on the caddy_logs volume, rolled daily and kept 30
+	# days (ADR-44). The client keeps its /24 or /64 only and the query
+	# string (search text) is cut. No request header is kept but the user
+	# agent: the others carry addresses, credentials, Cloudflare Access
+	# identities and tokens, or a Referer with its query. A redirect's
+	# Location would repeat the query, so it goes too.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 1000
+			roll_interval 24h
+			roll_keep_for 720h
+		}
+		format filter {
+			wrap json
+			fields {
+				request>remote_ip ip_mask 24 64
+				request>client_ip ip_mask 24 64
+				request>uri regexp \?.*$ ""
+				request>headers delete
+				resp_headers>Location delete
+			}
+		}
+	}
+	log_append user_agent {http.request.header.User-Agent}
+
 	# Content-hashed build output and the self-hosted fonts (renamed, never
 	# edited in place). The two matchers are exact complements.
 	@immutable path_regexp ^/(?:[a-z0-9_-]+-[0-9a-f]{16}(?:_bg)?\.(?:wasm|js|css)|fonts/[^/]+\.woff2)$

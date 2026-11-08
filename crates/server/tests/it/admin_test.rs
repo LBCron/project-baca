@@ -5,7 +5,7 @@ use crate::common;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use chrono::Utc;
-use common::TestHarness;
+use common::{LogCapture, TestHarness};
 use infra::entities::{books, chapters, user_reading_progress, users};
 use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use serde_json::Value;
@@ -14,6 +14,7 @@ use uuid::Uuid;
 const BOUNDARY: &str = "BacaTestBoundary123";
 
 struct AdminContext {
+    pub admin_id: Uuid,
     pub admin_token: String,
     pub reader_token: String,
 }
@@ -66,9 +67,21 @@ async fn seed_users(harness: &TestHarness) -> AdminContext {
             .expect("Reader token must generate");
 
     AdminContext {
+        admin_id,
         admin_token,
         reader_token,
     }
+}
+
+/// Asserts `event` was logged once and names the acting admin.
+fn assert_admin_event(logs: &LogCapture, event: &str, ctx: &AdminContext) -> Value {
+    let line = logs.only(event);
+    assert_eq!(
+        line["fields"]["admin_id"],
+        ctx.admin_id.to_string(),
+        "{line}"
+    );
+    line
 }
 
 /// Builds a multipart/form-data body with a single file part plus text fields.
@@ -161,6 +174,7 @@ async fn test_upload_rejects_non_epub_and_missing_file() {
 async fn test_upload_happy_path_queues_job() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;
+    let logs = LogCapture::start();
     assert!(
         harness.state.storage.is_some(),
         "MinIO must be reachable for upload tests"
@@ -191,6 +205,9 @@ async fn test_upload_happy_path_queues_job() {
     let book_id = json["data"]["book_id"].as_str().expect("book_id string");
     harness.track_book(Uuid::parse_str(book_id).expect("book_id uuid"));
     assert_eq!(json["data"]["status"], "queued");
+    let uploaded = assert_admin_event(&logs, "admin.book.uploaded", &ctx);
+    assert_eq!(uploaded["fields"]["book_id"], book_id);
+    assert_eq!(uploaded["fields"]["job_id"], job_id);
 
     // Book row exists in draft status.
     let stored: Option<books::Model> = {
@@ -870,6 +887,7 @@ async fn test_admin_catalog_listing_and_lifecycle_guard() {
     let harness = TestHarness::new().await;
     let ctx = seed_users(&harness).await;
     let draft_id = seed_status_book(&harness, "draft").await;
+    let logs = LogCapture::start();
 
     let resp = harness
         .send_request(admin_get("/api/v1/admin/books", None))
@@ -930,6 +948,24 @@ async fn test_admin_catalog_listing_and_lifecycle_guard() {
         .send_json_request(admin_patch(Uuid::new_v4(), "archived", &ctx.admin_token))
         .await;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let changed = assert_admin_event(&logs, "admin.book.status_changed", &ctx);
+    assert_eq!(changed["fields"]["book_id"], draft_id.to_string());
+    assert_eq!(changed["fields"]["from"], "draft");
+    assert_eq!(changed["fields"]["to"], "archived");
+    // Both reader attempts are refused on the record, with the route they hit.
+    assert_eq!(logs.events("admin.access.denied").len(), 2);
+    let refused: Vec<Value> = logs
+        .events("http.request.completed")
+        .into_iter()
+        .filter(|line| line["fields"]["status"] == 403)
+        .collect();
+    assert_eq!(refused.len(), 2);
+    assert!(refused.iter().all(|line| line["level"] == "WARN"));
+    assert_eq!(
+        refused[1]["fields"]["route"],
+        "/api/v1/admin/books/{book_id}"
+    );
     harness.cleanup().await;
 }
 
@@ -999,10 +1035,13 @@ async fn test_admin_dlq_replay_is_idempotent() {
             .body(Body::empty())
             .unwrap()
     };
+    let logs = LogCapture::start();
     let (resp, json) = harness.send_json_request(replay(&ctx.admin_token)).await;
     assert_eq!(resp.status(), StatusCode::OK, "{json}");
     assert_eq!(json["data"]["job_id"], job_id);
     assert_eq!(json["data"]["replayed"], true);
+    let replayed = assert_admin_event(&logs, "admin.dlq.replayed", &ctx);
+    assert_eq!(replayed["fields"]["entry_id"], entry_id);
 
     let status: String = redis.hget(format!("job:{job_id}"), "status").await.unwrap();
     assert_eq!(status, "queued");
@@ -1136,9 +1175,12 @@ async fn test_dismissed_dead_letter_does_not_come_back() {
     };
     let resp = harness.send_request(dismiss(&ctx.reader_token)).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let logs = LogCapture::start();
     let (resp, json) = harness.send_json_request(dismiss(&ctx.admin_token)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(json["data"]["dismissed"], true);
+    let dismissed = assert_admin_event(&logs, "admin.dlq.dismissed", &ctx);
+    assert_eq!(dismissed["fields"]["entry_id"], entry_id);
     let (_, after) = harness.send_json_request(page()).await;
     assert!(after["data"]["entries"]
         .as_array()

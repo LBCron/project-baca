@@ -14,6 +14,7 @@ mod covers_test;
 mod database_test;
 mod integration_test;
 mod reliability_test;
+mod security_log_test;
 mod security_owasp_test;
 mod semantic_ai_test;
 mod smoke_test;

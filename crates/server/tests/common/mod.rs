@@ -22,7 +22,7 @@ pub const CLIENT_IP_HEADER: &str = "cf-connecting-ip";
 /// A random IPv4 address under `prefix` (two octets), drawn from 62,500 so
 /// tests running in the same minute do not share a rate-limit bucket. Each
 /// suite keeps its own prefix: auth 198.18, semantic 198.19, load stress
-/// 198.20, reliability 198.21, catalog 198.22.
+/// 198.20, reliability 198.21, catalog 198.22, security log 198.23.
 #[allow(dead_code)]
 pub fn unique_ip(prefix: &str) -> String {
     let n = Uuid::new_v4().as_u128();
@@ -502,4 +502,67 @@ pub async fn silent_listener() -> (u16, JoinHandle<()>) {
         }
     });
     (port, task)
+}
+
+/// Log lines the app emits on this thread while the capture lives, in the
+/// JSON shape production writes, at every level. `#[tokio::test]` runs the
+/// app on the test's own thread, so a thread-scoped subscriber sees this
+/// test and none running beside it.
+#[allow(dead_code)]
+pub struct LogCapture {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+#[derive(Clone)]
+struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+impl LogCapture {
+    pub fn start() -> Self {
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let writer = SharedBuffer(buffer.clone());
+        // No timestamps: a microsecond field could spell a six-digit code.
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .without_time()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        Self {
+            buffer,
+            _guard: tracing::subscriber::set_default(subscriber),
+        }
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buffer.lock().unwrap()).into_owned()
+    }
+
+    /// Every captured line whose `event` field is `name`.
+    pub fn events(&self, name: &str) -> Vec<serde_json::Value> {
+        self.text()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|line| line["fields"]["event"] == name)
+            .collect()
+    }
+
+    /// The one line of event `name`; panics when it is missing or repeated.
+    pub fn only(&self, name: &str) -> serde_json::Value {
+        let mut found = self.events(name);
+        assert_eq!(found.len(), 1, "{name} logged {} times", found.len());
+        found.remove(0)
+    }
 }
