@@ -10,11 +10,11 @@
 #
 # It checks out tag vX.Y.Z in the repository clone, pins every release image to
 # its verified index digest in .env.deploy (read by `make prod-*` after
-# .env.production), pulls, and checks what was pulled. Any failure up to there
-# restores the previous checkout and pins, and no container changes. Then: a
-# backup, the migrations, server and worker, the edge once the API is healthy,
-# every other service whose configuration changed, and a prune of release
-# images other than the current and the previous deploy.
+# .env.production), pulls, checks what was pulled, and takes a backup. Any
+# failure up to there restores the previous checkout and pins, and no running
+# container changes. Then: the migrations, server and worker, the edge once
+# the API is healthy, every other service whose configuration changed, and a
+# prune of release images other than the current and the previous deploy.
 set -euo pipefail
 
 SELF=/usr/local/bin/rotaria-deploy
@@ -92,10 +92,20 @@ pin_and_pull() {
     done
 }
 
+# The running pins become the rollback target only once this deploy succeeds;
+# re-dispatching the running version keeps the one before it.
 commit_pins() {
-    [[ -f $PINS ]] && cp "$PINS" "$PINS.prev"
+    if [[ -f $PINS ]] && ! cmp -s "$PINS" "$PINS.next"; then
+        cp "$PINS" "$PINS.prev.pending"
+    fi
     mv "$PINS.next" "$PINS"
     trap after_change EXIT
+}
+
+rotate_prev() {
+    if [[ -f $PINS.prev.pending ]]; then
+        mv "$PINS.prev.pending" "$PINS.prev"
+    fi
 }
 
 check_api() {
@@ -133,13 +143,14 @@ deploy() {
     cd "$REPO_DIR"
     checkout
     pin_and_pull
-    commit_pins
+    # Started on a first deploy; a changed Postgres or Redis waits for the last step.
+    compose "$PINS.next" up -d --no-recreate --wait --wait-timeout "$WAIT" postgres redis
+    # Before the pins move: a failed backup leaves checkout and pins as they were.
     log "backup before migrating"
-    make --no-print-directory prod-backup
+    compose "$PINS.next" run --rm --no-deps -T backup pg_backup.sh
+    commit_pins
     log "migrating"
     make --no-print-directory prod-migrate
-    # Started on a first deploy; a changed Postgres or Redis waits for the last step.
-    compose "$PINS" up -d --no-recreate --wait --wait-timeout "$WAIT" postgres redis
     log "server and worker"
     compose "$PINS" up -d --no-deps --wait --wait-timeout "$WAIT" server worker
     check_api
@@ -150,6 +161,7 @@ deploy() {
     local out
     out=$(compose "$PINS" up -d --remove-orphans 2>&1) || { printf '%s\n' "$out" >&2; die "compose up failed"; }
     grep -E 'Recreated|Created|Started|Removed' <<<"$out" || echo "nothing else changed"
+    rotate_prev
     log "pruning old release images"
     prune_images
     trap - EXIT
