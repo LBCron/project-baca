@@ -289,7 +289,10 @@ app-android-build:
 # on the production tunnel would take a share of rotaria.site's traffic.
 PROD_ENV ?= .env.production
 # .env.deploy, written by each deploy on the host, pins the release images by digest.
-PROD_COMPOSE = docker compose --env-file $(PROD_ENV) $(if $(wildcard .env.deploy),--env-file .env.deploy) -f docker-compose.prod.yml
+# Make exports the dev .env; in compose's interpolation those names would win
+# over PROD_ENV on a laptop, so the production targets drop them.
+DEV_ENV_NAMES := $(shell sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' .env 2>/dev/null)
+PROD_COMPOSE = env $(addprefix -u ,$(DEV_ENV_NAMES)) docker compose --env-file $(PROD_ENV) $(if $(wildcard .env.deploy),--env-file .env.deploy) -f docker-compose.prod.yml
 prod-build:
 	@echo "Building production images..."
 	@$(PROD_COMPOSE) build
