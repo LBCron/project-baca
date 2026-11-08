@@ -200,6 +200,7 @@ class ArchiveMidIngestionLiveTest(unittest.TestCase):
         vector = [1.0] + [0.0] * (settings.embedding_dim - 1)
         try:
             with mock.patch.object(worker, "make_minio", return_value=minio), \
+                 mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
                  mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [vector] * len(texts)), \
                  mock.patch.object(worker, "make_llm"), \
                  mock.patch.object(worker, "summarize_chapters", side_effect=slow_summary):

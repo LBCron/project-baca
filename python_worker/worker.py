@@ -315,7 +315,14 @@ def paragraph_texts(html: str) -> list[str]:
     return [" ".join("".join(parts).split()) for parts in parser.found]
 
 
-def chunk_words(text: str, target: int = 400, minimum: int = 50) -> list[str]:
+# Words per chunk. multilingual-e5 reads 512 tokens and drops the rest;
+# measured with its tokenizer, English runs 1.40 tokens a word and
+# Indonesian 1.47, so 300 words (about 420 tokens) fit with room for the
+# merged tail. 400-word chunks lost their tail in 93% of English chunks.
+CHUNK_TARGET_WORDS = 300
+
+
+def chunk_words(text: str, target: int = CHUNK_TARGET_WORDS, minimum: int = 50) -> list[str]:
     """Splits text into ~target-word chunks at whitespace boundaries.
 
     A trailing fragment shorter than ``minimum`` words merges into the previous
@@ -738,6 +745,45 @@ EMBEDDING_SERVICE = "Embedding service"
 PASSAGE_PREFIX = "passage: "
 
 
+# The model's window, counted with its <s> and </s> and the passage prefix.
+EMBED_MAX_TOKENS = 512
+
+
+def count_tokens(texts: list[str], settings: Settings, job_id: str = "") -> list[int]:
+    """Tokens the model reads for each passage, from the service's own
+    tokenizer (no model run, so a reader's query is not held up)."""
+    counts: list[int] = []
+    for offset in range(0, len(texts), 32):
+        batch = [PASSAGE_PREFIX + text for text in texts[offset : offset + 32]]
+        tokens = _post_json(
+            settings.embedding_url.rstrip("/") + "/tokenize",
+            {"inputs": batch, "add_special_tokens": True},
+            EMBEDDING_SERVICE,
+            job_id=job_id,
+        )
+        if not isinstance(tokens, list) or len(tokens) != len(batch):
+            raise UpstreamError(f"{EMBEDDING_SERVICE} returned a malformed token count")
+        counts.extend(len(t) for t in tokens)
+    return counts
+
+
+def fit_chunks(chunks: list[str], count, limit: int = EMBED_MAX_TOKENS) -> list[str]:
+    """Halves, at a word boundary, every chunk the model would truncate, until
+    each piece fits; ``count`` maps texts to their token counts.
+
+    shortcut: a single word longer than the window stays whole (the model
+    truncates it); split by characters if such text ever appears."""
+    fitted: list[str] = []
+    for chunk, tokens in zip(chunks, count(chunks)):
+        words = chunk.split()
+        if tokens <= limit or len(words) < 2:
+            fitted.append(chunk)
+            continue
+        half = len(words) // 2
+        fitted.extend(fit_chunks([" ".join(words[:half]), " ".join(words[half:])], count, limit))
+    return fitted
+
+
 def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[list[float]]:
     """Returns one embedding vector per passage from the self-hosted model
     service (text-embeddings-inference).
@@ -768,12 +814,14 @@ def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[
 # ingestion. Structured outputs hold every answer to its schema.
 
 ATOMIC_CARDS_PROMPT = """Write the insight cards for this book chapter.
+Write every field in the language the chapter is written in (Indonesian for an Indonesian book, English for an English one).
 key_concepts: 3-5 short noun phrases. notable_quotes: 1-2 quotes copied verbatim from the chapter; never invent one. historical_context: 2-3 sentences.
 
 CHAPTER:
 """
 
 RECAP_PROMPT = """Summarize ONLY what happens up to and including the current chapter of an ongoing book.
+Write every field in the language the book is written in (Indonesian for an Indonesian book, English for an English one).
 summary: the events so far in 4-6 sentences. key_characters: their names. spoiler_free_note: one sentence. Never reveal or speculate about later chapters.
 
 CHAPTERS SO FAR (last one is the current chapter):
@@ -1042,7 +1090,13 @@ def curator_reason(exc: BaseException) -> str:
 
 
 def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
-    """Runs the full 5-phase pipeline for one stream message (raises on failure)."""
+    """Runs the full 5-phase pipeline for one stream message (raises on failure).
+
+    No transaction stays open across slow work: metadata, chapters, and each
+    embedding batch commit on their own, the Claude batches (up to 24 h) run
+    with no transaction at all, and cards, recaps, and the publish commit
+    together at the end. Readers see only published books, so the book stays
+    invisible until that last commit."""
     import pg8000.dbapi  # noqa: F401  (ensures driver import errors surface here)
 
     book_id = fields["book_id"]
@@ -1072,6 +1126,13 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             # spend embeddings on it.
             set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
             LOG.info("book %s is archived; ingestion skipped", book_id)
+            return
+        if row[3] == "published":
+            # Only a redelivery reaches a published book (the worker died
+            # between the publish and the ack). Running it again would empty
+            # the live book's chunks for the length of the run.
+            set_job(redis_client, job_id, "published", 100)
+            LOG.info("book %s is already published; redelivered job acknowledged", book_id)
             return
         # The catalog shows the book as processing until it publishes; a
         # failure for good hands it back to draft (see fail_job).
@@ -1147,14 +1208,6 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             chapter_ids.append(str(cur.fetchone()[0]))
             write_paragraphs(cur, book_id, number, chapter.paragraphs)
 
-        # Scene chunking at ~400 words, then batched embeddings.
-        pending: list[tuple[str, int, str, str | None]] = []
-        for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
-            anchors = chunk_anchors(chapter.chunks, chapter.paragraphs)
-            for index, (piece, anchor) in enumerate(zip(chapter.chunks, anchors)):
-                pending.append((chapter_id, index, piece, anchor))
-        if not pending:
-            raise PermanentJobError("EPUB yields no passages to embed")
         # The book row is free since the first commit, so a curator may have
         # archived it already; stop before the embeddings and summaries are paid.
         cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
@@ -1165,10 +1218,24 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             LOG.info("book %s was archived before embedding; ingestion stopped", book_id)
             return
 
+        # Scene chunks of ~300 words, each cut until the model reads all of it.
+        pending: list[tuple[str, int, str, str | None]] = []
+        for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
+            pieces = fit_chunks(chapter.chunks, lambda texts: count_tokens(texts, settings, job_id))
+            anchors = chunk_anchors(pieces, chapter.paragraphs)
+            for index, (piece, anchor) in enumerate(zip(pieces, anchors)):
+                pending.append((chapter_id, index, piece, anchor))
+        if not pending:
+            raise PermanentJobError("EPUB yields no passages to embed")
+
         set_job(redis_client, job_id, "embedding", 55)
+        # A rerun replaces every chunk; the book is not published, so no
+        # reader sees it half embedded.
         cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
+        conn.commit()
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
+            # No transaction is open while the model works.
             vectors = embed_batch([text for _, _, text, _ in batch], settings, job_id)
             for (chapter_id, index, text, anchor), vector in zip(batch, vectors):
                 literal = "[" + ",".join(repr(v) for v in vector) + "]"
@@ -1186,14 +1253,18 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
                         literal,
                     ),
                 )
+            conn.commit()
             done = min(offset + 20, len(pending))
             set_job(redis_client, job_id, "embedding", 55 + int(20 * done / len(pending)))
 
-        # Atomic cards + spoiler-free recaps, written by Claude in two batches.
+        # Atomic cards + spoiler-free recaps, written by Claude in two batches
+        # while no transaction is open; a released job resumes them.
         set_job(redis_client, job_id, "summarizing", 80)
         cards, recaps = summarize_chapters(
             make_llm(), redis_client, job_id, [chapter.text for chapter in parsed.chapters], settings
         )
+        # Cards, recaps, and the publish commit as one short transaction, so
+        # a retry upserts the same rows (uq_tldr_cache) and never doubles them.
         upsert = """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
                    VALUES (%s, %s, %s, %s, %s::jsonb, %s)
                    ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE

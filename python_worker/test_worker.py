@@ -189,6 +189,10 @@ class ChunkTest(unittest.TestCase):
         self.assertEqual(len(chunks[0].split()), 400)
         self.assertEqual(len(chunks[1].split()), 430)
 
+    def test_default_chunks_fit_the_model_window(self):
+        words = [f"w{i}" for i in range(700)]
+        self.assertEqual([len(c.split()) for c in chunk_words(" ".join(words))], [300, 300, 100])
+
     def test_short_text_single_chunk(self):
         self.assertEqual(chunk_words("hello world"), ["hello world"])
         self.assertEqual(chunk_words(""), [])
@@ -559,16 +563,16 @@ class ParagraphIndexTest(unittest.TestCase):
         cursor.execute = lambda sql, p=(): (record(sql, p), params.append((sql, p)))
         conn = mock.Mock()
         conn.cursor.return_value = cursor
-        conn.commit.side_effect = [None, RuntimeError("stop at publish")]
         minio = mock.Mock()
         minio.get_object.return_value = io.BytesIO(make_epub([("One", "Some text worth reading.")]))
         minio.get_object.return_value.release_conn = lambda: None
         with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
              mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
              mock.patch.object(worker, "make_llm"), \
-             mock.patch.object(worker, "summarize_chapters", side_effect=lambda c, r, j, texts, s: ([{}] * len(texts), {})):
+             mock.patch.object(worker, "summarize_chapters", side_effect=RuntimeError("stop at publish")):
             with self.assertRaisesRegex(RuntimeError, "stop at publish"):
                 worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"}, worker.Settings())
         inserts = [p for sql, p in params if sql.startswith("INSERT INTO chapter_paragraphs")]
@@ -784,6 +788,7 @@ class CoverTest(unittest.TestCase):
         with mock.patch.object(worker, "make_redis", return_value=mock.MagicMock()), \
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=conn), \
+             mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
              mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.0]] * len(texts)), \
              mock.patch.object(worker, "make_llm"), \
              mock.patch.object(worker, "summarize_chapters", side_effect=lambda c, r, j, texts, s: ([{}] * len(texts), {})):
@@ -1229,6 +1234,7 @@ class ClaudeBatchTest(unittest.TestCase):
             self.assertEqual(params["output_config"]["effort"], "medium")
             self.assertEqual(params["output_config"]["format"]["type"], "json_schema")
             self.assertNotIn("thinking", params, "adaptive thinking is the model's default")
+            self.assertIn("in the language the", params["messages"][0]["content"], "answers follow the book's language")
         recap_three = batches.created[1][1]["params"]["messages"][0]["content"]
         self.assertIn("Chapter 1: concept 1\nChapter 2: concept 2", recap_three, "recaps read earlier cards")
         self.assertEqual([c["key_concepts"] for c in cards], [["concept 1"], ["concept 2"], ["concept 3"]])
@@ -1316,6 +1322,9 @@ class ClaudeBatchTest(unittest.TestCase):
 
         def embedder(request, timeout):
             hosts.append(urllib.parse.urlsplit(request.full_url).hostname)
+            if request.full_url.endswith("/tokenize"):
+                inputs = json.loads(request.data)["inputs"]
+                return io.BytesIO(json.dumps([[{"id": 0}] * 10 for _ in inputs]).encode())
             return io.BytesIO(json.dumps([[0.5] * 768]).encode())
 
         batches = FakeBatches(card_or_recap)
@@ -1336,3 +1345,162 @@ class ClaudeBatchTest(unittest.TestCase):
             ("chapter_recap", "claude-sonnet-5-5"),
         ])
         self.assertTrue(any("status = 'published'" in sql for sql, _ in params))
+
+
+class TokenFitTest(unittest.TestCase):
+    def test_every_piece_fits_and_no_word_is_lost(self):
+        def count(texts):  # three tokens a word plus the prefix and <s></s>
+            return [3 * len(t.split()) + 4 for t in texts]
+
+        chunks = [" ".join(f"a{i}" for i in range(300)), "short one", " ".join(f"b{i}" for i in range(171))]
+        pieces = worker.fit_chunks(chunks, count, limit=512)
+        self.assertTrue(all(n <= 512 for n in count(pieces)), count(pieces))
+        self.assertEqual(" ".join(pieces).split(), " ".join(chunks).split(), "nothing dropped, order kept")
+        self.assertEqual(pieces[2], "short one", "a chunk that fits is left alone")
+
+    def test_counts_come_from_the_service_tokenizer_with_the_prefix(self):
+        seen = []
+
+        def fake(request, timeout):
+            seen.append(request)
+            inputs = json.loads(request.data)["inputs"]
+            return io.BytesIO(json.dumps([[{"id": 0}] * len(t.split()) for t in inputs]).encode())
+
+        texts = [f"word {i}" for i in range(40)]
+        with mock.patch.object(worker.urllib.request, "urlopen", fake):
+            counts = worker.count_tokens(texts, worker.Settings(embedding_url="http://embedder:80"))
+        self.assertEqual(counts, [3] * 40, "passage: word N")
+        self.assertEqual([len(json.loads(r.data)["inputs"]) for r in seen], [32, 8])
+        self.assertEqual(seen[0].full_url, "http://embedder:80/tokenize")
+        self.assertTrue(json.loads(seen[0].data)["add_special_tokens"])
+        self.assertEqual(json.loads(seen[0].data)["inputs"][0], "passage: word 0")
+
+
+class RecordingDb:
+    """A connection and cursor in one that logs statements and commits in
+    order, so a test can see which work ran inside which transaction."""
+
+    def __init__(self, status="draft"):
+        self.status = status
+        self.events: list[tuple] = []
+        self.rowcount = 1
+        self.chapters = 0
+
+    def cursor(self):
+        return self
+
+    def execute(self, sql, params=()):
+        self.events.append(("sql", " ".join(sql.split()), params))
+
+    def fetchone(self):
+        last = self.events[-1][1]
+        if last.startswith("INSERT INTO chapters"):
+            self.chapters += 1
+            return (f"chapter-{self.chapters}",)
+        return ("Title", "Author", "en", self.status)
+
+    def commit(self):
+        self.events.append(("commit",))
+
+    def rollback(self):
+        self.events.append(("rollback",))
+
+    def close(self):
+        pass
+
+    def uncommitted(self) -> list[str]:
+        """Statements since the last commit or rollback."""
+        open_ = []
+        for event in self.events:
+            open_ = [] if event[0] in ("commit", "rollback") else open_ + [event[1]]
+        return open_
+
+    def committed(self, prefix: str) -> list[tuple]:
+        done, pending = [], []
+        for event in self.events:
+            if event[0] == "commit":
+                done, pending = done + pending, []
+            elif event[0] == "rollback":
+                pending = []
+            else:
+                pending.append(event)
+        return [e for e in done if e[1].startswith(prefix)]
+
+
+class IngestionTransactionTest(unittest.TestCase):
+    def run_job(self, db, batches, redis_client, embed=None):
+        minio = mock.Mock()
+        minio.get_object.return_value = io.BytesIO(make_epub([("One", "First words."), ("Two", "Second words.")]))
+        minio.get_object.return_value.release_conn = lambda: None
+        embed = embed or (lambda texts, *_: [[0.5] * 768] * len(texts))
+        with mock.patch.object(worker, "make_redis", return_value=redis_client), \
+             mock.patch.object(worker, "make_minio", return_value=minio), \
+             mock.patch.object(worker, "make_db", return_value=db), \
+             mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
+             mock.patch.object(worker, "embed_batch", side_effect=embed), \
+             mock.patch.object(worker, "make_llm", return_value=fake_client(batches)):
+            worker.process_message(
+                "1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"},
+                worker.Settings(batch_poll_seconds=0),
+            )
+
+    def test_no_transaction_is_open_while_the_model_or_the_batches_work(self):
+        db = RecordingDb()
+        open_during = {}
+
+        def embed(texts, *_):
+            open_during.setdefault("embedding", db.uncommitted())
+            return [[0.5] * 768] * len(texts)
+
+        def answer(custom_id, params):
+            open_during.setdefault("batch", db.uncommitted())
+            return card_or_recap(custom_id, params)
+
+        self.run_job(db, FakeBatches(answer), FakeRedis(), embed)
+        self.assertEqual(open_during, {"embedding": [], "batch": []})
+        # Cards, recaps, word count, and publish land in one last transaction.
+        last = [e for e in db.events if e[0] != "commit"][-5:]
+        self.assertEqual([e[1].split(" (")[0] for e in last[:3]], ["INSERT INTO tldr_cache"] * 3)
+        self.assertIn("status = 'published'", last[-1][1])
+        self.assertEqual(db.events[-1], ("commit",))
+        self.assertEqual(db.uncommitted(), [])
+
+    def test_a_release_mid_batch_leaves_the_book_hidden_and_the_retry_resumes_it(self):
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("SIGTERM"))
+        first = RecordingDb()
+        with self.assertRaises(worker.WorkerShutdown):
+            self.run_job(first, batches, redis_client)
+        self.assertEqual(len(first.committed("INSERT INTO book_chunks")), 2, "chunks are kept")
+        self.assertEqual(first.committed("INSERT INTO tldr_cache"), [])
+        self.assertFalse(any("status = 'published'" in e[1] for e in first.events if e[0] == "sql"))
+        self.assertEqual(first.uncommitted(), [], "nothing was left half written")
+
+        second = RecordingDb(status="processing")
+        self.run_job(second, batches, redis_client)
+        self.assertEqual(len(batches.created), 2, "the cards batch was polled again, not paid twice")
+        upserts = second.committed("INSERT INTO tldr_cache")
+        self.assertEqual(len(upserts), 3)
+        self.assertTrue(all("ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE" in e[1] for e in upserts))
+        self.assertTrue(any("status = 'published'" in e[1] for e in second.committed("UPDATE books")))
+
+    def test_a_failed_batch_leaves_a_consistent_unpublished_book(self):
+        def refuse(custom_id, params):
+            return succeeded({}, stop_reason="refusal")
+
+        db = RecordingDb()
+        with self.assertRaises(worker.UpstreamError):
+            self.run_job(db, FakeBatches(refuse), FakeRedis())
+        self.assertEqual(db.uncommitted(), [])
+        self.assertEqual(db.committed("INSERT INTO tldr_cache"), [])
+        self.assertFalse(any("status = 'published'" in e[1] for e in db.events if e[0] == "sql"))
+        self.assertEqual(db.committed("UPDATE books SET total_words"), [], "not marked as fully ingested")
+
+    def test_a_redelivered_job_of_a_published_book_touches_nothing(self):
+        db = RecordingDb(status="published")
+        batches = FakeBatches(card_or_recap)
+        redis_client = FakeRedis()
+        self.run_job(db, batches, redis_client)
+        self.assertEqual([e[1].split(" FROM")[0] for e in db.events if e[0] == "sql"], ["SELECT title, author, language, status"])
+        self.assertEqual(batches.created, [])
+        self.assertEqual(redis_client.hashes["job:j"]["status"], "published")
