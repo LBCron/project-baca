@@ -461,10 +461,14 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
+        // The Cloudflare Access service token a tester build of the app sends
+        // while the site is behind Access; remove both when Access goes.
         .allow_headers([
             axum::http::header::AUTHORIZATION,
             axum::http::header::CONTENT_TYPE,
             REQUEST_ID_HEADER.clone(),
+            HeaderName::from_static("cf-access-client-id"),
+            HeaderName::from_static("cf-access-client-secret"),
         ])
         // Two hours is Chromium's ceiling; the app then skips a preflight per call.
         .max_age(std::time::Duration::from_secs(7200))

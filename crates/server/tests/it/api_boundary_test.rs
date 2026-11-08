@@ -507,3 +507,49 @@ fn test_openapi_documents_errors_bounds_and_envelopes() {
         .expect("responses")
         .contains_key("401"));
 }
+
+/// A tester build of the app sends the Cloudflare Access service token on every
+/// API call, so its preflight from the Android and Windows WebView must admit
+/// both headers next to the bearer token.
+#[tokio::test]
+async fn test_api_boundary_preflight_admits_the_access_service_token() {
+    let harness = TestHarness::with_config(|c| {
+        c.server.cors_allowed_origins = vec![
+            "https://rotaria.site".to_string(),
+            "tauri://localhost".to_string(),
+            "http://tauri.localhost".to_string(),
+        ];
+    })
+    .await;
+
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/v1/books")
+        .header(header::ORIGIN, "http://tauri.localhost")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .header(
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            "authorization,cf-access-client-id,cf-access-client-secret",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = harness.send_request(req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let headers = resp.headers();
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://tauri.localhost"
+    );
+    let allowed = headers[header::ACCESS_CONTROL_ALLOW_HEADERS]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    for name in [
+        "authorization",
+        "cf-access-client-id",
+        "cf-access-client-secret",
+    ] {
+        assert!(allowed.contains(name), "{name} missing from {allowed}");
+    }
+    harness.cleanup().await;
+}
