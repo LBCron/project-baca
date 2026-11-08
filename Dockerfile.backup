@@ -1,0 +1,10 @@
+# Project Baca — backup image: pg_dump 17, age, and rclone for the encrypted
+# dumps scripts/pg_backup.sh streams to the backup bucket (compose `backup`).
+FROM alpine:3.24@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a
+RUN apk add --no-cache bash postgresql17-client age rclone
+COPY scripts/pg_backup.sh /usr/local/bin/pg_backup.sh
+# rclone takes its remote from the environment and needs no config file.
+ENV RCLONE_CONFIG=/dev/null
+# Nothing is kept on disk: the dump streams from pg_dump to the bucket.
+USER 10001:10001
+CMD ["pg_backup.sh"]

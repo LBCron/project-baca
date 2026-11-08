@@ -45,6 +45,9 @@ argon2 = "0.6"
 aws-credential-types = "1"
 aws-sdk-s3 = { version = "1", default-features = false, features = ["http-1x", "default-https-client", "rt-tokio"] }
 sha2 = "0.11"
+hmac = "0.13"
+# Error tracking: no default transport (it pulls native-tls); reqwest on rustls.
+sentry = { version = "0.49.5", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls", "tower-axum-matched-path", "tracing"] }
 # HS256 only, on the aws-lc-rs backend rustls already links.
 jsonwebtoken = { version = "10.3", default-features = false, features = ["aws_lc_rs"] }
 rand = "0.10"

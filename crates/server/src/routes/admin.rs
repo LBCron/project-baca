@@ -157,6 +157,7 @@ pub async fn patch_book(
         set_book_status(&state.db, book_id, &req.status)
             .await
             .map_err(HttpError)?;
+        tracing::info!(target: "server::admin", event = "admin.book.status_changed", admin_id = %auth_user.id, %book_id, from = %current_raw, to = %req.status, "Book status changed");
     }
     let row = get_book_for_admin(&state.db, book_id)
         .await
@@ -239,6 +240,7 @@ pub async fn dismiss_dlq(
             "Dead-letter entry not found".to_string(),
         )));
     }
+    tracing::info!(target: "server::admin", event = "admin.dlq.dismissed", admin_id = %auth_user.id, entry_id, "Dead letter dismissed");
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(
@@ -278,6 +280,7 @@ pub async fn replay_dlq(
                 "Dead-letter entry not found".to_string(),
             ))
         })?;
+    tracing::info!(target: "server::admin", event = "admin.dlq.replayed", admin_id = %auth_user.id, entry_id, %job_id, "Dead letter replayed");
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(DlqReplayResponseDto {
@@ -468,6 +471,7 @@ pub async fn upload_book(
         tracing::warn!(target: "server::admin", "Queue publish failed; book left as draft: {e}");
         HttpError::from(e)
     })?;
+    tracing::info!(target: "server::admin", event = "admin.book.uploaded", admin_id = %auth_user.id, %book_id, %job_id, "Book uploaded and queued");
 
     Ok((
         StatusCode::ACCEPTED,

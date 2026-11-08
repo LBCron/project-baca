@@ -1,0 +1,95 @@
+name: Deploy
+
+# Installs a released version on the production host (VPS-2) when the owner
+# dispatches it; a pushed tag only publishes images (release.yml). The host
+# receives the version and the index digest of each image whose attestation
+# was verified here, and runs nothing else (scripts/deploy.sh behind the
+# deploy key's forced command). Rolling back is dispatching the previous version.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release to deploy, X.Y.Z without the leading v
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One deploy at a time; a second dispatch waits instead of cancelling one midway.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://rotaria.site
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      VERSION: ${{ inputs.version }}
+      PREFIX: ghcr.io/${{ github.repository }}
+      IMAGES: server worker edge backup
+    steps:
+      - name: Check the version
+        run: |
+          [[ $VERSION =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+            || { echo "::error::version must be X.Y.Z without the leading v"; exit 1; }
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The multi-arch index digest each tag names now; from here on only digests are used.
+      - name: Resolve the image digests
+        id: digests
+        run: |
+          request=$VERSION
+          for image in $IMAGES; do
+            digest=$(docker buildx imagetools inspect "$PREFIX/$image:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no index digest for $image:$VERSION"; exit 1; }
+            echo "$image $digest"
+            request+=" $image=$digest"
+          done
+          echo "request=$request" >> "$GITHUB_OUTPUT"
+      # Signed by release.yml for tag vX.Y.Z itself, so an image attested for
+      # another tag is refused. A step of its own, so it can be replaced if
+      # attestations are unavailable once the repository is private.
+      - name: Verify the attestations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST: ${{ steps.digests.outputs.request }}
+        run: |
+          for pair in ${REQUEST#* }; do
+            gh attestation verify "oci://$PREFIX/${pair%%=*}@${pair#*=}" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/v$VERSION" --deny-self-hosted-runners
+            echo "verified ${pair%%=*}"
+          done
+      - name: Deploy on the host
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          REQUEST: ${{ steps.digests.outputs.request }}
+        run: |
+          key=$RUNNER_TEMP/deploy_key
+          hosts=$RUNNER_TEMP/known_hosts
+          trap 'rm -f "$key"' EXIT
+          (umask 077 && printf '%s\n' "$DEPLOY_SSH_KEY" > "$key")
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$hosts"
+          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$hosts" -o ServerAliveInterval=30 "deploy@$DEPLOY_HOST" "$REQUEST"
+      # /api/v1/health stays outside Cloudflare Access, so this needs no token.
+      - name: Public health
+        run: |
+          curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
+            https://rotaria.site/api/v1/health

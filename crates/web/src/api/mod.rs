@@ -36,6 +36,36 @@ fn injected_api_base() -> Option<String> {
         .map(|base| base.trim().trim_end_matches('/').to_string())
         .filter(|base| !base.is_empty())
 }
+
+/// Cloudflare Access service token, set as `window.__ROTARIA_ACCESS__ =
+/// {id, secret}` only by a tester build of the app while the site sits behind
+/// Access. The web bundle never holds one, so the site sends no such header.
+fn access_token() -> Option<&'static (String, String)> {
+    static TOKEN: std::sync::OnceLock<Option<(String, String)>> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            let value =
+                js_sys::Reflect::get(window()?.as_ref(), &"__ROTARIA_ACCESS__".into()).ok()?;
+            let field = |name: &str| {
+                js_sys::Reflect::get(&value, &name.into())
+                    .ok()?
+                    .as_string()
+                    .filter(|v| !v.is_empty())
+            };
+            Some((field("id")?, field("secret")?))
+        })
+        .as_ref()
+}
+
+fn with_access(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    match access_token() {
+        Some((id, secret)) => builder
+            .header("CF-Access-Client-Id", id)
+            .header("CF-Access-Client-Secret", secret),
+        None => builder,
+    }
+}
+
 const TOKEN_KEY: &str = "baca_access_token";
 
 /// Resolves a stored asset reference to something an `<img>` or a CSS
@@ -119,6 +149,7 @@ pub fn is_online() -> bool {
 }
 
 fn authed(builder: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    let builder = with_access(builder);
     match token() {
         Some(t) => builder.header("Authorization", &format!("Bearer {t}")),
         None => builder,
@@ -268,7 +299,7 @@ async fn get<T: DeserializeOwned>(path: &str) -> Result<T, String> {
 /// answer `no-store`. Nothing here is account-bound, so there is no 401
 /// refresh cycle.
 async fn get_public<T: DeserializeOwned>(path: &str) -> Result<T, String> {
-    let resp = Request::get(&format!("{}{path}", api_base()))
+    let resp = with_access(Request::get(&format!("{}{path}", api_base())))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -441,6 +472,10 @@ pub fn save_progress_on_exit(book_id: &str, update: &ReadingProgressUpdateDto) {
     if let Some(t) = token() {
         let _ = headers.set("Authorization", &format!("Bearer {t}"));
     }
+    if let Some((id, secret)) = access_token() {
+        let _ = headers.set("CF-Access-Client-Id", id);
+        let _ = headers.set("CF-Access-Client-Secret", secret);
+    }
     let init = web_sys::RequestInit::new();
     init.set_method("PUT");
     // web-sys generates no setter for `keepalive`; the dictionary is a plain object.
@@ -543,7 +578,7 @@ pub async fn logout() -> Result<(), String> {
     let rt = refresh_token().unwrap_or_default();
     clear_token();
     let url = format!("{}/auth/logout", api_base());
-    let mut builder = Request::post(&url).header("Content-Type", "application/json");
+    let mut builder = with_access(Request::post(&url)).header("Content-Type", "application/json");
     if let Some(access) = access {
         builder = builder.header("Authorization", &format!("Bearer {access}"));
     }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Hardens the live production host (GUIDE section 8) in place: SSH by key only,
 # ufw with the recorded ports, unattended security upgrades, Docker from its own
-# apt repository, swap, time sync, and a deploy user without sudo. Every run
+# apt repository, swap, time sync, and a deploy user whose one sudo rule runs the
+# deploy command (scripts/deploy.sh at /usr/local/bin/rotaria-deploy). Every run
 # converges and then verifies; a second run changes nothing. Rules, services, and
 # files it does not manage (ufw-docker in after.rules, the OCI rules in
 # before.rules, other ufw rules) are left alone.
@@ -11,6 +12,8 @@
 #   sudo bash provision_host.sh --check   verify only, change nothing
 # Environment:
 #   DEPLOY_PUBKEY  one public key for the deploy user, installed behind the forced command
+#   DEPLOY_SCRIPT_B64  scripts/deploy.sh in base64, installed as the deploy command
+#                  (`make prod-provision` sends it on stdin ahead of this script)
 #   BESZEL_HUB     address of the Beszel hub (default 10.0.0.100)
 #   REBOOT_TIME    unattended-upgrades reboot time, host clock (default 04:00 WIB in the host's zone)
 #   SWAP_SIZE      swapfile size when the host has no swap (default 4G)
@@ -22,8 +25,11 @@ BESZEL_PORT=45876
 REBOOT_TIME=${REBOOT_TIME:-$(date -d 'TZ="Asia/Jakarta" 04:00' +%H:%M)}
 SWAP_SIZE=${SWAP_SIZE:-4G}
 DEPLOY_PUBKEY=${DEPLOY_PUBKEY:-}
+DEPLOY_SCRIPT_B64=${DEPLOY_SCRIPT_B64:-}
 DEPLOY_USER=deploy
 DEPLOY_COMMAND=/usr/local/bin/rotaria-deploy
+DEPLOY_SUDOERS=/etc/sudoers.d/rotaria-deploy
+DEPLOY_RULE="$DEPLOY_USER ALL=(root) NOPASSWD: $DEPLOY_COMMAND"
 APP_DIR=/srv/rotaria
 ENV_FILE=$APP_DIR/repo/.env.production
 SSHD_DROPIN=/etc/ssh/sshd_config.d/00-rotaria.conf
@@ -189,7 +195,8 @@ ensure_deploy_user() {
         changed "user $DEPLOY_USER"
     fi
     local group home
-    for group in sudo admin wheel; do
+    # docker is root in all but name; the deploy command reaches Docker through sudo.
+    for group in sudo admin wheel docker; do
         if [[ " $(id -nG "$DEPLOY_USER") " == *" $group "* ]]; then
             gpasswd -d "$DEPLOY_USER" "$group" >/dev/null
             changed "$DEPLOY_USER removed from $group"
@@ -199,13 +206,7 @@ ensure_deploy_user() {
         usermod -L "$DEPLOY_USER"
         changed "$DEPLOY_USER password locked"
     fi
-    # Placeholder until the deploy command exists; never overwrites the real one.
-    if [[ ! -e $DEPLOY_COMMAND ]]; then
-        put_file "$DEPLOY_COMMAND" 755 root:root '#!/bin/sh
-# Placeholder forced command for the deploy key. The real deploy command replaces this file.
-echo "rotaria-deploy: placeholder, no deploy command is installed on this host yet" >&2
-exit 1' || true
-    fi
+    ensure_deploy_command
     home=$(getent passwd "$DEPLOY_USER" | cut -d: -f6)
     if [[ ! -d $home/.ssh ]]; then
         install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$home/.ssh"
@@ -218,6 +219,23 @@ exit 1' || true
         || die "DEPLOY_PUBKEY is not a valid public key"
     put_file "$home/.ssh/authorized_keys" 600 "$DEPLOY_USER:$DEPLOY_USER" \
         "restrict,command=\"$DEPLOY_COMMAND\" $DEPLOY_PUBKEY" || true
+}
+
+# The forced command and the only rule that lets `deploy` run it as root. It
+# runs make and git in the repository clone.
+ensure_deploy_command() {
+    local script tmp
+    ensure_packages make git
+    if [[ -n $DEPLOY_SCRIPT_B64 ]]; then
+        script=$(base64 -d <<<"$DEPLOY_SCRIPT_B64") || die "DEPLOY_SCRIPT_B64 is not base64"
+        bash -n <<<"$script" || die "the deploy script does not parse"
+        put_file "$DEPLOY_COMMAND" 755 root:root "$script" || true
+    fi
+    tmp=$(mktemp)
+    printf '%s\n' "$DEPLOY_RULE" >"$tmp"
+    visudo -c -q -f "$tmp" || { rm -f "$tmp"; die "visudo rejects: $DEPLOY_RULE"; }
+    rm -f "$tmp"
+    put_file "$DEPLOY_SUDOERS" 440 root:root "$DEPLOY_RULE" || true
 }
 
 ensure_app_dir() {
@@ -346,7 +364,8 @@ verify_deploy_user() {
     local home groups loose
     id "$DEPLOY_USER" >/dev/null 2>&1 || { bad "no $DEPLOY_USER user"; return; }
     groups=$(id -nG "$DEPLOY_USER")
-    grep -qwE 'sudo|admin|wheel' <<<"$groups" && bad "$DEPLOY_USER is in a privileged group: $groups" || ok "$DEPLOY_USER has no sudo"
+    grep -qwE 'sudo|admin|wheel|docker' <<<"$groups" && bad "$DEPLOY_USER is in a privileged group: $groups" || ok "$DEPLOY_USER is in no sudo, admin, wheel, or docker group"
+    verify_deploy_command
     home=$(getent passwd "$DEPLOY_USER" | cut -d: -f6)
     if [[ -s $home/.ssh/authorized_keys ]]; then
         loose=$(grep -vE '^(#|$)' "$home/.ssh/authorized_keys" | grep -vc "^restrict,command=\"$DEPLOY_COMMAND\" " || true)
@@ -354,6 +373,24 @@ verify_deploy_user() {
     else
         log "note    $DEPLOY_USER has no key yet (DEPLOY_PUBKEY)"
     fi
+}
+
+verify_deploy_command() {
+    local rules
+    if [[ -f $DEPLOY_COMMAND && $(stat -c '%a %U:%G' "$DEPLOY_COMMAND") == "755 root:root" ]]; then
+        ok "$DEPLOY_COMMAND is root-owned, mode 755"
+    else
+        bad "$DEPLOY_COMMAND missing or not root-owned 755"
+    fi
+    if [[ -n $DEPLOY_SCRIPT_B64 ]]; then
+        # put_file writes the content with one trailing newline.
+        cmp -s "$DEPLOY_COMMAND" <(printf '%s\n' "$(base64 -d <<<"$DEPLOY_SCRIPT_B64")") \
+            && ok "$DEPLOY_COMMAND matches scripts/deploy.sh" || bad "$DEPLOY_COMMAND differs from scripts/deploy.sh of this checkout"
+    fi
+    # Everything after the header line, one rule per line.
+    rules=$(sudo -l -U "$DEPLOY_USER" | sed -n '/may run the following commands/,$p' | tail -n +2 | sed 's/^[[:space:]]*//')
+    [[ $rules == "(root) NOPASSWD: $DEPLOY_COMMAND" ]] \
+        && ok "sudo lets $DEPLOY_USER run only $DEPLOY_COMMAND" || bad "sudo rules of $DEPLOY_USER: ${rules:-none}"
 }
 
 verify_host() {

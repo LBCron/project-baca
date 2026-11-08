@@ -2,3 +2,4 @@ redis==8.1.0
 minio==7.2.20
 pg8000==1.31.6
 pillow==13.0.0
+sentry-sdk==2.73.0

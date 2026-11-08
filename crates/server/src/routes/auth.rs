@@ -1,6 +1,7 @@
 //! Auth and user endpoints.
 
 use crate::{
+    audit,
     error::HttpError,
     middleware::{
         auth::AuthUser,
@@ -162,11 +163,19 @@ async fn release_signup_mail(redis: &mut infra::RedisConn, email: &str, budget: 
 }
 
 /// A failed attempt that spent a budget locks it for a full window from now.
-async fn note_login_failure(redis: &mut infra::RedisConn, email: &str, ip: &str) {
-    for (key, limit) in login_attempt_keys(email, ip) {
+async fn note_login_failure(
+    redis: &mut infra::RedisConn,
+    email: &str,
+    ip: &str,
+    email_hash: &str,
+    client_prefix: &str,
+) {
+    let scopes = ["address_and_network", "address"];
+    for ((key, limit), scope) in login_attempt_keys(email, ip).into_iter().zip(scopes) {
         let attempts: i64 = redis.get(&key).await.unwrap_or(0);
         if attempts >= limit {
             let _: Result<(), _> = redis.expire(&key, LOGIN_WINDOW_SECS as i64).await;
+            tracing::warn!(target: "server::auth", event = "auth.lockout.set", scope, email_hash, client_prefix, window_secs = LOGIN_WINDOW_SECS, "Login locked after repeated failures");
         }
     }
 }
@@ -201,7 +210,7 @@ async fn claim_mail_budget(redis: &mut infra::RedisConn, budget: u32) -> Result<
         return Ok(());
     }
     if first_refusal(sent, budget) {
-        tracing::warn!(target: "server::auth", event = "otp_budget_exhausted", budget, "Hourly signup mail budget spent; signups answer 503 until the hour turns");
+        tracing::warn!(target: "server::auth", event = "auth.otp.budget_exhausted", budget, "Hourly signup mail budget spent; signups answer 503 until the hour turns");
     }
     Err(HttpError(AppError::ServiceUnavailable {
         retry_after: ttl.max(1) as u64,
@@ -289,6 +298,15 @@ pub async fn signup(
         return Err(HttpError(e));
     }
 
+    let email_hash = audit::email_hash(state.config.jwt_secret(), &req.email);
+    let client_prefix = audit::client_prefix(&client_ip);
+    if registered {
+        tracing::info!(target: "server::auth", event = "auth.signup.existing_account", email_hash, client_prefix, "Signup for an address that has an account; its owner was mailed a note");
+    } else {
+        tracing::info!(target: "server::auth", event = "auth.signup.started", %registration_id, email_hash, client_prefix, "Signup started");
+        tracing::info!(target: "server::auth", event = "auth.otp.sent", %registration_id, email_hash, "Signup code mailed");
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(ApiResponse::success(RegistrationStartedDto {
@@ -322,17 +340,33 @@ pub async fn verify_otp(
 
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
-    let registration =
-        verify_registration(&mut redis_conn, &req.email, req.registration_id, &req.otp)
-            .await
-            .map_err(HttpError::from)?
-            .ok_or_else(|| {
-                crate::error::field_refusal(
-                    "otp",
-                    "otp_invalid",
-                    "Invalid or expired OTP".to_string(),
-                )
-            })?;
+    let email_hash = audit::email_hash(state.config.jwt_secret(), &req.email);
+    let client_prefix =
+        audit::client_prefix(&client_subject_from_headers(&headers, &state.config.server));
+    let registration_id = req.registration_id;
+    let registration = match verify_registration(
+        &mut redis_conn,
+        &req.email,
+        registration_id,
+        &req.otp,
+    )
+    .await
+    {
+        Ok(Some(registration)) => registration,
+        Ok(None) => {
+            tracing::warn!(target: "server::auth", event = "auth.otp.failed", %registration_id, email_hash, client_prefix, "Signup code refused");
+            return Err(crate::error::field_refusal(
+                "otp",
+                "otp_invalid",
+                "Invalid or expired OTP".to_string(),
+            ));
+        }
+        Err(e @ AppError::RateLimited { .. }) => {
+            tracing::warn!(target: "server::auth", event = "auth.otp.locked", %registration_id, email_hash, client_prefix, "Signup code locked after repeated misses");
+            return Err(HttpError(e));
+        }
+        Err(e) => return Err(HttpError(e)),
+    };
 
     let user = activate_registration(
         &state.db,
@@ -344,6 +378,7 @@ pub async fn verify_otp(
     .map_err(HttpError::from)?;
 
     let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
+    tracing::info!(target: "server::auth", event = "auth.signup.verified", user_id = %user.id, "Account verified");
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -368,7 +403,14 @@ pub async fn login(
     let mut redis_conn = state.get_redis_conn().await.map_err(HttpError::from)?;
 
     let client_ip = client_subject_from_headers(&headers, &state.config.server);
-    claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await?;
+    let email_hash = audit::email_hash(state.config.jwt_secret(), &req.email);
+    let client_prefix = audit::client_prefix(&client_ip);
+    if let Err(refusal) = claim_login_attempt(&mut redis_conn, &req.email, &client_ip).await {
+        if matches!(refusal.0, AppError::RateLimited { .. }) {
+            tracing::warn!(target: "server::auth", event = "auth.login.failed", reason = "locked", email_hash, client_prefix, "Login refused");
+        }
+        return Err(refusal);
+    }
 
     let user = find_user_by_email(&state.db, &req.email)
         .await
@@ -398,8 +440,23 @@ pub async fn login(
     };
     let user = match user {
         Some(user) if matches && stored_hash.is_some() && user.is_active => user,
-        _ => {
-            note_login_failure(&mut redis_conn, &req.email, &client_ip).await;
+        other => {
+            let reason = match &other {
+                None => "unknown_account",
+                Some(_) if stored_hash.is_none() => "no_password",
+                Some(u) if !u.is_active => "inactive",
+                Some(_) => "wrong_password",
+            };
+            let user_id = other.as_ref().map(|u| tracing::field::display(u.id));
+            tracing::warn!(target: "server::auth", event = "auth.login.failed", reason, user_id, email_hash, client_prefix, "Login refused");
+            note_login_failure(
+                &mut redis_conn,
+                &req.email,
+                &client_ip,
+                &email_hash,
+                &client_prefix,
+            )
+            .await;
             return Err(HttpError(AppError::Unauthorized(
                 INVALID_CREDENTIALS.to_string(),
             )));
@@ -413,6 +470,7 @@ pub async fn login(
     let _: Result<(), _> = redis_conn.del(&keys).await;
 
     let response = issue_token_pair(&state, &mut redis_conn, &user, now_secs(), &headers).await?;
+    tracing::info!(target: "server::auth", event = "auth.login.succeeded", user_id = %user.id, client_prefix, "Login succeeded");
     Ok((StatusCode::OK, Json(ApiResponse::success(response))).into_response())
 }
 
@@ -453,6 +511,7 @@ pub async fn refresh(
         // A token rotated out before the grace window signals theft: the
         // whole family dies so the attacker's copy goes with the victim's.
         RefreshOutcome::Replayed { user_id } => {
+            tracing::warn!(target: "server::auth", event = "auth.refresh.replay_detected", %user_id, "Rotated refresh token presented again; every session of the account revoked");
             let access_ttl = state.config.auth.access_expiry_minutes * 60;
             let _ = revoke_family_on_reuse(&mut redis_conn, user_id, access_ttl).await;
             return Err(HttpError(AppError::Unauthorized(
@@ -464,7 +523,7 @@ pub async fn refresh(
         RefreshOutcome::Expired { user_id } => {
             let access_ttl = state.config.auth.access_expiry_minutes * 60;
             let _ = revoke_refresh_token(&mut redis_conn, &req.refresh_token, access_ttl).await;
-            tracing::info!(target: "server::auth", %user_id, "Session reached its absolute lifetime");
+            tracing::info!(target: "server::auth", event = "auth.session.expired", %user_id, "Session reached its absolute lifetime");
             return Err(HttpError(AppError::Unauthorized(
                 "Invalid or expired refresh token".to_string(),
             )));
@@ -550,6 +609,7 @@ pub async fn logout(
 
     // Blacklist the presented access token too, if any: it may be newer than
     // the one the session record names.
+    let mut user_id = None;
     if let Some(auth_val) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
         if let Some(token) = auth_val.strip_prefix("Bearer ") {
             if let Ok(claims) = verify_access_token(token, state.config.jwt_secret()) {
@@ -562,9 +622,11 @@ pub async fn logout(
                 let _ = blacklist_access_token(&mut redis_conn, claims.jti, remaining).await;
                 let lifetime = state.config.auth.refresh_expiry_days * 86400;
                 let _ = revoke_session_tokens(&mut redis_conn, claims.sid, lifetime).await;
+                user_id = Some(tracing::field::display(claims.sub));
             }
         }
     }
+    tracing::info!(target: "server::auth", event = "auth.session.revoked", scope = "logout", user_id, "Signed out");
 
     Ok((
         StatusCode::OK,
@@ -726,6 +788,8 @@ pub async fn change_password(
         .await
         .map_err(HttpError::from)?;
 
+    tracing::info!(target: "server::auth", event = "auth.password.changed", user_id = %auth.id, sessions_revoked = revoke_sessions, "Password changed");
+
     let tokens = if revoke_sessions {
         // Stamped one second past the revocation cut, which compares whole
         // seconds; otherwise the fresh pair would be born revoked.
@@ -773,6 +837,7 @@ pub async fn delete_me(
     delete_user_by_id(&state.db, auth.id)
         .await
         .map_err(HttpError::from)?;
+    tracing::info!(target: "server::auth", event = "auth.account.deleted", user_id = %auth.id, "Account deleted");
 
     Ok((
         StatusCode::OK,
@@ -807,6 +872,7 @@ pub async fn revoke_all(
             revoke_other_sessions_keeping(&mut redis_conn, auth.id, auth.jti, auth.sid, access_ttl)
                 .await
                 .map_err(HttpError::from)?;
+        tracing::info!(target: "server::auth", event = "auth.session.revoked", scope = "others", user_id = %auth.id, revoked, "Other sessions revoked");
         return Ok((
             StatusCode::OK,
             Json(ApiResponse::success(serde_json::json!({
@@ -820,6 +886,7 @@ pub async fn revoke_all(
     revoke_all_user_sessions(&mut redis_conn, auth.id, access_ttl)
         .await
         .map_err(HttpError::from)?;
+    tracing::info!(target: "server::auth", event = "auth.session.revoked", scope = "all", user_id = %auth.id, "Every session revoked");
 
     Ok((
         StatusCode::OK,
@@ -916,6 +983,7 @@ pub async fn revoke_my_session(
             "Session not found".to_string(),
         )));
     }
+    tracing::info!(target: "server::auth", event = "auth.session.revoked", scope = "device", user_id = %auth.id, "One session revoked");
     Ok((
         StatusCode::OK,
         Json(ApiResponse::success(serde_json::json!({ "revoked": true }))),

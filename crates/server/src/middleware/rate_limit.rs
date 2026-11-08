@@ -104,7 +104,7 @@ fn ai_budget_policy(max_requests: u32) -> RateLimitPolicy {
         error_code: shared::error_code::AI_RATE_LIMITED,
         subject_label: "semantic search requests",
         window_label: "day",
-        exhausted_event: Some("ai_budget_exhausted"),
+        exhausted_event: Some("ai.budget_exhausted"),
     }
 }
 
@@ -113,7 +113,7 @@ fn ai_budget_policy(max_requests: u32) -> RateLimitPolicy {
 fn ai_guest_budget_policy(budget: u32) -> RateLimitPolicy {
     RateLimitPolicy {
         max_requests: i64::from((budget / 5).max(1)),
-        exhausted_event: Some("ai_guest_budget_exhausted"),
+        exhausted_event: Some("ai.guest_budget_exhausted"),
         ..ai_budget_policy(budget)
     }
 }
