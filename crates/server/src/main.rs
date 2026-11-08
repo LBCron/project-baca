@@ -13,7 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "server=debug,infra=debug,tower_http=debug".into());
+        .unwrap_or_else(|_| "info,tower_http=warn".into());
 
     if log_format.eq_ignore_ascii_case("json") {
         tracing_subscriber::registry()

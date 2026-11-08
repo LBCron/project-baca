@@ -26,6 +26,8 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 validator = { workspace = true }
 jsonwebtoken = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 
 [dev-dependencies]

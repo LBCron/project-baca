@@ -132,7 +132,7 @@ services:
       APP_ENV: production
       APP_PORT: 8080
       LOG_FORMAT: json
-      RUST_LOG: warn
+      RUST_LOG: info,tower_http=warn
       # The site, plus the Tauri app WebView (tauri:// on desktop, http://tauri.localhost on Android and Windows).
       CORS_ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN},tauri://localhost,http://tauri.localhost
       TRUST_PROXY_HEADERS: "true"
@@ -223,6 +223,7 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+      - caddy_logs:/var/log/caddy
 
   # Outbound-only connector to Cloudflare. The Tunnel's public hostnames
   # (rotaria.site, www.rotaria.site) point at http://edge:80; on the tunnel
@@ -262,3 +263,4 @@ volumes:
   miniodata_prod:
   caddy_data:
   caddy_config:
+  caddy_logs:
