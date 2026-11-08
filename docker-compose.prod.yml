@@ -3,6 +3,8 @@
 # Usage: cp .env.production.example .env.production
 #        make prod-pull prod-migrate prod-up   (release images, ROTARIA_VERSION)
 #        make prod-build prod-up               (images built from this checkout)
+# On the host a deploy pins each release image by digest (ROTARIA_*_IMAGE in
+# .env.deploy, scripts/deploy.sh).
 # Dev stack stays in docker-compose.yml (host ports 5433/6380/9005/9006).
 # Memory and CPU budget per service: ARCHITECTURE.md section 8.
 # ==============================================================================
@@ -110,7 +112,7 @@ services:
       - miniodata_prod:/data
 
   server:
-    image: ghcr.io/aprxty3/project-baca/server:${ROTARIA_VERSION:?set ROTARIA_VERSION}
+    image: ${ROTARIA_SERVER_IMAGE:-ghcr.io/aprxty3/project-baca/server:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
     build:
       context: .
       dockerfile: Dockerfile.server
@@ -168,7 +170,7 @@ services:
       EMBEDDING_DIMENSION: 768
 
   worker:
-    image: ghcr.io/aprxty3/project-baca/worker:${ROTARIA_VERSION:?set ROTARIA_VERSION}
+    image: ${ROTARIA_WORKER_IMAGE:-ghcr.io/aprxty3/project-baca/worker:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -203,7 +205,7 @@ services:
       SENTRY_RELEASE: worker@${ROTARIA_VERSION}
 
   edge:
-    image: ghcr.io/aprxty3/project-baca/edge:${ROTARIA_VERSION:?set ROTARIA_VERSION}
+    image: ${ROTARIA_EDGE_IMAGE:-ghcr.io/aprxty3/project-baca/edge:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
     build:
       context: .
       dockerfile: Dockerfile.edge
@@ -229,6 +231,39 @@ services:
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
+
+  # Encrypted dump to the backup bucket at start and every 6 hours
+  # (scripts/pg_backup.sh); the host has no cron or timer for it. Its R2 token
+  # reaches only the backup bucket and is never given to server or worker.
+  backup:
+    image: ${ROTARIA_BACKUP_IMAGE:-ghcr.io/aprxty3/project-baca/backup:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    restart: always
+    init: true
+    logging: *logging
+    mem_limit: 256m
+    cpus: 0.5
+    # store reaches Postgres; default reaches R2 and the heartbeat check.
+    networks: [default, store]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["pg_backup.sh", "--every", "21600"]
+    environment:
+      PGHOST: postgres
+      PGUSER: baca_user
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: project_baca_db
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?set BACKUP_AGE_RECIPIENT}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:?set the backup bucket}
+      BACKUP_S3_PROVIDER: ${BACKUP_S3_PROVIDER:-Cloudflare}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-auto}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-rotaria-backups}
+      BACKUP_S3_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:?set the backup bucket}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:?set the backup bucket}
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
 
   # Outbound-only connector to Cloudflare. The Tunnel's public hostnames
   # (rotaria.site, www.rotaria.site) point at http://edge:80; on the tunnel

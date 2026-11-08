@@ -98,6 +98,10 @@ test-migrate:
 test-edge-ip:
 	@./scripts/test_edge_client_ip.sh
 
+# The request check of scripts/deploy.sh, the only input the deploy key sends.
+test-deploy:
+	@./scripts/test_deploy.sh
+
 # Test suites
 test: test-all
 
@@ -274,12 +278,13 @@ app-android-build:
 # PROD_ENV=<a copy without the real CLOUDFLARE_TUNNEL_TOKEN>: a second connector
 # on the production tunnel would take a share of rotaria.site's traffic.
 PROD_ENV ?= .env.production
-PROD_COMPOSE = docker compose --env-file $(PROD_ENV) -f docker-compose.prod.yml
+# .env.deploy, written by each deploy on the host, pins the release images by digest.
+PROD_COMPOSE = docker compose --env-file $(PROD_ENV) $(if $(wildcard .env.deploy),--env-file .env.deploy) -f docker-compose.prod.yml
 prod-build:
 	@echo "Building production images..."
 	@$(PROD_COMPOSE) build
 
-# Server, worker, and edge images of ROTARIA_VERSION from GHCR (public, no login).
+# Server, worker, edge, and backup images of ROTARIA_VERSION from GHCR (public, no login).
 prod-pull:
 	@$(PROD_COMPOSE) pull
 
@@ -307,8 +312,43 @@ prod-db-role:
 prod-migrate-status:
 	@$(PROD_COMPOSE) --profile ops run --rm migrate status
 
+# One encrypted dump to the backup bucket now, as the backup service does every
+# 6 hours; a deploy runs it before migrating (GUIDE section 8).
+prod-backup:
+	@$(PROD_COMPOSE) run --rm backup pg_backup.sh
+
+# Encrypted copy of PROD_ENV in the backup bucket (env/), after every change of it.
+prod-env-copy:
+	@test -s "$(PROD_ENV)" || { echo "$(PROD_ENV) is missing or empty" >&2; exit 2; }
+	@$(PROD_COMPOSE) run --rm --no-deps -T backup pg_backup.sh --env-copy < $(PROD_ENV)
+
+# Restores the newest dump (or OBJECT=pg/YYYY/MM/DD/<name>) into a throwaway
+# Postgres and prints its row counts. AGE_IDENTITY is the owner's age private
+# key file; it is read through a read-only mount and never copied.
+prod-restore-drill:
+	@test -n "$(AGE_IDENTITY)" || { echo "Usage: make prod-restore-drill AGE_IDENTITY=<age key file> [OBJECT=pg/YYYY/MM/DD/<name>]" >&2; exit 2; }
+	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/pg_restore_drill.sh
+
 prod-logs:
 	@$(PROD_COMPOSE) logs -f
+
+# psql on the production database, as the app role by default so a slip cannot
+# change the schema; PROD_PSQL_USER=baca_user for the schema owner.
+PROD_PSQL_USER ?= rotaria_app
+prod-psql:
+	@$(PROD_COMPOSE) exec postgres psql -U $(PROD_PSQL_USER) -d project_baca_db
+
+# Admin role for one active account, through the app role. The address reaches
+# psql through the environment, never the command line or the SQL text.
+prod-grant-admin:
+	@test -n "$$EMAIL" || { echo "Usage: make prod-grant-admin EMAIL=<address of an active account>" >&2; exit 2; }
+	@row=$$(printf '%s\n' '\getenv email EMAIL' \
+		"UPDATE users AS u SET role = 'admin', updated_at = now() FROM (SELECT id, role FROM users WHERE email = lower(btrim(:'email')) AND is_active FOR UPDATE) AS old WHERE u.id = old.id RETURNING u.id, old.role, u.role;" \
+		| $(PROD_COMPOSE) exec -T -e EMAIL postgres psql -X -A -t -q -F ' ' -v ON_ERROR_STOP=1 -U rotaria_app -d project_baca_db) || exit 1; \
+	set -- $$row; \
+	test -n "$$1" || { echo "No active account has that email; nothing changed." >&2; exit 1; }; \
+	echo "User $$1: role $$2 -> $$3."; \
+	echo "The role applies after the user's next sign-in or token refresh (up to 60 minutes)."
 
 # After migrating and before the new server takes traffic: until it has run,
 # in-book search finds nothing in books ingested earlier.
@@ -317,10 +357,18 @@ prod-backfill-paragraphs:
 
 # Hardens the production host over SSH (GUIDE section 8). HOST is the admin
 # login with passwordless sudo; CHECK=1 only verifies; DEPLOY_PUBKEY installs
-# the deploy key behind its forced command.
+# the deploy key behind its forced command. scripts/deploy.sh travels on stdin
+# ahead of the script and becomes that command.
 prod-provision:
 	@test -n "$(HOST)" || { echo "Usage: make prod-provision HOST=<admin>@<host> [CHECK=1] [DEPLOY_PUBKEY='ssh-ed25519 ...']"; exit 2; }
-	@ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)" < scripts/provision_host.sh
+	@{ printf 'DEPLOY_SCRIPT_B64=%s\n' "$$(base64 -w0 scripts/deploy.sh)"; cat scripts/provision_host.sh; } \
+		| ssh $(HOST) "sudo -n env DEPLOY_PUBKEY='$(DEPLOY_PUBKEY)' bash -s -- $(if $(CHECK),--check)"
+
+# Requests URL at RATE per second for DURATION seconds and sums up statuses,
+# connection errors, and latency (scripts/deploy_probe.sh); run it during a
+# deploy. CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET add the Access token.
+deploy-probe:
+	@scripts/deploy_probe.sh "$$URL" "$$RATE" "$$DURATION"
 
 # Purge test debris from shared dev services (stream PEL, draft rows,
 # fake MinIO objects). Dev-only: never run against production data.
@@ -340,5 +388,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test-deploy test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-env-copy prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision deploy-probe clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 
