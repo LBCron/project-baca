@@ -743,6 +743,9 @@ EMBEDDING_SERVICE = "Embedding service"
 # multilingual-e5 was trained with these prefixes; the server embeds reader
 # queries with "query: " (crates/infra/src/ai/embedding.rs).
 PASSAGE_PREFIX = "passage: "
+# The model and revision scripts/fetch_embedding_model.sh pins; part of the
+# digest that lets a resumed job keep the chunks it already embedded.
+EMBEDDING_MODEL = "intfloat/multilingual-e5-base@d128750597153bb5987e10b1c3493a34e5a4502a"
 
 
 # The model's window, counted with its <s> and </s> and the passage prefix.
@@ -897,8 +900,12 @@ def _llm_call(call):
 
 
 def make_llm():
+    """The Claude client, or a permanent failure the curator can act on when
+    the key is missing (the SDK itself would only fail at the first call)."""
     import anthropic
 
+    if not env("ANTHROPIC_API_KEY"):
+        raise PermanentJobError("ANTHROPIC_API_KEY is not set; the worker cannot write cards or recaps")
     return _llm_call(lambda: anthropic.Anthropic(max_retries=LLM_MAX_ATTEMPTS - 1, timeout=120.0))
 
 
@@ -917,80 +924,150 @@ def llm_request(custom_id: str, prompt: str, schema: dict, settings: Settings) -
     }
 
 
-def _result_failure(item) -> str | None:
-    """Why one batch result cannot be used, or None when it can."""
+# A cut-off or non-JSON answer gets this many tries before its chapter goes
+# without; a refusal is final at once, since asking again would repeat it.
+LLM_TRIES_PER_REQUEST = 2
+
+
+def _classify(item) -> tuple[str, object]:
+    """What one batch result means: ("answer", parsed JSON), ("final",
+    reason), ("counted", reason) for an answer worth one more try, or
+    ("retry", reason) for a request the API did not finish."""
     result = item.result
-    if result.type == "succeeded":
-        message = result.message
-        if message.stop_reason == "refusal":
-            return "declined by the model"
-        if message.stop_reason == "max_tokens":
-            return "cut off at the token limit"
-        return None
     if result.type == "errored":
         error = getattr(getattr(result, "error", None), "error", None)
-        return f"errored ({getattr(error, 'type', 'unknown')})"
-    return result.type  # canceled or expired
+        return "retry", f"errored ({getattr(error, 'type', 'unknown')})"
+    if result.type != "succeeded":
+        return "retry", result.type  # canceled or expired
+    message = result.message
+    if message.stop_reason == "refusal":
+        return "final", "declined by the model"
+    if message.stop_reason == "max_tokens":
+        return "counted", "cut off at the token limit"
+    text = next((b.text for b in message.content if b.type == "text"), "")
+    try:
+        return "answer", json.loads(text)
+    except ValueError:
+        return "counted", "answered without JSON"
 
 
-def run_batch(client, redis_client, job_id: str, phase: str, requests: list[dict], settings: Settings) -> dict:
-    """Runs one Message Batch to its end and returns the parsed JSON of each
-    request by ``custom_id``.
+def _digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()[:16]
 
-    The batch id sits in the job hash with a digest of the requests, so a job
-    released on shutdown or after a crash polls the same batch when it runs
-    again instead of paying for a second one; a failed batch is forgotten,
-    so its retry submits anew. Any request that did not succeed fails the
-    phase with a reason the curator desk shows."""
+
+def _retrieve(client, batch_id: str):
+    """The batch, or None once the API no longer knows it."""
+    import anthropic
+
+    try:
+        return client.messages.batches.retrieve(batch_id)
+    except anthropic.NotFoundError:
+        return None
+
+
+def _batch_for(client, redis_client, job_id: str, phase: str, requests: list[dict]) -> str:
+    """The batch already running these requests, or a new one. A stored
+    batch for other requests is cancelled, best effort, before it costs more."""
     field = f"llm_batch_{phase}"
-    digest = hashlib.sha256(json.dumps(requests, sort_keys=True).encode()).hexdigest()[:16]
-    stored = redis_client.hget(f"job:{job_id}", field) or ""
-    stored_digest, _, batch_id = str(stored).partition(":")
-    if stored_digest != digest or not batch_id:
-        batch_id = _llm_call(lambda: client.messages.batches.create(requests=requests)).id
-        write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, field, f"{digest}:{batch_id}"))
-        LOG.info("job %s: %s batch %s submitted (%d requests)", job_id, phase, batch_id, len(requests))
-    # Hours at most (24 h is the API's limit); keep_claimed holds the job
-    # meanwhile, and SIGTERM interrupts the sleep.
-    while _llm_call(lambda: client.messages.batches.retrieve(batch_id)).processing_status != "ended":
-        time.sleep(settings.batch_poll_seconds)
+    digest = _digest(requests)
+    stored_digest, _, batch_id = str(redis_client.hget(f"job:{job_id}", field) or "").partition(":")
+    if stored_digest == digest and batch_id:
+        return batch_id
+    if batch_id:
+        try:
+            client.messages.batches.cancel(batch_id)
+        except Exception as exc:  # noqa: BLE001 - an old batch costs money, never correctness
+            LOG.warning("job %s: old %s batch %s not cancelled (%s)", job_id, phase, batch_id, type(exc).__name__)
+    batch_id = _llm_call(lambda: client.messages.batches.create(requests=requests)).id
+    write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, field, f"{digest}:{batch_id}"))
+    LOG.info("job %s: %s batch %s submitted (%d requests)", job_id, phase, batch_id, len(requests))
+    return batch_id
 
-    parsed: dict[str, dict] = {}
+
+def run_batch(
+    client, redis_client, job_id: str, phase: str, requests: list[dict], settings: Settings
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """Runs the requests of one phase through Message Batches. Returns the
+    parsed answers by ``custom_id`` and, for the requests given up for good,
+    the reason.
+
+    Every result is kept in the job hash under the digest of its request, so
+    a retry submits only what is still open: never a request already
+    answered or given up. The running batch id is kept too, so a job released
+    on shutdown or after a crash polls the same batch instead of paying for
+    a second one. Requests the API did not finish fail the phase, with a
+    reason the curator desk shows, and go again on the job's retry."""
+    key = f"job:{job_id}"
+    results_field = f"llm_results_{phase}"
+    digests = {r["custom_id"]: _digest(r) for r in requests}
+    kept = json.loads(redis_client.hget(key, results_field) or "{}")
+    # A result of an earlier, different request (a revised book) is stale.
+    results = {cid: entry for cid, entry in kept.items() if entry.get("digest") == digests.get(cid)}
+    pending = [r for r in requests if not {"answer", "skip"} & results.get(r["custom_id"], {}).keys()]
     failures: list[str] = []
-    for item in _llm_call(lambda: list(client.messages.batches.results(batch_id))):
-        failure = _result_failure(item)
-        if failure is None:
-            text = next((b.text for b in item.result.message.content if b.type == "text"), "")
-            try:
-                parsed[item.custom_id] = json.loads(text)
-            except ValueError:
-                failure = "answered without JSON"
-        if failure:
-            failures.append(f"{item.custom_id.replace('-', ' ')} {phase} {failure}")
-    missing = len(requests) - len(parsed) - len(failures)
-    if failures or missing:
-        write_job(redis_client, job_id, lambda pipe, key: pipe.hdel(key, field))
-        first = failures[0] if failures else f"{missing} results missing"
+    if pending:
+        batch_id = _batch_for(client, redis_client, job_id, phase, pending)
+        # Hours at most (24 h is the API's limit); keep_claimed holds the job
+        # meanwhile, and SIGTERM interrupts the sleep.
+        while True:
+            batch = _llm_call(lambda: _retrieve(client, batch_id))
+            if batch is None:
+                write_job(redis_client, job_id, lambda pipe, k: pipe.hdel(k, f"llm_batch_{phase}"))
+                raise UpstreamError(f"{LLM_SERVICE} no longer has the {phase} batch; the retry submits a new one")
+            if batch.processing_status == "ended":
+                break
+            time.sleep(settings.batch_poll_seconds)
+
+        returned = set()
+        for item in _llm_call(lambda: list(client.messages.batches.results(batch_id))):
+            cid = item.custom_id
+            if cid not in digests:
+                continue
+            returned.add(cid)
+            kind, value = _classify(item)
+            entry = {"digest": digests[cid], "tries": results.get(cid, {}).get("tries", 0) + (kind == "counted")}
+            if kind == "answer":
+                entry["answer"] = value
+            elif kind == "final" or entry["tries"] >= LLM_TRIES_PER_REQUEST:
+                entry["skip"] = value
+            else:
+                failures.append(f"{cid.replace('-', ' ')} {phase} {value}")
+            results[cid] = entry
+        failures += [
+            f"{r['custom_id'].replace('-', ' ')} {phase} result missing"
+            for r in pending
+            if r["custom_id"] not in returned
+        ]
+
+        def keep(pipe, k):
+            # Results in, batch out, in one MULTI: a crash between the two
+            # would otherwise pay for the answered requests again.
+            pipe.hset(k, results_field, json.dumps(results))
+            pipe.hdel(k, f"llm_batch_{phase}")
+
+        write_job(redis_client, job_id, keep)
+    if failures:
         # No ": " in the reason: error tracking keeps a message up to it.
-        raise UpstreamError(
-            f"{LLM_SERVICE} failed {len(failures) + missing} of {len(requests)} {phase} ({first})"
-        )
-    return parsed
+        raise UpstreamError(f"{LLM_SERVICE} failed {len(failures)} of {len(requests)} {phase} ({failures[0]})")
+    answers = {cid: entry["answer"] for cid, entry in results.items() if "answer" in entry}
+    skipped = {cid: entry["skip"] for cid, entry in results.items() if "skip" in entry}
+    return answers, skipped
 
 
 def summarize_chapters(
     client, redis_client, job_id: str, texts: list[str], settings: Settings
-) -> tuple[list[dict], dict[int, dict]]:
+) -> tuple[list[dict | None], dict[int, dict]]:
     """Insight cards for every chapter, then recaps from chapter 2 on. A
     recap reads the key concepts of the chapters before it, so the two run
-    as two batches. Returns the cards in chapter order and the recaps by
-    chapter number."""
+    as two batches. Returns the cards in chapter order (None for a chapter
+    the model declined) and the recaps by chapter number; a chapter given up
+    is logged for the curator, and the book publishes without it."""
     card_requests = [
         llm_request(f"chapter-{n}", ATOMIC_CARDS_PROMPT + text[:PROMPT_BUDGET_CHARS], CARDS_SCHEMA, settings)
         for n, text in enumerate(texts, start=1)
     ]
-    by_id = run_batch(client, redis_client, job_id, "cards", card_requests, settings)
-    cards = [by_id[f"chapter-{n}"] for n in range(1, len(texts) + 1)]
+    by_id, skipped_cards = run_batch(client, redis_client, job_id, "cards", card_requests, settings)
+    cards = [by_id.get(f"chapter-{n}") for n in range(1, len(texts) + 1)]
     set_job(redis_client, job_id, "summarizing", 88)
     recap_requests = [
         llm_request(
@@ -998,7 +1075,12 @@ def summarize_chapters(
         )
         for n in range(2, len(texts) + 1)
     ]
-    recaps = run_batch(client, redis_client, job_id, "recaps", recap_requests, settings) if recap_requests else {}
+    recaps, skipped_recaps = (
+        run_batch(client, redis_client, job_id, "recaps", recap_requests, settings) if recap_requests else ({}, {})
+    )
+    for phase, skipped in (("cards", skipped_cards), ("recaps", skipped_recaps)):
+        for cid, reason in sorted(skipped.items()):
+            LOG.warning("job %s: %s %s %s; the book goes out without it", job_id, cid.replace("-", " "), phase, reason)
     return cards, {int(key.split("-", 1)[1]): value for key, value in recaps.items()}
 
 
@@ -1095,8 +1177,8 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
 
     No transaction stays open across slow work: metadata, chapters, and each
     embedding batch commit on their own, the Claude batches (up to 24 h) run
-    with no transaction at all, and cards, recaps, and the publish commit
-    together at the end. Readers see only published books, so the book stays
+    with no database connection at all, and cards, recaps, and the publish
+    commit together at the end on a fresh one. Readers see only published books, so the book stays
     invisible until that last commit."""
     import pg8000.dbapi  # noqa: F401  (ensures driver import errors surface here)
 
@@ -1219,6 +1301,9 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             LOG.info("book %s was archived before embedding; ingestion stopped", book_id)
             return
 
+        # Before any money is spent: a worker without its key fails for good.
+        llm = make_llm()
+
         # Scene chunks of ~300 words, each cut until the model reads all of it.
         pending: list[tuple[str, int, str, str | None]] = []
         for chapter_id, chapter in zip(chapter_ids, parsed.chapters):
@@ -1230,10 +1315,19 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             raise PermanentJobError("EPUB yields no passages to embed")
 
         set_job(redis_client, job_id, "embedding", 55)
-        # A rerun replaces every chunk; the book is not published, so no
-        # reader sees it half embedded.
-        cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
+        embedded =_digest([EMBEDDING_MODEL, [(c, i, text) for c, i, text, _ in pending]])
+        cur.execute("SELECT COUNT(*) FROM book_chunks WHERE book_id = %s", (book_id,))
+        stored = cur.fetchone()[0]
         conn.commit()
+        if redis_client.hget(f"job:{job_id}", "embedded") == embedded and stored == len(pending):
+            # A resumed job whose chunks all committed: straight to the batches.
+            LOG.info("job %s: %d chunks already embedded", job_id, stored)
+            pending = []
+        else:
+            # A rerun replaces every chunk; the book is not published, so no
+            # reader sees it half embedded.
+            cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
+            conn.commit()
         for offset in range(0, len(pending), 20):
             batch = pending[offset : offset + 20]
             # No transaction is open while the model works.
@@ -1257,23 +1351,40 @@ def process_message(msg_id: str, fields: dict, settings: Settings) -> None:
             conn.commit()
             done = min(offset + 20, len(pending))
             set_job(redis_client, job_id, "embedding", 55 + int(20 * done / len(pending)))
+        write_job(redis_client, job_id, lambda pipe, key: pipe.hset(key, "embedded", embedded))
+
+        # Archived while the model worked: the batches would be paid for nothing.
+        cur.execute("SELECT status FROM books WHERE id = %s", (book_id,))
+        current = cur.fetchone()
+        conn.commit()
+        if current is not None and current[-1] == "archived":
+            set_job(redis_client, job_id, "failed", 100, error=ARCHIVED_ERROR)
+            LOG.info("book %s was archived before its summaries; ingestion stopped", book_id)
+            return
+        # The batches may run a day; Postgres may restart meanwhile, so the
+        # publish below opens a connection of its own.
+        cur.close()
+        conn.close()
 
         # Atomic cards + spoiler-free recaps, written by Claude in two batches
-        # while no transaction is open; a released job resumes them.
+        # while no connection is held; a released job resumes them.
         set_job(redis_client, job_id, "summarizing", 80)
         cards, recaps = summarize_chapters(
-            make_llm(), redis_client, job_id, [chapter.text for chapter in parsed.chapters], settings
+            llm, redis_client, job_id, [chapter.text for chapter in parsed.chapters], settings
         )
+        conn = make_db(settings)
+        cur = conn.cursor()
         # Cards, recaps, and the publish commit as one short transaction, so
         # a retry upserts the same rows (uq_tldr_cache) and never doubles them.
-        upsert = """INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
+        upsert ="""INSERT INTO tldr_cache (id, book_id, chapter_id, recap_type, content_json, model_version)
                    VALUES (%s, %s, %s, %s, %s::jsonb, %s)
                    ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE
                        SET content_json = EXCLUDED.content_json,
                            model_version = EXCLUDED.model_version,
                            created_at = NOW()"""
         for number, (chapter_id, chapter_cards) in enumerate(zip(chapter_ids, cards), start=1):
-            rows = [("chapter_atomic_cards", chapter_cards)]
+            # A chapter the model declined has no row; the reader shows none.
+            rows = [("chapter_atomic_cards", chapter_cards)] if chapter_cards is not None else []
             if number in recaps:  # recaps start at chapter 2
                 rows.append(("chapter_recap", recaps[number]))
             for recap_type, content in rows:
@@ -1605,17 +1716,23 @@ def fail_job(redis_client, settings: Settings, msg_id: str, fields: dict, reason
 
 
 def return_to_draft(settings: Settings, book_id: str) -> None:
-    """A book whose job failed for good is no longer processing. Best effort:
-    the dead letter already holds the failure, and a replay moves it again."""
+    """A book whose job failed for good is no longer processing, and the
+    chunks its run committed go with it, so neither the vector index nor the
+    curator's chunk count keeps them. Chapters stay (reading progress may
+    hold one); a replay rewrites them. Best effort: the dead letter already
+    holds the failure, and a replay moves it again."""
     if not book_id:
         return
     try:
         conn = make_db(settings)
         try:
-            conn.cursor().execute(
+            cur = conn.cursor()
+            cur.execute(
                 "UPDATE books SET status = 'draft', updated_at = NOW() WHERE id = %s AND status = 'processing'",
                 (book_id,),
             )
+            if cur.rowcount > 0:
+                cur.execute("DELETE FROM book_chunks WHERE book_id = %s", (book_id,))
             conn.commit()
         finally:
             conn.close()

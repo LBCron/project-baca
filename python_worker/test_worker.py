@@ -444,16 +444,27 @@ class FailureHandlingTest(unittest.TestCase):
         process.assert_not_called()
         client.xack.assert_called_once_with(worker.Settings().stream, worker.Settings().group, "5-0")
 
-    def test_a_failed_book_goes_back_to_draft(self):
+    def test_a_failed_book_goes_back_to_draft_without_its_chunks(self):
         conn = mock.Mock()
+        conn.cursor.return_value.rowcount = 1
         with mock.patch.object(worker, "make_db", return_value=conn), \
              mock.patch.object(worker, "dead_letter"):
             worker.fail_job(mock.MagicMock(), worker.Settings(), "1-0", {"job_id": "j", "book_id": "b"}, "why")
-        sql, params = conn.cursor.return_value.execute.call_args.args
-        self.assertIn("status = 'draft'", sql)
-        self.assertIn("status = 'processing'", sql)
-        self.assertEqual(params, ("b",))
+        (update, update_params), (delete, delete_params) = [
+            c.args for c in conn.cursor.return_value.execute.call_args_list
+        ]
+        self.assertIn("status = 'draft'", update)
+        self.assertIn("status = 'processing'", update)
+        self.assertEqual(update_params, ("b",))
+        self.assertEqual((delete, delete_params), ("DELETE FROM book_chunks WHERE book_id = %s", ("b",)))
         conn.commit.assert_called_once()
+
+    def test_a_book_no_longer_processing_keeps_its_chunks(self):
+        conn = mock.Mock()
+        conn.cursor.return_value.rowcount = 0  # archived or published meanwhile
+        with mock.patch.object(worker, "make_db", return_value=conn):
+            worker.return_to_draft(worker.Settings(), "b")
+        self.assertEqual(conn.cursor.return_value.execute.call_count, 1, "only the status update")
 
     def test_reclaim_carries_its_cursor(self):
         client = mock.MagicMock()
@@ -1179,6 +1190,10 @@ class FakeBatches:
         self.created: list[list[dict]] = []
         self.requests_by_id: dict[str, list[dict]] = {}
         self.retrieves = 0
+        self.cancelled: list[str] = []
+
+    def cancel(self, batch_id):
+        self.cancelled.append(batch_id)
 
     def create(self, requests):
         self.created.append(list(requests))
@@ -1265,33 +1280,106 @@ class ClaudeBatchTest(unittest.TestCase):
         worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one, revised"], self.settings())
         self.assertEqual(len(batches.created), 2)
 
-    def test_a_refused_chapter_fails_the_job_with_a_curator_reason(self):
+    def test_a_changed_book_cancels_the_batch_it_no_longer_needs(self):
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("SIGTERM"))
+        with self.assertRaises(worker.WorkerShutdown):
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one"], self.settings())
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one, revised"], self.settings())
+        self.assertEqual(batches.cancelled, ["msgbatch_1"])
+
+    def test_a_cancel_that_fails_does_not_stop_the_new_batch(self):
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("SIGTERM"))
+        with self.assertRaises(worker.WorkerShutdown):
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one"], self.settings())
+        batches.cancel = mock.Mock(side_effect=RuntimeError("already ended"))
+        cards, _ = worker.summarize_chapters(fake_client(batches), redis_client, "j", ["two"], self.settings())
+        self.assertEqual(cards, [{"key_concepts": ["concept 1"], "notable_quotes": [], "historical_context": "c"}])
+
+    def test_a_batch_the_api_forgot_is_dropped_so_the_retry_submits_anew(self):
+        import anthropic
+        import httpx2
+
+        response = httpx2.Response(404, request=httpx2.Request("GET", "https://api.anthropic.com"))
+        gone = anthropic.NotFoundError("not found", response=response, body=None)
+        redis_client = FakeRedis()
+        batches = FakeBatches(card_or_recap, retrieve_error=gone)
+        with self.assertRaisesRegex(worker.UpstreamError, "no longer has the cards batch"):
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one"], self.settings())
+        self.assertNotIn("llm_batch_cards", redis_client.hashes["job:j"])
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one"], self.settings())
+        self.assertEqual(len(batches.created), 2, "a fresh batch, not the forgotten one")
+        self.assertEqual(batches.cancelled, [], "nothing to cancel once it is dropped")
+
+    def test_a_refused_chapter_goes_without_cards_and_later_recaps_still_come(self):
         def refuse_two(custom_id, params):
-            if custom_id == "chapter-2":
+            if custom_id == "chapter-2" and params["output_config"]["format"]["schema"] is worker.CARDS_SCHEMA:
                 return succeeded({}, stop_reason="refusal")
             return card_or_recap(custom_id, params)
 
         redis_client = FakeRedis()
-        with self.assertRaises(worker.UpstreamError) as caught:
-            worker.summarize_chapters(
-                fake_client(FakeBatches(refuse_two)), redis_client, "j", ["one", "two"], self.settings()
+        batches = FakeBatches(refuse_two)
+        with self.assertLogs("ingestion", "WARNING") as logs:
+            cards, recaps = worker.summarize_chapters(
+                fake_client(batches), redis_client, "j", ["one", "secret words", "three"], self.settings()
             )
-        reason = worker.curator_reason(caught.exception)
-        self.assertEqual(reason, "Claude API failed 1 of 2 cards (chapter 2 cards declined by the model)")
-        self.assertEqual(worker.short_reason(reason), reason, "error tracking keeps the whole reason")
-        self.assertNotIn("llm_batch_cards", redis_client.hashes["job:j"], "a failed batch is never polled again")
+        self.assertIsNone(cards[1])
+        self.assertEqual(sorted(recaps), [2, 3], "a chapter without cards still gets its recap")
+        recap_three = batches.created[1][1]["params"]["messages"][0]["content"]
+        self.assertIn("Chapter 1: concept 1\nCURRENT CHAPTER", recap_three, "the declined chapter is left out")
+        (line,) = logs.output
+        self.assertIn("job j: chapter 2 cards declined by the model", line)
+        self.assertNotIn("secret", line, "no book text in the log")
 
-    def test_expired_errored_and_truncated_requests_fail_the_phase(self):
+        worker.summarize_chapters(fake_client(batches), redis_client, "j", ["one", "secret words", "three"], self.settings())
+        self.assertEqual(len(batches.created), 2, "a refusal is final: a rerun asks for nothing again")
+
+    def test_an_errored_request_is_retried_alone(self):
+        answers = {"chapter-2": ns(type="errored", error=ns(error=ns(type="overloaded_error")))}
+        batches = FakeBatches(lambda cid, p: answers.pop(cid, None) or card_or_recap(cid, p))
+        redis_client = FakeRedis()
+        with self.assertRaises(worker.UpstreamError) as caught:
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["a", "b", "c"], self.settings())
+        reason = worker.curator_reason(caught.exception)
+        self.assertEqual(reason, "Claude API failed 1 of 3 cards (chapter 2 cards errored (overloaded_error))")
+        self.assertEqual(worker.short_reason(reason), reason, "error tracking keeps the whole reason")
+
+        cards, _ = worker.summarize_chapters(fake_client(batches), redis_client, "j", ["a", "b", "c"], self.settings())
+        self.assertEqual([[r["custom_id"] for r in b] for b in batches.created[:2]], [
+            ["chapter-1", "chapter-2", "chapter-3"],
+            ["chapter-2"],
+        ], "the answered chapters are not paid for again")
+        self.assertEqual([c["key_concepts"] for c in cards], [["concept 1"], ["concept 2"], ["concept 3"]])
+
+    def test_a_cut_off_answer_gets_one_more_try_then_its_chapter_goes_without(self):
+        batches = FakeBatches(
+            lambda cid, p: succeeded({}, stop_reason="max_tokens") if cid == "chapter-1" else card_or_recap(cid, p)
+        )
+        redis_client = FakeRedis()
+        with self.assertRaisesRegex(worker.UpstreamError, r"chapter 1 cards cut off at the token limit"):
+            worker.summarize_chapters(fake_client(batches), redis_client, "j", ["a", "b"], self.settings())
+        cards, recaps = worker.summarize_chapters(fake_client(batches), redis_client, "j", ["a", "b"], self.settings())
+        self.assertEqual([[r["custom_id"] for r in b] for b in batches.created[:2]], [["chapter-1", "chapter-2"], ["chapter-1"]])
+        self.assertIsNone(cards[0])
+        self.assertEqual(sorted(recaps), [2])
+
+    def test_expired_and_errored_requests_fail_the_phase(self):
         answers = {
             "chapter-1": ns(type="expired"),
             "chapter-2": ns(type="errored", error=ns(error=ns(type="overloaded_error"))),
-            "chapter-3": succeeded({}, stop_reason="max_tokens"),
+            "chapter-3": ns(type="canceled"),
         }
         with self.assertRaises(worker.UpstreamError) as caught:
             worker.summarize_chapters(
                 fake_client(FakeBatches(lambda cid, _p: answers[cid])), FakeRedis(), "j", ["a", "b", "c"], self.settings()
             )
         self.assertIn("failed 3 of 3 cards (chapter 1 cards expired)", str(caught.exception))
+
+    def test_a_missing_key_fails_for_good_before_any_call(self):
+        with mock.patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}):
+            with self.assertRaisesRegex(worker.PermanentJobError, "ANTHROPIC_API_KEY is not set"):
+                worker.make_llm()
 
     def test_a_dropped_connection_keeps_the_batch_for_the_retry(self):
         import anthropic
@@ -1381,8 +1469,9 @@ class RecordingDb:
     """A connection and cursor in one that logs statements and commits in
     order, so a test can see which work ran inside which transaction."""
 
-    def __init__(self, status="draft"):
+    def __init__(self, status="draft", chunks=0):
         self.status = status
+        self.chunks = chunks
         self.events: list[tuple] = []
         self.rowcount = 1
         self.chapters = 0
@@ -1398,6 +1487,8 @@ class RecordingDb:
         if last.startswith("INSERT INTO chapters"):
             self.chapters += 1
             return (f"chapter-{self.chapters}",)
+        if last.startswith("SELECT COUNT(*) FROM book_chunks"):
+            return (self.chunks,)
         return ("Title", "Author", "en", self.status)
 
     def commit(self):
@@ -1407,13 +1498,16 @@ class RecordingDb:
         self.events.append(("rollback",))
 
     def close(self):
-        pass
+        self.events.append(("close",))
+
+    def statements(self) -> list[tuple]:
+        return [e for e in self.events if e[0] == "sql"]
 
     def uncommitted(self) -> list[str]:
-        """Statements since the last commit or rollback."""
+        """Statements since the last commit, rollback, or close."""
         open_ = []
         for event in self.events:
-            open_ = [] if event[0] in ("commit", "rollback") else open_ + [event[1]]
+            open_ = [] if event[0] != "sql" else open_ + [event[1]]
         return open_
 
     def committed(self, prefix: str) -> list[tuple]:
@@ -1421,7 +1515,7 @@ class RecordingDb:
         for event in self.events:
             if event[0] == "commit":
                 done, pending = done + pending, []
-            elif event[0] == "rollback":
+            elif event[0] in ("rollback", "close"):
                 pending = []
             else:
                 pending.append(event)
@@ -1429,23 +1523,24 @@ class RecordingDb:
 
 
 class IngestionTransactionTest(unittest.TestCase):
-    def run_job(self, db, batches, redis_client, embed=None):
+    def run_job(self, db, batches, redis_client, embed=None, llm=None):
         minio = mock.Mock()
         minio.get_object.return_value = io.BytesIO(make_epub([("One", "First words."), ("Two", "Second words.")]))
         minio.get_object.return_value.release_conn = lambda: None
         embed = embed or (lambda texts, *_: [[0.5] * 768] * len(texts))
+        llm = llm or mock.Mock(return_value=fake_client(batches))
         with mock.patch.object(worker, "make_redis", return_value=redis_client), \
              mock.patch.object(worker, "make_minio", return_value=minio), \
              mock.patch.object(worker, "make_db", return_value=db), \
              mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
              mock.patch.object(worker, "embed_batch", side_effect=embed), \
-             mock.patch.object(worker, "make_llm", return_value=fake_client(batches)):
+             mock.patch.object(worker, "make_llm", llm):
             worker.process_message(
                 "1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"},
                 worker.Settings(batch_poll_seconds=0),
             )
 
-    def test_no_transaction_is_open_while_the_model_or_the_batches_work(self):
+    def test_no_connection_is_held_while_the_model_or_the_batches_work(self):
         db = RecordingDb()
         open_during = {}
 
@@ -1454,48 +1549,121 @@ class IngestionTransactionTest(unittest.TestCase):
             return [[0.5] * 768] * len(texts)
 
         def answer(custom_id, params):
-            open_during.setdefault("batch", db.uncommitted())
+            open_during.setdefault("batch", db.events[-1])
             return card_or_recap(custom_id, params)
 
         self.run_job(db, FakeBatches(answer), FakeRedis(), embed)
-        self.assertEqual(open_during, {"embedding": [], "batch": []})
+        self.assertEqual(open_during, {"embedding": [], "batch": ("close",)})
         # Cards, recaps, word count, and publish land in one last transaction.
-        last = [e for e in db.events if e[0] != "commit"][-5:]
+        last = db.statements()[-5:]
         self.assertEqual([e[1].split(" (")[0] for e in last[:3]], ["INSERT INTO tldr_cache"] * 3)
         self.assertIn("status = 'published'", last[-1][1])
-        self.assertEqual(db.events[-1], ("commit",))
         self.assertEqual(db.uncommitted(), [])
+
+    def test_the_publish_runs_on_a_connection_opened_after_the_batches(self):
+        before, after = RecordingDb(), RecordingDb()
+        with mock.patch.object(worker, "make_db", side_effect=[before, after]):
+            minio = mock.Mock()
+            minio.get_object.return_value = io.BytesIO(make_epub([("One", "First words.")]))
+            minio.get_object.return_value.release_conn = lambda: None
+            with mock.patch.object(worker, "make_redis", return_value=FakeRedis()), \
+                 mock.patch.object(worker, "make_minio", return_value=minio), \
+                 mock.patch.object(worker, "count_tokens", side_effect=lambda texts, *_: [10] * len(texts)), \
+                 mock.patch.object(worker, "embed_batch", side_effect=lambda texts, *_: [[0.5] * 768] * len(texts)), \
+                 mock.patch.object(worker, "make_llm", return_value=fake_client(FakeBatches(card_or_recap))):
+                worker.process_message("1-0", {"book_id": "b", "storage_path": "p", "job_id": "j"},
+                                       worker.Settings(batch_poll_seconds=0))
+        self.assertIn(("close",), before.events)
+        self.assertEqual(before.committed("INSERT INTO tldr_cache"), [])
+        self.assertEqual(len(after.committed("INSERT INTO tldr_cache")), 1)
+        self.assertTrue(any("status = 'published'" in e[1] for e in after.committed("UPDATE books")))
 
     def test_a_release_mid_batch_leaves_the_book_hidden_and_the_retry_resumes_it(self):
         redis_client = FakeRedis()
         batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("SIGTERM"))
+        embedded = []
+
+        def embed(texts, *_):
+            embedded.extend(texts)
+            return [[0.5] * 768] * len(texts)
+
         first = RecordingDb()
         with self.assertRaises(worker.WorkerShutdown):
-            self.run_job(first, batches, redis_client)
+            self.run_job(first, batches, redis_client, embed)
         self.assertEqual(len(first.committed("INSERT INTO book_chunks")), 2, "chunks are kept")
         self.assertEqual(first.committed("INSERT INTO tldr_cache"), [])
-        self.assertFalse(any("status = 'published'" in e[1] for e in first.events if e[0] == "sql"))
+        self.assertFalse(any("status = 'published'" in e[1] for e in first.statements()))
         self.assertEqual(first.uncommitted(), [], "nothing was left half written")
+        self.assertEqual(len(embedded), 2)
 
-        second = RecordingDb(status="processing")
-        self.run_job(second, batches, redis_client)
+        second = RecordingDb(status="processing", chunks=2)
+        self.run_job(second, batches, redis_client, embed)
+        self.assertEqual(len(embedded), 2, "the committed chunks were not embedded again")
+        self.assertEqual(second.committed("DELETE FROM book_chunks"), [], "nor deleted")
         self.assertEqual(len(batches.created), 2, "the cards batch was polled again, not paid twice")
         upserts = second.committed("INSERT INTO tldr_cache")
         self.assertEqual(len(upserts), 3)
         self.assertTrue(all("ON CONFLICT ON CONSTRAINT uq_tldr_cache DO UPDATE" in e[1] for e in upserts))
         self.assertTrue(any("status = 'published'" in e[1] for e in second.committed("UPDATE books")))
 
+    def test_a_resume_with_chunks_missing_embeds_the_book_again(self):
+        redis_client = FakeRedis()
+        calls = []
+        embed = lambda texts, *_: calls.append(len(texts)) or [[0.5] * 768] * len(texts)  # noqa: E731
+        batches = FakeBatches(card_or_recap, retrieve_error=worker.WorkerShutdown("x"))
+        with self.assertRaises(worker.WorkerShutdown):
+            self.run_job(RecordingDb(), batches, redis_client, embed)
+        second = RecordingDb(status="processing", chunks=1)
+        self.run_job(second, batches, redis_client, embed)
+        self.assertEqual(sum(calls), 4, "both runs embedded both chunks")
+        self.assertEqual(len(second.committed("DELETE FROM book_chunks")), 1)
+
     def test_a_failed_batch_leaves_a_consistent_unpublished_book(self):
-        def refuse(custom_id, params):
-            return succeeded({}, stop_reason="refusal")
+        def errored(custom_id, params):
+            return ns(type="errored", error=ns(error=ns(type="overloaded_error")))
 
         db = RecordingDb()
         with self.assertRaises(worker.UpstreamError):
-            self.run_job(db, FakeBatches(refuse), FakeRedis())
+            self.run_job(db, FakeBatches(errored), FakeRedis())
         self.assertEqual(db.uncommitted(), [])
         self.assertEqual(db.committed("INSERT INTO tldr_cache"), [])
-        self.assertFalse(any("status = 'published'" in e[1] for e in db.events if e[0] == "sql"))
+        self.assertFalse(any("status = 'published'" in e[1] for e in db.statements()))
         self.assertEqual(db.committed("UPDATE books SET total_words"), [], "not marked as fully ingested")
+
+    def test_a_refused_chapter_publishes_the_book_without_its_cards(self):
+        def refuse_one(custom_id, params):
+            if custom_id == "chapter-1" and params["output_config"]["format"]["schema"] is worker.CARDS_SCHEMA:
+                return succeeded({}, stop_reason="refusal")
+            return card_or_recap(custom_id, params)
+
+        db = RecordingDb()
+        self.run_job(db, FakeBatches(refuse_one), FakeRedis())
+        rows = [(e[2][2], e[2][3]) for e in db.committed("INSERT INTO tldr_cache")]
+        self.assertEqual(rows, [("chapter-2", "chapter_atomic_cards"), ("chapter-2", "chapter_recap")])
+        self.assertTrue(any("status = 'published'" in e[1] for e in db.committed("UPDATE books")))
+
+    def test_a_missing_key_fails_before_any_embedding(self):
+        embed = mock.Mock()
+        llm = mock.Mock(side_effect=worker.PermanentJobError("ANTHROPIC_API_KEY is not set"))
+        db = RecordingDb()
+        with self.assertRaises(worker.PermanentJobError):
+            self.run_job(db, FakeBatches(card_or_recap), FakeRedis(), embed, llm)
+        embed.assert_not_called()
+        self.assertEqual(db.committed("INSERT INTO book_chunks"), [])
+
+    def test_a_book_archived_while_embedding_never_reaches_the_batches(self):
+        db = RecordingDb()
+        batches = FakeBatches(card_or_recap)
+
+        def embed(texts, *_):
+            db.status = "archived"
+            return [[0.5] * 768] * len(texts)
+
+        redis_client = FakeRedis()
+        self.run_job(db, batches, redis_client, embed)
+        self.assertEqual(batches.created, [])
+        self.assertEqual(redis_client.hashes["job:j"]["error"], worker.ARCHIVED_ERROR)
+        self.assertFalse(any("status = 'published'" in e[1] for e in db.statements()))
 
     def test_a_redelivered_job_of_a_published_book_touches_nothing(self):
         db = RecordingDb(status="published")
@@ -1609,10 +1777,10 @@ class ErrorTrackingTest(unittest.TestCase):
         with mock.patch.dict("os.environ", {"SENTRY_DSN": "https://key@sentry.invalid/1"}):
             self.assertTrue(worker.init_error_tracking(transport=transport))
         book_text = "bab-" + uuid.uuid4().hex
-        refuse = FakeBatches(lambda cid, _p: succeeded({}, stop_reason="refusal"))
+        errored = FakeBatches(lambda cid, _p: ns(type="errored", error=ns(error=ns(type="overloaded_error"))))
         try:
             worker.summarize_chapters(
-                fake_client(refuse), FakeRedis(), "job-9", [book_text], worker.Settings(batch_poll_seconds=0)
+                fake_client(errored), FakeRedis(), "job-9", [book_text], worker.Settings(batch_poll_seconds=0)
             )
         except worker.UpstreamError as exc:
             worker.report_job_failure("job-9", exc)
@@ -1622,6 +1790,6 @@ class ErrorTrackingTest(unittest.TestCase):
         self.assertEqual(event["tags"]["job_id"], "job-9")
         self.assertEqual(
             event["exception"]["values"][-1]["value"],
-            "Claude API failed 1 of 1 cards (chapter 1 cards declined by the model)",
+            "Claude API failed 1 of 1 cards (chapter 1 cards errored (overloaded_error))",
         )
         self.assertNotIn(book_text, json.dumps(event, default=str))
