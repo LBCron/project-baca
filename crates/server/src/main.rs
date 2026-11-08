@@ -75,35 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // Initialize dual-mode embedding provider (Gemini REST API or FastEmbed CPU).
-    // Graceful fallback: if the API key is absent, fall back to FastEmbed stub so the
-    // server starts cleanly. Handlers requiring embeddings will return a descriptive error.
-    let embedding = match build_embedding_provider(&config.ai) {
-        Ok(provider) => {
-            tracing::info!(
-                provider = %config.ai.provider,
-                model = %config.ai.model_name,
-                dimension = config.ai.dimension,
-                "Embedding provider initialized"
-            );
-            provider
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Embedding provider initialization failed ({e}). \
-                 Falling back to FastEmbed stub. \
-                 Set AI_API_KEY to enable Gemini embeddings."
-            );
-            build_embedding_provider(&infra::AiConfig {
-                provider: "fastembed".to_string(),
-                api_key: String::new(),
-                model_name: config.ai.model_name.clone(),
-                dimension: config.ai.dimension,
-                daily_budget: 0,
-            })
-            .map_err(|e| format!("FastEmbed fallback failed to start: {e}"))?
-        }
-    };
+    // The model service may still be loading; quote search answers 503
+    // AI_UNAVAILABLE until it is, so the server boots without waiting.
+    let embedding = build_embedding_provider(&config.ai)
+        .map_err(|e| format!("Embedding provider failed to start: {e}"))?;
 
     // Object storage (R2/MinIO). Production refuses to boot without it, since
     // uploads and covers would fail silently; development keeps running.

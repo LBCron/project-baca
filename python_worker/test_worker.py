@@ -5,6 +5,7 @@ No Redis, MinIO, Postgres, or network access required.
 """
 
 import io
+import json
 import unittest
 import urllib.error
 import zipfile
@@ -423,8 +424,10 @@ class FailureHandlingTest(unittest.TestCase):
         self.assertNotIn("10.0.0.7", status["error"], "internal detail stays in the log")
 
     def test_the_last_transient_failure_is_dead_lettered(self):
-        client, dead, _ = run_once_with(attempts=3, side_effect=RuntimeError("Gemini API unavailable (HTTP 503)"))
-        self.assertEqual(dead.call_args.args[4], "Gemini API unavailable (HTTP 503)")
+        client, dead, _ = run_once_with(
+            attempts=3, side_effect=worker.UpstreamError("Embedding service unavailable (HTTP 503)")
+        )
+        self.assertEqual(dead.call_args.args[4], "Embedding service unavailable (HTTP 503)")
         client.xack.assert_called_once()
 
     def test_a_deleted_pending_entry_is_acknowledged_and_skipped(self):
@@ -830,7 +833,7 @@ class RetryAndRecapTests(unittest.TestCase):
         self.assertEqual(backoff_seconds(1, retry_after="900"), 60.0)
         self.assertEqual(backoff_seconds(3, retry_after="soon"), 9.0, msg="unparseable header falls back")
 
-    def test_gemini_post_retries_transient_errors_then_succeeds(self):
+    def test_post_json_retries_transient_errors_then_succeeds(self):
         calls = []
 
         def fake_urlopen(request, timeout):
@@ -841,19 +844,19 @@ class RetryAndRecapTests(unittest.TestCase):
 
         with mock.patch.object(worker.urllib.request, "urlopen", fake_urlopen), \
              mock.patch.object(worker.time, "sleep") as sleep:
-            result = worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k", job_id="j1")
+            result = worker._post_json("http://x/embed", {}, "Svc", job_id="j1")
         self.assertEqual(result, {"ok": True})
         self.assertEqual(len(calls), 3)
         self.assertEqual([round(c.args[0]) for c in sleep.call_args_list], [2, 2], "Retry-After drives the wait")
 
-    def test_gemini_post_gives_up_after_max_attempts_and_skips_client_errors(self):
+    def test_post_json_gives_up_after_max_attempts_and_skips_client_errors(self):
         def always_busy(request, timeout):
             raise urllib.error.HTTPError(request.full_url, 503, "busy", {}, None)
 
         with mock.patch.object(worker.urllib.request, "urlopen", always_busy), \
              mock.patch.object(worker.time, "sleep") as sleep, \
-             self.assertRaises(RuntimeError):
-            worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k")
+             self.assertRaises(worker.UpstreamError):
+            worker._post_json("http://x/embed", {}, "Svc")
         self.assertEqual(sleep.call_count, worker.LLM_MAX_ATTEMPTS - 1)
 
         def forbidden(request, timeout):
@@ -861,8 +864,8 @@ class RetryAndRecapTests(unittest.TestCase):
 
         with mock.patch.object(worker.urllib.request, "urlopen", forbidden), \
              mock.patch.object(worker.time, "sleep") as sleep, \
-             self.assertRaises(RuntimeError):
-            worker._gemini_post("https://x/v1beta/models/m:generateContent", {}, "k")
+             self.assertRaises(worker.UpstreamError):
+            worker._post_json("http://x/embed", {}, "Svc")
         self.assertEqual(sleep.call_count, 0, "client errors are not retried")
 
     def test_recap_input_lists_earlier_chapters_then_current_text(self):
@@ -896,27 +899,44 @@ class StreamCapTest(unittest.TestCase):
         self.assertEqual(kwargs, {"maxlen": 10_000, "approximate": True})
 
 
-class GeminiTransportTest(unittest.TestCase):
-    def capture(self):
+class EmbeddingTransportTest(unittest.TestCase):
+    def fake_service(self, dim=2):
         seen = []
 
         def fake_urlopen(request, timeout):
             seen.append(request)
-            return io.BytesIO(b'{"embeddings": [{"values": [0.5, 0.5]}], "candidates": [{"content": {"parts": [{"text": "{}"}]}}]}')
+            inputs = json.loads(request.data)["inputs"]
+            return io.BytesIO(json.dumps([[0.5] * dim for _ in inputs]).encode())
 
         return seen, fake_urlopen
 
-    def test_key_travels_in_a_header_never_the_url(self):
-        settings = worker.Settings(gemini_api_key="secret-key", embedding_dim=2)
-        seen, fake = self.capture()
+    def test_passages_go_to_the_self_hosted_service_with_their_prefix(self):
+        settings = worker.Settings(embedding_url="http://embedder:80/", embedding_dim=2)
+        seen, fake = self.fake_service()
         with mock.patch.object(worker.urllib.request, "urlopen", fake):
-            worker.embed_batch(["one"], settings)
-            worker.generate_json("prompt", settings)
-        self.assertEqual(len(seen), 2)
-        for request in seen:
-            self.assertNotIn("key=", request.full_url)
-            self.assertNotIn("secret-key", request.full_url)
-            self.assertEqual(request.get_header("X-goog-api-key"), "secret-key")
+            vectors = worker.embed_batch(["satu", "dua"], settings)
+        self.assertEqual(vectors, [[0.5, 0.5], [0.5, 0.5]])
+        self.assertEqual(len(seen), 2, "one passage per request, so queries never wait behind a batch")
+        self.assertEqual({r.full_url for r in seen}, {"http://embedder:80/embed"})
+        self.assertEqual(
+            [json.loads(r.data) for r in seen],
+            [
+                {"inputs": ["passage: satu"], "normalize": True, "truncate": True},
+                {"inputs": ["passage: dua"], "normalize": True, "truncate": True},
+            ],
+        )
+
+    def test_a_wrong_dimension_fails_the_batch(self):
+        seen, fake = self.fake_service(dim=3)
+        with mock.patch.object(worker.urllib.request, "urlopen", fake), \
+             self.assertRaisesRegex(worker.UpstreamError, "3 dimensions"):
+            worker.embed_batch(["one"], worker.Settings(embedding_dim=2))
+
+    def test_the_curator_reads_which_service_failed(self):
+        self.assertEqual(
+            worker.curator_reason(worker.UpstreamError("Embedding service unreachable")),
+            "Embedding service unreachable",
+        )
 
     def test_read_phase_timeouts_are_retried(self):
         calls = []
@@ -931,7 +951,7 @@ class GeminiTransportTest(unittest.TestCase):
 
         with mock.patch.object(worker.urllib.request, "urlopen", slow_then_ok), \
              mock.patch.object(worker.time, "sleep"):
-            self.assertEqual(worker._gemini_post("https://x/models/m:generateContent", {}, "k"), {"ok": True})
+            self.assertEqual(worker._post_json("http://x/embed", {}, "Svc"), {"ok": True})
         self.assertEqual(len(calls), 3)
 
 

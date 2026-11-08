@@ -47,6 +47,37 @@ services:
     volumes:
       - miniodata_baca:/data
 
+  # The embedding model the server (queries) and worker (chunks) share; the
+  # first `make db-up` downloads it (about 2.2 GB) into embedder_models.
+  embedder-fetch:
+    image: &embedder_image ghcr.io/huggingface/text-embeddings-inference:cpu-1.9@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
+    restart: "no"
+    entrypoint: ["/fetch.sh"]
+    volumes:
+      - embedder_models:/data
+      - ./scripts/fetch_embedding_model.sh:/fetch.sh:ro
+
+  embedder:
+    image: *embedder_image
+    container_name: project_baca_embedder
+    restart: always
+    user: "65534:65534"
+    depends_on:
+      embedder-fetch:
+        condition: service_completed_successfully
+    command: ["--model-id", "/data/multilingual-e5-base", "--pooling", "mean", "--tokenization-workers", "1"]
+    cpus: 1.0
+    ports:
+      - "127.0.0.1:8090:80" # EMBEDDING_URL
+    volumes:
+      - embedder_models:/data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
   mailpit:
     image: axllent/mailpit:latest
     container_name: project_baca_mailpit
@@ -59,3 +90,4 @@ volumes:
   pgdata_baca:
   redisdata_baca:
   miniodata_baca:
+  embedder_models:

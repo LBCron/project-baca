@@ -216,6 +216,11 @@ backfill-paragraphs:
 	@echo "Indexing the paragraphs of every stored chapter and anchoring its chunks (one-off, idempotent)..."
 	@set -a && . ./.env && set +a && cd python_worker && .venv/bin/python worker.py --backfill-paragraphs
 
+# Dev and test data only: production embeds every chunk at ingestion.
+reembed-chunks:
+	@echo "Re-embedding stored chunks in place with EMBEDDING_URL (idempotent; BOOK=<uuid> for one book)..."
+	@cargo run -p infra --example backfill_chunks -- $(BOOK)
+
 worker:
 	@echo "Starting ingestion worker (long-running consumer)..."
 	@cd python_worker && .venv/bin/python worker.py
@@ -340,5 +345,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs reembed-chunks seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

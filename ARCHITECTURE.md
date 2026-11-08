@@ -5,7 +5,7 @@
 ```text
 crates/domain    pure rules, no I/O: Percentage, BookStatus lifecycle, streak, badges, progress merge
 crates/shared    DTOs, validation, error contract; compiled native and to WebAssembly
-crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, S3 storage (R2, MinIO), SMTP (lettre), Gemini client
+crates/infra     AppConfig from env, SeaORM pool and repositories, Redis, S3 storage (R2, MinIO), SMTP (lettre), embedding client
 crates/server    Axum router, middleware, handlers, OpenAPI (utoipa)
 crates/web       Leptos 0.7 client-side app, Trunk build, service worker
 python_worker    ingestion consumer (section 6)
@@ -108,13 +108,13 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 2. Parse OPF and spine; a spine that names one document many times yields it once. Limits live in `EpubLimits` (2,000 chapters, 32 MB of text, 8,000 chunks; the largest real book in dev has 300, 6.3 MB, about 2,800). The cover decodes with Pillow 13 only as JPEG, PNG, WebP or GIF, at most 40 megapixels (a bomb is refused at its header), thumbnailed to 1,600 px and stored as `covers/<book_id>.webp`; any other cover is dropped and the book publishes on the typographic cover.
 3. Sanitize XHTML: allowlisted tags, scripts, styles and handlers removed, decoded character references re-escaped; open elements are tracked, so an unclosed `iframe` or `object` ends with its parent and a void `embed` hides nothing; text outside any paragraph (a dropped `div`'s content) is wrapped in a `<p>`. A Project Gutenberg book loses everything before `*** START OF ... ***` (header, cover credits) and from `*** END OF ... ***` on (the license and any spine item after it), so neither becomes a chapter or costs Gemini calls. Each `<p>` is indexed in `chapter_paragraphs` as plain text (entities decoded, `<br>` a space, whitespace collapsed) and case-folded per character, numbered as a browser parses them, so row `n` is the reader's `p-n`; `make backfill-paragraphs` indexes books stored before the table.
 4. Chunk about 400 words, tails under 50 merged. Each chunk stores in `cfi_range` the `p-N` anchor of the paragraph it starts in (the next paragraph when it starts on a heading; positions compared without whitespace), so a quote hit opens the reader on that paragraph (`/read/<id>?chapter=N&at=p-M`, lit as an in-book hit is). `make backfill-paragraphs` anchors stored chunks without new embeddings. A chapter with no `<p>` leaves it null and the hit opens the chapter.
-5. Embed in batches, 768 dimensions, `EMBEDDING_MODEL_NAME` (`fastembed` is a stub; production needs `GEMINI_API_KEY`).
+5. Embed every chunk through the self-hosted model service (`EMBEDDING_URL`): multilingual-e5-base, 768 dimensions, `passage: ` prefix, normalized, truncated at its 512-token window (a 400-word chunk in a long-word language can lose its tail). One passage per request, so a reader's query waits behind one passage, not a batch.
 6. Atomic cards and the spoiler-free recap with `LLM_MODEL_NAME`; recap input is the key concepts of earlier chapters plus the current text within a 12k-character budget; rows upsert on `uq_tldr_cache`.
 7. Insert chapters and chunks, set the book `published`, `XACK`. Metadata and cover commit before step 4 in their own transaction, so the book row is not held through hours of Gemini calls; `PATCH /admin/books/{id}` waits at most 2 s for the row (`lock_timeout`) and answers 409 past it. The job reads the status again before embedding, so a book archived meanwhile costs no further Gemini calls.
 
 **Reliability.** At-least-once: `XACK` only after success; entries idle past `RECLAIM_IDLE_MS` (300000) are reclaimed with `XAUTOCLAIM` at the start of every loop turn, one at a time with a cursor that walks the pending list (a batch would leave the rest idle behind the first job for another replica to take), while a running job refreshes its claim (`XCLAIM ... JUSTID` from a heartbeat thread, at most every 60 s) so a long book is never taken by a second replica; every delivery increments `attempts` before the job runs, and a fourth delivery is dead-lettered without running, so a job that kills the process (OOM, SIGKILL) stops after three; a transient failure stays pending with its reason in the job hash, and the third is dead-lettered. Replay moves an entry with one Lua step (`XDEL`, then `XADD` only if it removed the entry), so concurrent replays re-queue once. SIGTERM or SIGINT interrupts even a blocking call: the job is handed back unacknowledged, its attempt uncounted, its status `queued`; compose runs the worker with `init: true`. A book archived before or during ingestion is never republished (`WHERE status <> 'archived'`). Title, author, language, and headings are clipped to their column widths. Gemini calls send the key in `x-goog-api-key`, retry transient failures (HTTP 429 and 5xx, connect and read timeouts) three times with quadratic backoff (1, 4, 9 s, jitter, `Retry-After` up to 60 s), and time out at 60 s (embeddings) or 120 s (generation). The Redis socket timeout (30 s) exceeds the `XREADGROUP` block window. A job no retry can fix raises `PermanentJobError` (`RejectedEpub` for a malformed upload or one past a limit, a missing object, a deleted book row) and is dead-lettered at once with its reason, which the job hash and the curator desk show; other errors reach the desk as their kind only, with the detail in the worker log. Every write to a job hash refreshes its 7-day TTL in the same `MULTI`. Production compose caps the worker at `mem_limit: 768m`.
 
-**Search.** Quote search embeds the query through Gemini on the server and runs an HNSW cosine search scoped `WHERE book_id = $1`, so index memory follows the active book, not the corpus. Catalog search uses a partial GIN index (FTS and trigram) over published books; index and query both use the `simple` text config (`plainto_tsquery('simple', $1)`), so a word is matched as written, in the description too; there is no stemming.
+**Search.** Quote search embeds the query on the server through the same model service (`query: ` prefix, 15 s timeout; a service that is down, loading, or past the timeout answers 503 `AI_UNAVAILABLE` with `Retry-After`) and runs an HNSW cosine search scoped `WHERE book_id = $1`, so index memory follows the active book, not the corpus. Catalog search uses a partial GIN index (FTS and trigram) over published books; index and query both use the `simple` text config (`plainto_tsquery('simple', $1)`), so a word is matched as written, in the description too; there is no stemming.
 
 ## 7. Data
 
@@ -125,7 +125,7 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 
 ## 8. Deployment
 
-- One `docker-compose.prod.yml` with `.env.production.example` runs the whole production host (ADR-46): postgres, redis, server, worker, edge (Caddy on `:80`, no published port), `cloudflared`, `migrate` behind the `ops` profile, and MinIO behind the `minio` profile for local tests. Postgres, Redis, and MinIO sit only on the `store` network (`internal: true`: no route out, no published port), which server, worker, and migrate join; server, worker, and edge share the default network, which has egress (R2, SMTP, Gemini); the `tunnel` network (fixed subnet `10.203.53.0/29`; `cloudflared` pinned at `.2`, the edge at `.3`) holds only edge and `cloudflared`. Redis demands `REDIS_PASSWORD` (`requirepass`), which server and worker send in `REDIS_URL`. Server, worker, and edge run the GHCR release images of `ROTARIA_VERSION` (`build:` stays for `make prod-build`); server and worker get 30 s to drain on stop; Redis writes an append-only file (`everysec`); every service logs through the rotating `local` driver. Targets: `make prod-pull`, `prod-build`, `prod-up`, `prod-migrate`, `prod-down`, `prod-logs`.
+- One `docker-compose.prod.yml` with `.env.production.example` runs the whole production host (ADR-46): postgres, redis, embedder, server, worker, edge (Caddy on `:80`, no published port), `cloudflared`, `migrate` behind the `ops` profile, and MinIO behind the `minio` profile for local tests. Postgres, Redis, the embedding model service, and MinIO sit only on the `store` network (`internal: true`: no route out, no published port), which server, worker, and migrate join; `embedder-fetch` downloads the model at its pinned revision into the `embedder_models` volume and exits before `embedder` starts (`service_completed_successfully`), so the model service never needs a route out and runs as uid 65534 on a read-only volume; server, worker, and edge share the default network, which has egress (R2, SMTP, Gemini); the `tunnel` network (fixed subnet `10.203.53.0/29`; `cloudflared` pinned at `.2`, the edge at `.3`) holds only edge and `cloudflared`. Redis demands `REDIS_PASSWORD` (`requirepass`), which server and worker send in `REDIS_URL`. Server, worker, and edge run the GHCR release images of `ROTARIA_VERSION` (`build:` stays for `make prod-build`); server and worker get 30 s to drain on stop; Redis writes an append-only file (`everysec`); every service logs through the rotating `local` driver. Targets: `make prod-pull`, `prod-build`, `prod-up`, `prod-migrate`, `prod-down`, `prod-logs`.
 - Every service carries `mem_limit` and `cpus`, so one runaway container is killed in its own cgroup instead of starving Postgres on the 12 GB, 2 OCPU host. `cpus` are ceilings, not reservations: their sum may pass 2, but no service can take both cores.
 
 | Service | `mem_limit` | `cpus` | Basis |
@@ -136,10 +136,11 @@ Unknown paths answer 404 in the error envelope; the unversioned `/api/*` alias n
 | worker | 768 MB | 1.0 | the largest real book peaks near 100 MB |
 | edge | 128 MB | 0.5 | 33 MB measured under 40 parallel clients |
 | migrate (one-off) | 256 MB | 0.5 | psql |
-| embedding model (#173) | 4 GB reserved | | not in the compose yet |
+| embedder | 3 GB | 1.0 | peak RSS 2.1 GB on amd64 at one CPU (section 9); arm64 to be measured on the host |
+| embedder-fetch (one-off) | 128 MB | 0.5 | curl |
 | backup (#52) | 256 MB reserved | | not in the compose yet |
 | cloudflared | 128 MB | 0.25 | the Tunnel connector |
-| Total | 8.25 GB | | about 3.75 GB left for the OS and page cache |
+| Total | 7.25 GB | | about 4.75 GB left for the OS and page cache |
 
 Measured on a local `make prod-up` (2026-11-07, empty catalog, one EPUB ingested, 400 catalog reads at 40 in parallel): postgres 60 MB, server 10 MB, worker 43 MB, edge 33 MB, redis 10 MB. Raise a limit when `docker stats` on the host shows a service near it.
 - `make build` compiles release binaries and runs `make build-web`: the WASM bundle with `API_BASE_URL` baked in, built with the `wasm-release` Cargo profile (`opt-level = "z"`, LTO, one codegen unit) and `wasm-opt -Oz`: 1.57 MB raw and 608 KB gzip in 0.1.0 (1.47 MB and 573 KB before the reader tools; 2.83 MB and 909 KB with the default profile). `scripts/check_bundle_budget.py` fails the build above 1.8 MB raw or 700 KB gzip. Release builds minify HTML, CSS, and the glue. The edge image runs `make build-web-edge`, the same build plus brotli 11 and gzip copies (`scripts/precompress.py`) that Caddy sends as they are (`file_server { precompressed br gzip }`); the Tauri bundle leaves them out.
@@ -159,6 +160,20 @@ Measured on a local `make prod-up` (2026-11-07, empty catalog, one EPUB ingested
 | Reader page turn | `transform` and `opacity` only; one column cloned per turn |
 
 `make test-performance-release` checks the API targets.
+
+Embedding model service (text-embeddings-inference 1.9, multilingual-e5-base at revision `d128750`, MIT, 768 dimensions, ONNX Runtime backend), measured 2026-11-08 on the amd64 dev laptop with `--cpus 1.0` while other builds shared the host (load average 3 to 24), so these are upper bounds; arm64 numbers are pending on the production host:
+
+| Measure | amd64, one CPU | arm64 (VPS-2) |
+|---|---|---|
+| Image (uncompressed) | 938 MB | pending |
+| Model on disk | 2.2 GB (ONNX and safetensors weights) | same |
+| Ready after start | about 4 s from a local volume | pending |
+| Peak RSS (load, warm-up, benchmark) | 2.1 GB | pending |
+| Query embed, 100 sequential | p50 83 ms, p95 95 ms | pending |
+| Query embed while a book ingests | p95 1.8 s with one passage per request (7.4 s with four) | pending |
+| 400-word passages | 0.47 per second (a 2,800-chunk book: about 100 minutes) | pending |
+
+The candle backend (safetensors only) embedded passages at half the ONNX rate. `AI_DAILY_BUDGET` (production 5000) now guards CPU, not cost: 5000 queries at the measured p95 take under 10 CPU-minutes a day.
 
 Argon2 (19 MiB per hash or verify) runs behind a semaphore of `ARGON2_MAX_CONCURRENCY` slots (default: cores, at most 8). The slot moves into the blocking task, so a dropped request still holds it until its hash ends; a request that gets no slot within 2 s answers 503 with `Retry-After: 1`. Peak memory is about 24 MB plus 19 MiB per slot.
 

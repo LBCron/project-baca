@@ -73,6 +73,11 @@ class RejectedEpub(PermanentJobError, ValueError):
     """An upload that can never ingest: malformed or past a limit."""
 
 
+class UpstreamError(RuntimeError):
+    """A service the pipeline calls failed. The message names the service
+    and the failure without internal detail, so the curator desk shows it."""
+
+
 @dataclass
 class Settings:
     redis_url: str = field(default_factory=lambda: env("REDIS_URL", "redis://localhost:6380/0"))
@@ -90,8 +95,8 @@ class Settings:
     gemini_api_key: str = field(
         default_factory=lambda: env("GEMINI_API_KEY", env("AI_API_KEY", ""))
     )
-    embedding_model: str = field(
-        default_factory=lambda: env("EMBEDDING_MODEL_NAME", env("AI_MODEL_NAME", "gemini-embedding-2"))
+    embedding_url: str = field(
+        default_factory=lambda: env("EMBEDDING_URL", "http://127.0.0.1:8090")
     )
     embedding_dim: int = field(
         default_factory=lambda: int(env("EMBEDDING_DIMENSION", env("AI_DIMENSION", "768")))
@@ -660,7 +665,7 @@ def make_db(settings: Settings):
     )
 
 
-# Gemini REST helpers (stdlib urllib, no extra dependency)
+# HTTP helpers (stdlib urllib, no extra dependency)
 
 LLM_MAX_ATTEMPTS = 4
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
@@ -681,23 +686,28 @@ def backoff_seconds(retry: int, retry_after: str | None = None, jitter: float = 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
 
 
-def _gemini_post(
-    url: str, payload: dict, api_key: str, timeout: int = 60, job_id: str = ""
-) -> dict:
-    """POSTs to Gemini, retrying transient failures with quadratic backoff.
+def _post_json(
+    url: str,
+    payload: dict,
+    service: str,
+    headers: dict | None = None,
+    timeout: int = 60,
+    job_id: str = "",
+):
+    """POSTs JSON to ``service``, retrying transient failures with quadratic
+    backoff. Raises :class:`UpstreamError` naming the service.
 
-    The key travels in `x-goog-api-key`, never in the URL, because
+    Secrets travel only in ``headers``, never in the URL, because
     `HTTPError` keeps the URL and logs or proxies could then leak it."""
     import urllib.error
 
     body = json.dumps(payload).encode("utf-8")
-    model = url.rsplit("/models/", 1)[-1].split(":", 1)[0]
-    last_error = "Gemini API unreachable"
+    last_error = f"{service} unreachable"
     for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
         request = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+            headers={"Content-Type": "application/json", **(headers or {})},
         )
         retry_after = None
         try:
@@ -705,54 +715,54 @@ def _gemini_post(
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code not in RETRYABLE_HTTP:
-                raise RuntimeError(f"Gemini API rejected the request (HTTP {exc.code})") from exc
-            last_error = f"Gemini API unavailable (HTTP {exc.code})"
+                raise UpstreamError(f"{service} rejected the request (HTTP {exc.code})") from exc
+            last_error = f"{service} unavailable (HTTP {exc.code})"
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             # A timeout while reading the body is a TimeoutError, not a
             # URLError, and deserves the same retry as a failed connect.
-            last_error = "Gemini API unreachable"
+            last_error = f"{service} unreachable"
         if attempt == LLM_MAX_ATTEMPTS:
             break
         delay = backoff_seconds(attempt, retry_after, jitter=random.random() * 0.2)
         LOG.warning(
-            "job %s: %s on %s (attempt %d/%d); retrying in %.1fs",
-            job_id or "-", last_error, model, attempt, LLM_MAX_ATTEMPTS, delay,
+            "job %s: %s (attempt %d/%d); retrying in %.1fs",
+            job_id or "-", last_error, attempt, LLM_MAX_ATTEMPTS, delay,
         )
         time.sleep(delay)
-    raise RuntimeError(last_error)
+    raise UpstreamError(last_error)
+
+
+EMBEDDING_SERVICE = "Embedding service"
+# multilingual-e5 was trained with these prefixes; the server embeds reader
+# queries with "query: " (crates/infra/src/ai/embedding.rs).
+PASSAGE_PREFIX = "passage: "
 
 
 def embed_batch(texts: list[str], settings: Settings, job_id: str = "") -> list[list[float]]:
-    """Returns one embedding vector per input text via batchEmbedContents."""
-    if not settings.gemini_api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-    url = f"{GEMINI_BASE_URL}{settings.embedding_model}:batchEmbedContents"
-    all_vectors: list[list[float]] = []
-    for offset in range(0, len(texts), 20):
-        batch = texts[offset : offset + 20]
-        payload = {
-            "requests": [
-                {
-                    "model": f"models/{settings.embedding_model}",
-                    "content": {"parts": [{"text": text}]},
-                    "outputDimensionality": settings.embedding_dim,
-                }
-                for text in batch
-            ]
-        }
-        result = _gemini_post(url, payload, settings.gemini_api_key, job_id=job_id)
-        embeddings = result.get("embeddings", [])
-        if len(embeddings) != len(batch):
-            raise RuntimeError(f"Embedding batch returned {len(embeddings)} for {len(batch)} texts")
-        for embedding in embeddings:
-            values = embedding.get("values", [])
-            if len(values) != settings.embedding_dim:
-                raise RuntimeError(
-                    f"Embedding dimension {len(values)} != {settings.embedding_dim}"
-                )
-            all_vectors.append([float(v) for v in values])
-    return all_vectors
+    """Returns one embedding vector per passage from the self-hosted model
+    service (text-embeddings-inference).
+
+    One passage per request: the service queues requests in order, so a
+    reader's quote search waits behind one passage (about 2 s on one CPU)
+    instead of a whole batch; throughput is the same, the model is CPU-bound."""
+    out: list[list[float]] = []
+    for text in texts:
+        vectors = _post_json(
+            settings.embedding_url.rstrip("/") + "/embed",
+            {"inputs": [PASSAGE_PREFIX + text], "normalize": True, "truncate": True},
+            EMBEDDING_SERVICE,
+            timeout=120,
+            job_id=job_id,
+        )
+        if not isinstance(vectors, list) or len(vectors) != 1:
+            raise UpstreamError(f"{EMBEDDING_SERVICE} returned a malformed answer")
+        if len(vectors[0]) != settings.embedding_dim:
+            raise UpstreamError(
+                f"{EMBEDDING_SERVICE} returned {len(vectors[0])} dimensions, not {settings.embedding_dim}"
+            )
+        out.append([float(v) for v in vectors[0]])
+    return out
 
 
 ATOMIC_CARDS_PROMPT = """Analyze this book chapter and respond with a single JSON object (no markdown fences, no commentary) with exactly these keys:
@@ -808,7 +818,10 @@ def generate_json(prompt: str, settings: Settings, job_id: str = "") -> dict:
         raise RuntimeError("GEMINI_API_KEY is not configured")
     url = f"{GEMINI_BASE_URL}{settings.llm_model}:generateContent"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    result = _gemini_post(url, payload, settings.gemini_api_key, timeout=120, job_id=job_id)
+    result = _post_json(
+        url, payload, "Gemini API", {"x-goog-api-key": settings.gemini_api_key},
+        timeout=120, job_id=job_id,
+    )
     try:
         text = result["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -899,7 +912,7 @@ def curator_reason(exc: BaseException) -> str:
     anything else names its kind, and the worker log keeps the detail."""
     if isinstance(exc, PermanentJobError):
         return str(exc)
-    if isinstance(exc, RuntimeError) and str(exc).startswith("Gemini API"):
+    if isinstance(exc, UpstreamError):
         return str(exc)
     return f"Unexpected {type(exc).__name__}; the worker log has the details"
 

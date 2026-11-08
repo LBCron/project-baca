@@ -24,13 +24,11 @@ pub trait BookCatalogPort: Send + Sync {
 /// App with no database and no shared Redis handle, for fault injection.
 fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Router {
     let embedding = build_embedding_provider(&AiConfig {
-        provider: "fastembed".to_string(),
-        api_key: String::new(),
-        model_name: "text-embedding-004".to_string(),
+        provider: "mock".to_string(),
         dimension: 768,
-        daily_budget: 0,
+        ..AiConfig::default()
     })
-    .expect("fastembed stub must always succeed");
+    .expect("mock provider must always succeed");
 
     create_app(Arc::new(AppState {
         db: DatabaseConnection::Disconnected,
@@ -360,13 +358,11 @@ async fn test_wedged_object_store_fails_cover_within_operation_timeout() {
     config.storage.endpoint = format!("http://127.0.0.1:{port}");
     let storage = StorageService::connect(&config.storage);
     let embedding = build_embedding_provider(&AiConfig {
-        provider: "fastembed".to_string(),
-        api_key: String::new(),
-        model_name: "text-embedding-004".to_string(),
+        provider: "mock".to_string(),
         dimension: 768,
-        daily_budget: 0,
+        ..AiConfig::default()
     })
-    .expect("fastembed stub must always succeed");
+    .expect("mock provider must always succeed");
     let app = create_app(Arc::new(AppState {
         db: harness.state.db.clone(),
         redis: redis::Client::open("redis://127.0.0.1:6380").unwrap(),

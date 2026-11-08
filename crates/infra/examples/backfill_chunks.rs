@@ -1,111 +1,72 @@
-//! One-shot dev backfill: chunk live `chapters` and embed into `book_chunks`.
+//! Re-embeds stored `book_chunks` with the configured embedding service, in
+//! place: the rows, their text and anchors stay, only `embedding` changes, so
+//! a rerun is harmless and the row count never moves.
 //!
-//! Usage: `cargo run -p infra --example backfill_chunks`
-//! Uses the configured embedding provider (`EMBEDDING_PROVIDER`, default
-//! `gemini` via `GEMINI_API_KEY`).
+//! Usage: `make reembed-chunks` (every book) or
+//! `make reembed-chunks BOOK=<uuid>` (one book).
 
 use infra::{build_embedding_provider, entities::book_chunks, init_db_pool, AppConfig};
 use sea_orm::entity::prelude::PgVector;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Target chunk size in words.
-const CHUNK_WORDS: usize = 350;
-/// Minimum stripped characters for a chapter to be worth embedding.
-const MIN_CHARS: usize = 20;
-/// Embedding batch size per provider call.
-const BATCH_SIZE: usize = 25;
-
-/// Strips HTML tags with a tiny state machine (no extra dependencies).
-fn strip_html(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => {
-                in_tag = false;
-                out.push(' ');
-            }
-            _ if !in_tag => out.push(ch),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Splits plain text into ~CHUNK_WORDS-word pieces at whitespace boundaries.
-fn chunk_text(text: &str) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.is_empty() {
-        return Vec::new();
-    }
-    words
-        .chunks(CHUNK_WORDS)
-        .map(|c| c.join(" "))
-        .filter(|c| c.len() >= MIN_CHARS)
-        .collect()
-}
+/// Chunks read, embedded, and written per round.
+const BATCH_SIZE: u64 = 32;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let book = match std::env::args().nth(1).filter(|a| !a.is_empty()) {
+        Some(raw) => Some(Uuid::parse_str(&raw).map_err(|e| format!("BOOK '{raw}': {e}"))?),
+        None => None,
+    };
     let config = Arc::new(AppConfig::from_env()?);
     let db = init_db_pool(&config).await?;
     let provider = build_embedding_provider(&config.ai)?;
 
-    let chapters = infra::entities::chapters::Entity::find().all(&db).await?;
-    println!("chapters scanned: {}", chapters.len());
-
-    // Chapters lacking chunks.
-    let mut pending: Vec<(Uuid, Uuid, i32, String)> = Vec::new();
-    let mut skipped = 0u64;
-    for ch in &chapters {
-        let existing = book_chunks::Entity::find()
-            .filter(book_chunks::Column::ChapterId.eq(ch.id))
-            .all(&db)
-            .await?
-            .len();
-        if existing > 0 {
-            skipped += 1;
-            continue;
+    let scope = || {
+        let query = book_chunks::Entity::find();
+        match book {
+            Some(id) => query.filter(book_chunks::Column::BookId.eq(id)),
+            None => query,
         }
-        let plain = strip_html(&ch.html_content);
-        for (idx, piece) in chunk_text(&plain).into_iter().enumerate() {
-            pending.push((ch.book_id, ch.id, idx as i32, piece));
-        }
-    }
-    println!("chapters already embedded: {skipped}");
-    println!("chunks to embed: {}", pending.len());
+    };
+    let before = scope().count(&db).await?;
+    println!("chunks to re-embed: {before}");
 
-    if pending.is_empty() {
-        println!("nothing to do.");
-        return Ok(());
-    }
-
-    let mut inserted = 0u64;
-    for batch in pending.chunks(BATCH_SIZE) {
-        let texts: Vec<String> = batch.iter().map(|p| p.3.clone()).collect();
-        let vectors = provider.embed_batch(&texts).await?;
-        for ((book_id, chapter_id, chunk_index, text), vector) in
-            batch.iter().zip(vectors.into_iter())
-        {
-            let model = book_chunks::ActiveModel {
-                id: Set(Uuid::new_v4()),
-                book_id: Set(*book_id),
-                chapter_id: Set(*chapter_id),
-                chunk_index: Set(*chunk_index),
-                chunk_text: Set(text.clone()),
-                cfi_range: Set(None),
-                embedding: Set(PgVector::from(vector)),
-                created_at: Set(chrono::Utc::now().into()),
-            };
-            model.insert(&db).await?;
-            inserted += 1;
+    // Keyset over the primary key, so updated rows are never read twice.
+    let mut last: Option<Uuid> = None;
+    let mut done = 0u64;
+    loop {
+        let mut page = scope()
+            .order_by_asc(book_chunks::Column::Id)
+            .limit(BATCH_SIZE);
+        if let Some(id) = last {
+            page = page.filter(book_chunks::Column::Id.gt(id));
         }
-        println!("inserted {inserted}/{} ...", pending.len());
+        let rows = page.all(&db).await?;
+        let Some(tail) = rows.last() else { break };
+        last = Some(tail.id);
+
+        let texts: Vec<String> = rows.iter().map(|r| r.chunk_text.clone()).collect();
+        let vectors = provider.embed_passages(&texts).await?;
+        for (row, vector) in rows.into_iter().zip(vectors) {
+            let mut active: book_chunks::ActiveModel = row.into();
+            active.embedding = Set(PgVector::from(vector));
+            active.update(&db).await?;
+        }
+        done += texts.len() as u64;
+        println!("re-embedded {done}/{before}");
     }
 
-    println!("backfill complete: {inserted} chunks embedded.");
+    let after = scope().count(&db).await?;
+    println!("done: {done} chunks re-embedded; rows before {before}, after {after}");
+    if after != before {
+        // Only an ingestion running meanwhile adds or replaces rows; this run never does.
+        println!("note: an ingestion changed the row count during the run");
+    }
     Ok(())
 }

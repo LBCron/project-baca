@@ -32,7 +32,7 @@ pub struct AppState {
     pub redis: redis::Client,
     pub redis_conn: Option<RedisConn>,
     pub config: Arc<AppConfig>,
-    /// Dual-mode embedding provider (Gemini REST API or FastEmbed CPU).
+    /// Query embeddings from the self-hosted model service.
     /// Wrapped in Arc so cloning AppState does not clone the provider internals.
     pub embedding: Arc<dyn EmbeddingProvider>,
     /// S3-compatible object storage. `None` when MinIO/S3 is unreachable at

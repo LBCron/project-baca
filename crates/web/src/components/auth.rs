@@ -269,6 +269,7 @@ pub(crate) fn friendly_error(raw: &str, lang: crate::i18n::Lang) -> String {
         code::RATE_LIMITED => lang.text_with("rate_limited", "t", &wait()),
         code::AI_RATE_LIMITED => lang.text_with("err_ai_rate_limited", "t", &wait()),
         code::SERVICE_UNAVAILABLE => lang.text_with("err_service_unavailable", "t", &wait()),
+        code::AI_UNAVAILABLE => lang.text_with("err_ai_unavailable", "t", &wait()),
         code::VALIDATION_FAILED => {
             let by_reason = format!("err_{reason}");
             let by_field = format!("err_field_{field}");
