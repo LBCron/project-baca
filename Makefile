@@ -310,6 +310,24 @@ prod-migrate-status:
 prod-logs:
 	@$(PROD_COMPOSE) logs -f
 
+# psql on the production database, as the app role by default so a slip cannot
+# change the schema; PROD_PSQL_USER=baca_user for the schema owner.
+PROD_PSQL_USER ?= rotaria_app
+prod-psql:
+	@$(PROD_COMPOSE) exec postgres psql -U $(PROD_PSQL_USER) -d project_baca_db
+
+# Admin role for one active account, through the app role. The address reaches
+# psql through the environment, never the command line or the SQL text.
+prod-grant-admin:
+	@test -n "$$EMAIL" || { echo "Usage: make prod-grant-admin EMAIL=<address of an active account>" >&2; exit 2; }
+	@row=$$(printf '%s\n' '\getenv email EMAIL' \
+		"UPDATE users AS u SET role = 'admin', updated_at = now() FROM (SELECT id, role FROM users WHERE email = lower(btrim(:'email')) AND is_active FOR UPDATE) AS old WHERE u.id = old.id RETURNING u.id, old.role, u.role;" \
+		| $(PROD_COMPOSE) exec -T -e EMAIL postgres psql -X -A -t -q -F ' ' -v ON_ERROR_STOP=1 -U rotaria_app -d project_baca_db) || exit 1; \
+	set -- $$row; \
+	test -n "$$1" || { echo "No active account has that email; nothing changed." >&2; exit 1; }; \
+	echo "User $$1: role $$2 -> $$3."; \
+	echo "The role applies after the user's next sign-in or token refresh (up to 60 minutes)."
+
 # After migrating and before the new server takes traffic: until it has run,
 # in-book search finds nothing in books ingested earlier.
 prod-backfill-paragraphs:
@@ -340,5 +358,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
 

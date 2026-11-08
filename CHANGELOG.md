@@ -6,6 +6,7 @@ All notable changes are documented chronologically following [Keep a Changelog](
 
 ### Added
 - `make prod-provision HOST=` hardens the production host in place with `scripts/provision_host.sh`: SSH by key only without root login, ufw admitting only SSH and Beszel from the owner's hub (rules for 80, 443, 5432, and 6379 removed), unattended security upgrades with a 04:00 WIB reboot window, time sync, swap, Docker from its own repository, a `deploy` user without sudo whose key runs only a forced command, and `.env.production` at mode 0600. It verifies after every run, `CHECK=1` only verifies, and a rerun changes nothing (GUIDE section 8).
+- `make prod-psql` opens psql on the production database as the app role, and `make prod-grant-admin EMAIL=` gives one active account the admin role, printing its id and old and new role; an unknown or inactive address exits 1 without a change. The role applies at the account's next sign-in or token refresh (up to 60 minutes).
 
 ### Changed
 - Dependencies: redis 1.8 (from 0.27). Stream names, entry fields, the consumer group, and every Redis key and TTL are unchanged, so the worker needs no update.
