@@ -350,6 +350,14 @@ prod-grant-admin:
 	echo "User $$1: role $$2 -> $$3."; \
 	echo "The role applies after the user's next sign-in or token refresh (up to 60 minutes)."
 
+# Deployed site from outside: shell headers, cache rules, routing, www, API
+# health, and a chapter in Chromium with no CSP violation or foreign request.
+# CF_ACCESS_CLIENT_ID/SECRET while Access guards the site; SMOKE_EMAIL and
+# SMOKE_PASSWORD sign the browser in.
+prod-smoke:
+	@test -n "$(URL)" || { echo "Usage: make prod-smoke URL=https://rotaria.site"; exit 2; }
+	@~/.venvs/webapp-testing/bin/python scripts/prod_smoke.py "$(URL)"
+
 # After migrating and before the new server takes traffic: until it has run,
 # in-book search finds nothing in books ingested earlier.
 prod-backfill-paragraphs:
@@ -388,5 +396,5 @@ clean:
 	@cargo clean
 	@rm -rf crates/web/dist
 
-.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test-deploy test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-backup prod-env-copy prod-restore-drill prod-down prod-logs prod-psql prod-grant-admin prod-backfill-paragraphs prod-provision deploy-probe clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web
+.PHONY: audit dev $(DEV_SERVICES) dev-server dev-web dev-web-release build-web build-web-edge app-dev app-build app-test app-android-dev app-android-build db-up db-down db-prune db-logs db-shell redis-shell migrate-up migrate-down migrate-status test-migrate test-edge-ip test test-unit test-smoke test-integration test-auth test-catalog test-semantic test-database test-performance test-performance-release test-load-stress test-api-boundary test-security test-reliability test-all test-live check build prod-build prod-pull prod-up prod-migrate prod-db-role prod-migrate-status prod-down prod-logs prod-smoke prod-backfill-paragraphs prod-provision clean purge-test-debris backfill-paragraphs seed-dev worker-install worker-test worker-test-live worker worker-once test-admin test-domain test-web test-deploy prod-backup prod-env-copy prod-restore-drill prod-psql prod-grant-admin deploy-probe
 

@@ -93,3 +93,17 @@ jobs:
         run: |
           curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors --max-time 10 \
             https://rotaria.site/api/v1/health
+      # The smoke script of the deployed tag, HTTP checks only (no browser on
+      # the runner); the Access service token goes to rotaria.site alone.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+          sparse-checkout: scripts/prod_smoke.py
+          sparse-checkout-cone-mode: false
+      - name: Web smoke
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          SMOKE_BROWSER: "0"
+        run: python3 scripts/prod_smoke.py https://rotaria.site
