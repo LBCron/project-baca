@@ -387,33 +387,52 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
     )
 }
 
-/// Infrastructure health check handler for database and cache connectivity
+/// Longest a readiness probe waits for one store; a store that has not
+/// answered by then counts as disconnected, so a monitor with a short
+/// timeout reads 503 instead of timing out itself.
+pub const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn redis_answers(state: &AppState) -> bool {
+    let Ok(mut conn) = state.get_redis_conn().await else {
+        return false;
+    };
+    redis::cmd("PING")
+        .query_async::<String>(&mut conn)
+        .await
+        .is_ok_and(|pong| pong == "PONG")
+}
+
+/// Readiness: Postgres and Redis each answer a ping within
+/// [`HEALTH_PROBE_TIMEOUT`]. Either down answers 503 with the same body.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
     responses(
-        (status = 200, description = "Database and cache connectivity status")
+        (status = 200, description = "Postgres and Redis both answer: `status` is `ok`"),
+        (status = 503, description = "Postgres or Redis did not answer within 2 s: `status` is `degraded` and the failed store reads `disconnected`")
     ),
     tag = "System & Health"
 )]
 pub async fn api_health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let db_connected = state.db.ping().await.is_ok();
-    let redis_connected = match state.get_redis_conn().await {
-        Ok(mut conn) => redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map(|pong| pong == "PONG")
-            .unwrap_or(false),
-        Err(_) => false,
-    };
-    let degraded = !(db_connected && redis_connected);
+    let (db_connected, redis_connected) = tokio::join!(
+        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, state.db.ping()),
+        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, redis_answers(&state)),
+    );
+    let db_connected = matches!(db_connected, Ok(Ok(())));
+    let redis_connected = redis_connected.unwrap_or(false);
+    let healthy = db_connected && redis_connected;
+    let connection = |up: bool| if up { "connected" } else { "disconnected" };
 
     (
-        StatusCode::OK,
+        if healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
         Json(ApiResponse::success(serde_json::json!({
-            "status": if degraded { "degraded" } else { "ok" },
-            "postgres": if db_connected { "connected" } else { "disconnected" },
-            "redis": if redis_connected { "connected" } else { "disconnected" }
+            "status": if healthy { "ok" } else { "degraded" },
+            "postgres": connection(db_connected),
+            "redis": connection(redis_connected)
         }))),
     )
 }

@@ -21,8 +21,8 @@ pub trait BookCatalogPort: Send + Sync {
     fn find_book_by_id(&self, id: &Uuid) -> Result<Option<BookSummaryDto>, AppError>;
 }
 
-/// App with no database and no shared Redis handle, for fault injection.
-fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Router {
+/// App on the given stores with no shared Redis handle, for fault injection.
+fn app_on(db: DatabaseConnection, redis_url: &str) -> axum::Router {
     let embedding = build_embedding_provider(&AiConfig {
         provider: "fastembed".to_string(),
         api_key: String::new(),
@@ -33,15 +33,17 @@ fn offline_app(config: AppConfig, storage: Option<StorageService>) -> axum::Rout
     .expect("fastembed stub must always succeed");
 
     create_app(Arc::new(AppState {
-        db: DatabaseConnection::Disconnected,
-        redis: redis::Client::open("redis://127.0.0.1:6380").unwrap(),
+        db,
+        redis: redis::Client::open(redis_url).unwrap(),
         redis_conn: None,
-        config: Arc::new(config),
+        config: Arc::new(AppConfig::default()),
         embedding,
-        storage: storage.map(Arc::new),
+        storage: None,
         argon2: infra::Argon2Gate::new(2),
     }))
 }
+
+const LIVE_REDIS: &str = "redis://127.0.0.1:6380";
 
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
@@ -55,31 +57,76 @@ fn get_bearer(uri: &str, token: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// GETs the readiness probe and returns its status, body, and how long it took.
+async fn probe_health(app: axum::Router) -> (StatusCode, serde_json::Value, Duration) {
+    let started = Instant::now();
+    let resp = tokio::time::timeout(Duration::from_secs(10), app.oneshot(get("/api/v1/health")))
+        .await
+        .expect("readiness probe must not hang")
+        .unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap(),
+        started.elapsed(),
+    )
+}
+
 #[tokio::test]
 async fn test_reliability_disconnected_database_fallback() {
-    let mut config = AppConfig::default();
-    config.database.url = "postgresql://invalid_host:5433/none".to_string();
-    let app = offline_app(config, None);
+    let (status, body, _) =
+        probe_health(app_on(DatabaseConnection::Disconnected, LIVE_REDIS)).await;
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/api/v1/health")
-        .body(Body::empty())
-        .unwrap();
-
-    let (resp, body) = {
-        let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
-        let (parts, body) = resp.into_parts();
-        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        (
-            axum::http::Response::from_parts(parts, Body::from(bytes)),
-            json,
-        )
-    };
-
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["success"], true, "503 keeps the same envelope: {body}");
+    assert_eq!(body["data"]["status"], "degraded");
     assert_eq!(body["data"]["postgres"], "disconnected");
+}
+
+/// A paused Postgres accepts the connection and never answers. The probe
+/// gives up after its bound instead of waiting out the pool's acquire
+/// timeout, so a monitor with a 5 s timeout reads 503, not a timeout.
+#[tokio::test]
+async fn test_health_answers_503_within_5s_when_postgres_hangs() {
+    let (port, _listener) = common::silent_listener().await;
+    let pool = sea_orm::sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(30))
+        .connect_lazy(&format!("postgres://baca_user:none@127.0.0.1:{port}/none"))
+        .expect("lazy pool needs no connection");
+    let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool);
+
+    let (status, body, took) = probe_health(app_on(db, LIVE_REDIS)).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["data"]["postgres"], "disconnected");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}
+
+/// Redis stopped (nothing listens) or paused (listens, never answers): 503
+/// with Redis disconnected while Postgres stays connected.
+#[tokio::test]
+async fn test_health_answers_503_when_redis_is_stopped_or_hangs() {
+    let harness = TestHarness::new().await;
+    let stopped = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let (paused, _listener) = common::silent_listener().await;
+
+    for port in [stopped, paused] {
+        let redis_url = format!("redis://127.0.0.1:{port}/0");
+        let (status, body, took) = probe_health(app_on(harness.state.db.clone(), &redis_url)).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["data"]["status"], "degraded");
+        assert_eq!(body["data"]["redis"], "disconnected");
+        assert_eq!(body["data"]["postgres"], "connected");
+        assert!(took < Duration::from_secs(5), "took {took:?}");
+    }
+    harness.cleanup().await;
 }
 
 #[tokio::test]
@@ -207,7 +254,8 @@ async fn test_redis_outage_answers_503_and_heals_without_restart() {
         .send_request(get_bearer("/api/v1/me", &access))
         .await;
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let (_, health) = harness.send_json_request(get("/api/v1/health")).await;
+    let (resp, health) = harness.send_json_request(get("/api/v1/health")).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(health["data"]["redis"], "disconnected");
 
     relay.restore().await;

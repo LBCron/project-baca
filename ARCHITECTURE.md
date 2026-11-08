@@ -27,7 +27,7 @@ All paths below are under `/api/v1` unless noted. Responses use `{ "success": tr
 | Method and path | Auth | Notes |
 |---|---|---|
 | `GET /health` (root) | none | 503 `degraded` when the process has no database connection |
-| `GET /health` | none | Postgres and Redis status; answers 200 even when `degraded` (issue #51) |
+| `GET /health` | none | readiness: 200 `ok` when Postgres and Redis each answer a ping within 2 s, otherwise 503 `degraded` with the same body and the store that missed as `disconnected`; for monitors and deploys (the root `/health` stays liveness) |
 | `POST /auth/signup`, `/auth/verify-otp`, `/auth/login` | none | auth limiter (`/auth/refresh` takes the token limiter); signup 502 when SMTP is down, 10/h per client, codes per address 3/h and 10/day, 503 past `OTP_HOURLY_BUDGET` across everyone; OTP: three wrong codes lock that registration for 5 min, 10 guesses per address per day (429, `Retry-After`) |
 | `POST /auth/logout`, `/auth/revoke-all?keep_current=` | bearer | logout revokes every access token of the session; revoke-all drops other devices |
 | `GET`, `PATCH`, `DELETE /me` | bearer | profile; delete revokes first, then cascades |
