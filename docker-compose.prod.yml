@@ -150,7 +150,9 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 120s
+      # The model's load budget (arm64 is unmeasured); the first passing
+      # check ends it early. scripts/deploy.sh waits a little longer.
+      start_period: 600s
 
   server:
     image: ${ROTARIA_SERVER_IMAGE:-ghcr.io/aprxty3/project-baca/server:${ROTARIA_VERSION:?set ROTARIA_VERSION}}
